@@ -1,2 +1,1 @@
-# Rello-Backend
-A little chatting app backend
+# Strafe-Backend
