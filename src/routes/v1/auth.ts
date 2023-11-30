@@ -1,7 +1,7 @@
 import { Router } from "express";
-import { Register, Validator } from "../utility/Validator";
-import { client } from "..";
-import { Generator } from "../utility/Generator";
+import { Register, Validator } from "../../utility/Validator";
+import { cassandra } from "../..";
+import { Generator } from "../../utility/Generator";
 import bcrypt from "bcrypt";
 
 const router = Router();
@@ -13,16 +13,16 @@ router.post("/register", async (req, res) => {
     const { email, global_name, username, discriminator, password, dob, locale } = req.body as Register;
 
     try {
-        const existsByUsernameAndDiscriminator = await client.execute(`
+        const existsByUsernameAndDiscriminator = await cassandra.execute(`
         SELECT id, username, discriminator 
-        FROM ${client.keyspace}.users_by_username_and_discriminator 
+        FROM ${cassandra.keyspace}.users_by_username_and_discriminator 
         WHERE username=? AND discriminator=? 
         LIMIT 1;
         `, [username, discriminator], { prepare: true });
 
-        const existsByEmail = await client.execute(`
+        const existsByEmail = await cassandra.execute(`
         SELECT id, email
-        FROM ${client.keyspace}.users_by_email 
+        FROM ${cassandra.keyspace}.users_by_email 
         WHERE email=?
         LIMIT 1;
         `, [email]);
@@ -56,19 +56,19 @@ router.post("/register", async (req, res) => {
             return value !== undefined ? value : null;
         });
 
-        await client.batch([
+        await cassandra.batch([
             {
-                query: `INSERT INTO ${client.keyspace}.users (
+                query: `INSERT INTO ${cassandra.keyspace}.users (
                             ${insertEntries.map(([key]) => key).join(',')}
                         ) VALUES (${insertEntries.map(() => '?').join(', ')});`,
                 params: sanitizedParams
             },
             {
-                query: `INSERT INTO ${client.keyspace}.users_by_email (id, email) VALUES (?, ?);`,
+                query: `INSERT INTO ${cassandra.keyspace}.users_by_email (id, email) VALUES (?, ?);`,
                 params: [id, email]
             },
             {
-                query: `INSERT INTO ${client.keyspace}.users_by_username_and_discriminator (id, username, discriminator) VALUES (?, ?, ?);`,
+                query: `INSERT INTO ${cassandra.keyspace}.users_by_username_and_discriminator (id, username, discriminator) VALUES (?, ?, ?);`,
                 params: [id, username, discriminator],
             }
         ], { prepare: true });
