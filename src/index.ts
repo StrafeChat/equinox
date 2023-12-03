@@ -9,8 +9,6 @@ import cors from "cors";
 import { WsHandler } from "./ws";
 const app = express();
 
-const heartbeatInterval = 15000;
-
 const cassandra = new Client({
     contactPoints: [process.env.CASSANDRA_CONTACT_POINT!],
     localDataCenter: process.env.CASSANDRA_DATA_CENTER,
@@ -20,12 +18,6 @@ const redis = createClient();
 
 app.use(bodyParser.json());
 app.use(cors());
-
-const clients = new Map<
-    WebSocket,
-    { timer: NodeJS.Timeout | null; user: any | null }
->();
-const sockets = new Map<string, WebSocket>();
 
 try {
     (async () => {

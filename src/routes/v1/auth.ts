@@ -81,4 +81,37 @@ router.post("/register", async (req, res) => {
     }
 });
 
+router.post("/login", async (req, res) => {
+    try {
+        const { error } = Validator.login(req.body);
+        if (error) return res.status(401).json({ message: "Incorrect Password" });
+        const exists = await cassandra.execute(`
+        SELECT id, email
+        FROM ${cassandra.keyspace}.users_by_email 
+        WHERE email=?
+        LIMIT 1;
+        `, [req.body.email], { prepare: true });
+
+        if (exists.rowLength < 1) return res.status(404).json({ message: "User does not exist with this email." });
+
+        const user = await cassandra.execute(`
+        SELECT id, password, secret
+        FROM ${cassandra.keyspace}.users
+        WHERE id=?
+        LIMIT 1;
+        `, [exists.rows[0].get("id")], { prepare: true });
+
+        if (!user) return res.status(500).json({ message: "Something went very wrong when trying to login, please contract strafe support!" });
+
+        const validPass = await bcrypt.compare(req.body.password, user.rows[0].get("password"));
+        if (!validPass) return res.status(401).json({ message: "The password you have entered is incorrect." });
+        console.log(user.rows[0].get("id"));
+        const token = Generator.token(user.rows[0].get("id"), Date.now(), user.rows[0].get("secret"));
+        return res.status(200).json({ token });
+    } catch (err) {
+        console.error(err);
+        return res.status(500).json({ message: "Internal Server Error" });
+    }
+});
+
 export default router;

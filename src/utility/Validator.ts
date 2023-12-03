@@ -1,4 +1,5 @@
 import joi from "joi";
+import { cassandra } from "..";
 
 export interface Register {
     email: string;
@@ -11,6 +12,10 @@ export interface Register {
     locale: string;
 }
 
+export interface Login {
+    email: string;
+    password: string;
+}
 
 export class Validator {
 
@@ -25,5 +30,30 @@ export class Validator {
             dob: joi.date().max(new Date(new Date().setFullYear(new Date().getFullYear() - 13))),
             locale: joi.string().regex(/^[a-z]{2}-[A-Z]{2}$/).required()
         }).validate(data);
+    }
+
+    public static login(data: Login) {
+        return joi.object({
+            email: joi.string().email().required(),
+            password: joi.string().pattern(new RegExp('^[a-zA-Z0-9]{3,30}$')).required()
+        }).validate(data);
+    }
+
+    public static async token(token?: string) {
+        if (!token) return { code: 4004, message: "Access Denied." };
+        const parts = token.split(".");
+        if (parts.length != 3) return { code: 4004, message: "Access Denied." };
+        const id = atob(parts[0]);
+        const timestamp = parseInt(atob(parts[1]));
+        const secret = atob(parts[2]);
+        const user = await cassandra.execute(`
+        SELECT * FROM ${cassandra.keyspace}.users
+        WHERE id=?
+        LIMIT 1;
+        `, [id], { prepare: true });
+
+        if (user.rowLength < 1) return { code: 4004, message: "Access Denied" };
+        if (user.rows[0].get("last_pass_reset") > timestamp || user.rows[0].get("secret") != secret) return { code: 4004, message: "Access Denied." };
+        return { user: user.rows[0] };
     }
 }
