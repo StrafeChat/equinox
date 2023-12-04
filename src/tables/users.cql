@@ -23,5 +23,6 @@ CREATE TABLE IF NOT EXISTS strafe.users (
     secret TEXT,
     last_pass_reset TIMESTAMP,
     dob TIMESTAMP,
+    presence FROZEN<user_presence>,
     PRIMARY KEY((id), created_at)
 ) WITH CLUSTERING ORDER BY (created_at DESC);

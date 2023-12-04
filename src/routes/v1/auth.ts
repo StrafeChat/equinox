@@ -31,6 +31,7 @@ router.post("/register", async (req, res) => {
         if (existsByEmail.rowLength > 0) return res.status(403).json({ message: "A user already exists with this email." });
 
         const id = Generator.snowflake.generate();
+
         const secret = Generator.randomKey();
         const last_pass_reset = Date.now();
 
@@ -74,6 +75,15 @@ router.post("/register", async (req, res) => {
         ], { prepare: true });
 
         const token = Generator.token(id, last_pass_reset, secret);
+
+        // TODO Default avatar generation.
+        // await fetch(process.env.CDN_URL!, {
+        //     headers: {
+        //         "Content-Type": "application/json",
+        //         "Authorization": token
+        //     },
+        // })
+
         return res.status(201).json({ token });
     } catch (err) {
         console.error(err);

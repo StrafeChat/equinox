@@ -27,6 +27,7 @@ try {
         });
 
         const versions = fs.readdirSync("src/routes");
+        const types = fs.readdirSync("src/types");
         const tables = fs.readdirSync("src/tables");
 
         for (const version of versions) {
@@ -34,6 +35,11 @@ try {
             for (const route of routes) {
                 app.use(`/${version}/${route.replace(".ts", '')}`, require(`./routes/${version}/${route}`).default);
             }
+        }
+
+        for(const type of types) {
+            const query = fs.readFileSync(`src/types/${type}`).toString("utf-8");
+            await cassandra.execute(query);
         }
 
         for (const table of tables) {
