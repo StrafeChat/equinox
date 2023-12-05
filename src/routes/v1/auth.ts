@@ -3,6 +3,7 @@ import { Register, Validator } from "../../utility/Validator";
 import { cassandra } from "../..";
 import { Generator } from "../../utility/Generator";
 import bcrypt from "bcrypt";
+import fs from "fs";
 
 const router = Router();
 
@@ -40,22 +41,31 @@ router.post("/register", async (req, res) => {
         const insertEntries = Object.entries({
             id, email, username, global_name, locale, discriminator, dob, secret, last_pass_reset,
             password: hashedPass,
+            avatar: Buffer.from(Buffer.from(id + "_avatar").toString("hex")).toString("base64url"),
+            banner: Buffer.from(Buffer.from(id + "_banner").toString("hex")).toString("base64url"),
             bot: false,
             system: false,
             mfa_enabled: false,
-            accent_color: null,
+            accent_color: 0xFFFFFF,
             verified: false,
             flags: 0,
             premium_type: 0,
             public_flags: 0,
             hide: false,
+            presence: {
+                status: "online",
+                status_text: "",
+                online: false,
+            },
             created_at: Date.now(),
-            edited_at: Date.now()
+            edited_at: Date.now(),
         });
 
         const sanitizedParams = insertEntries.map(([, value]) => {
             return value !== undefined ? value : null;
         });
+
+        const token = Generator.token(id, last_pass_reset, secret);
 
         await cassandra.batch([
             {
@@ -74,15 +84,22 @@ router.post("/register", async (req, res) => {
             }
         ], { prepare: true });
 
-        const token = Generator.token(id, last_pass_reset, secret);
 
-        // TODO Default avatar generation.
-        // await fetch(process.env.CDN_URL!, {
-        //     headers: {
-        //         "Content-Type": "application/json",
-        //         "Authorization": token
-        //     },
-        // })
+        fs.readdir("avatars", (err, files) => {
+            if (files.length < 1) throw new Error("No default avatars exist in the avatars directory.");
+            fs.readFile(`avatars/avatar${Math.floor(Math.random() * (files.length - 1 + 1)) + 1}.png`, async (err, data) => {
+                await fetch(`${process.env.CDN}/avatars`, {
+                    method: "POST",
+                    headers: {
+                        "Content-Type": "application/json",
+                        "Authorization": token
+                    },
+                    body: JSON.stringify({
+                        data: data.toString("base64url")
+                    })
+                });
+            })
+        });
 
         return res.status(201).json({ token });
     } catch (err) {
@@ -111,7 +128,7 @@ router.post("/login", async (req, res) => {
         LIMIT 1;
         `, [exists.rows[0].get("id")], { prepare: true });
 
-        if (!user) return res.status(500).json({ message: "Something went very wrong when trying to login, please contract strafe support!" });
+        if (user.rowLength < 1) return res.status(500).json({ message: "Something went very wrong when trying to login, please contact strafe support!" });
 
         const validPass = await bcrypt.compare(req.body.password, user.rows[0].get("password"));
         if (!validPass) return res.status(401).json({ message: "The password you have entered is incorrect." });

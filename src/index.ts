@@ -1,5 +1,5 @@
 require('dotenv').config();
-import { Client } from "cassandra-driver";
+import { Client, auth } from "cassandra-driver";
 import { createClient } from 'redis';
 import express from "express";
 import fs from "fs";
