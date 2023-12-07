@@ -13,7 +13,9 @@ const cassandra = new Client({
     localDataCenter: process.env.CASSANDRA_DATA_CENTER,
     keyspace: process.env.CASSANDRA_KEYSPACE
 })
-const redis = createClient();
+const redis = createClient({
+    url: process.env.REDIS_URL,
+});
 
 app.use(bodyParser.json());
 app.use(cors());
@@ -37,7 +39,7 @@ try {
             }
         }
 
-        for(const type of types) {
+        for (const type of types) {
             const query = fs.readFileSync(`src/types/${type}`).toString("utf-8");
             await cassandra.execute(query);
         }
@@ -48,7 +50,7 @@ try {
         }
 
         new WsHandler(server);
-        
+
         app.use("", (_req, res) => {
             res.status(404).json({ message: "0_o the resource you were looking for was not found!" });
         });
