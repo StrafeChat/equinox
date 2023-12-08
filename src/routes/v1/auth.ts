@@ -132,7 +132,6 @@ router.post("/login", async (req, res) => {
 
         const validPass = await bcrypt.compare(req.body.password, user.rows[0].get("password"));
         if (!validPass) return res.status(401).json({ message: "The password you have entered is incorrect." });
-        console.log(user.rows[0].get("id"));
         const token = Generator.token(user.rows[0].get("id"), Date.now(), user.rows[0].get("secret"));
         return res.status(200).json({ token });
     } catch (err) {

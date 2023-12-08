@@ -1,4 +1,4 @@
-CREATE TABLE IF NOT EXISTS strafe.users (
+CREATE TABLE IF NOT EXISTS {keyspace}.users (
     id TEXT,
     accent_color INT,
     avatar TEXT,

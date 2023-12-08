@@ -1,5 +1,6 @@
 import joi from "joi";
 import { cassandra } from "..";
+import { NextFunction, Request, Response } from "express";
 
 export interface Register {
     email: string;
@@ -37,6 +38,30 @@ export class Validator {
             email: joi.string().email().required(),
             password: joi.string().min(8).max(128).required()
         }).validate(data);
+    }
+
+    public static friend_request(data: any) {
+        
+    }
+
+    public static async verifyToken(req: Request, res: Response, next: NextFunction) {
+        const token = req.headers["authorization"];
+        if (!token) return res.status(403).json({ message: "Access Denied." });
+        const parts = token.split(".");
+        if (parts.length != 3) return res.status(403).json({ message: "Access Denied." });
+        const id = atob(parts[0]);
+        const timestamp = parseInt(atob(parts[1]));
+        const secret = atob(parts[2]);
+        const user = await cassandra.execute(`
+        SELECT * FROM ${cassandra.keyspace}.users
+        WHERE id=?
+        LIMIT 1;
+        `, [id], { prepare: true });
+
+        if (user.rowLength < 1) return res.status(403).json({ message: "Access Denied." });
+        if (user.rows[0].get("last_pass_reset") > timestamp || user.rows[0].get("secret") != secret) return res.status(403).json({ message: "Access Denied." });
+        req.body.user = user.rows[0];
+        next();
     }
 
     public static async token(token?: string) {

@@ -40,12 +40,12 @@ try {
         }
 
         for (const type of types) {
-            const query = fs.readFileSync(`src/types/${type}`).toString("utf-8");
+            const query = fs.readFileSync(`src/types/${type}`).toString("utf-8").replace("{keyspace}", cassandra.keyspace);
             await cassandra.execute(query);
         }
 
         for (const table of tables) {
-            const query = fs.readFileSync(`src/tables/${table}`).toString("utf-8");
+            const query = fs.readFileSync(`src/tables/${table}`).toString("utf-8").replace("{keyspace}", cassandra.keyspace);
             await cassandra.execute(query);
         }
 

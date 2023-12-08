@@ -1,4 +1,4 @@
-CREATE TABLE IF NOT EXISTS strafe.users_by_username_and_discriminator (
+CREATE TABLE IF NOT EXISTS {keyspace}.users_by_username_and_discriminator (
     id TEXT,
     username TEXT,
     discriminator INT,

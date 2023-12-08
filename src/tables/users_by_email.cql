@@ -1,4 +1,4 @@
-CREATE TABLE IF NOT EXISTS strafe.users_by_email (
+CREATE TABLE IF NOT EXISTS {keyspace}.users_by_email (
     id TEXT,
     email TEXT,
     PRIMARY KEY((email), id)

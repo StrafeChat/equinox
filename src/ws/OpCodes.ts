@@ -4,4 +4,5 @@ export enum OpCodes {
     HEARTBEAT_ACK = 1,
     IDENTIFY = 2,
     DISPATCH = 3,
+    FRIEND_REQUEST = 4,
 }
