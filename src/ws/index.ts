@@ -36,6 +36,7 @@ export class WsHandler {
                     case OpCodes.IDENTIFY:
                         const res = await Validator.token(data.token);
                         if (res.code) return client.close(res.code, res.message);
+                        WsHandler.sockets.set((res.user as unknown as User).id, client);
                         this.send(client, { op: OpCodes.DISPATCH, data: Generator.stripUserInfo(res.user as unknown as User), event: "READY" })
                         break;
                 }

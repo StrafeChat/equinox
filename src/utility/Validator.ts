@@ -40,10 +40,6 @@ export class Validator {
         }).validate(data);
     }
 
-    public static friend_request(data: any) {
-        
-    }
-
     public static async verifyToken(req: Request, res: Response, next: NextFunction) {
         const token = req.headers["authorization"];
         if (!token) return res.status(403).json({ message: "Access Denied." });
