@@ -1,0 +1,1 @@
+CREATE INDEX IF NOT EXISTS ON {keyspace}.rooms(recipients);

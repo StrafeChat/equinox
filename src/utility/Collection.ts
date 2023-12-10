@@ -1,6 +1,8 @@
 import { cassandra } from "..";
 import { Relationship } from "../interfaces/Request";
+import { Room } from "../interfaces/Room";
 import { User } from "../interfaces/User";
+import { Generator } from "./Generator";
 
 export class Collection {
 
@@ -38,7 +40,7 @@ export class Collection {
             SELECT * FROM ${cassandra.keyspace}.requests_by_sender
             WHERE sender_id=? ${receiverId && "AND receiver_id=?"}
             LIMIT 1;
-            `, [senderId, receiverId])
+            `, [senderId, receiverId], { prepare: true });
 
             return execution.rowLength ? execution.rows[0] as unknown as Relationship : null;
         },
@@ -48,7 +50,7 @@ export class Collection {
             const execution = await cassandra.execute(`
             SELECT * FROM ${cassandra.keyspace}.requests_by_sender
             WHERE sender_id=? ${receiverId ? "AND receiver_id=?" : ''}
-            `, include)
+            `, include, { prepare: true });
 
             return execution.rowLength ? execution.rows as unknown[] as Relationship[] : [];
         },
@@ -57,7 +59,7 @@ export class Collection {
             SELECT * FROM ${cassandra.keyspace}.requests_by_receiver
             WHERE receiver_id=? ${senderId && "AND sender_id=?"}
             LIMIT 1;
-            `, [receiverId, senderId])
+            `, [receiverId, senderId], { prepare: true })
 
             return execution.rowLength ? execution.rows[0] as unknown as Relationship : null;
         },
@@ -67,11 +69,46 @@ export class Collection {
             const execution = await cassandra.execute(`
             SELECT * FROM ${cassandra.keyspace}.requests_by_receiver
             WHERE receiver_id=? ${senderId ? "AND sender_id=?" : ''}
-            `, include)
+            `, include, { prepare: true });
 
             return execution.rowLength ? execution.rows as unknown[] as Relationship[] : [];
         },
     };
+
+    public static rooms = {
+        fetchById: async (id: string) => {
+            return await this.fetchById("rooms", id);
+        },
+        fetchByUserId: async (userId: string) => {
+            const execution = await cassandra.execute(`
+            SELECT * FROM ${cassandra.keyspace}.room_recipients_by_user
+            WHERE user_id=?
+            `, [userId], { prepare: true });
+        },
+        fetchManyByUserId: async (userId: string) => {
+            const rooms: Room[] = [];
+            const execution = await cassandra.execute(`
+            SELECT * FROM ${cassandra.keyspace}.room_recipients_by_user
+            WHERE user_id=?;
+            `, [userId], { prepare: true });
+
+            if (execution.rowLength < 1) return rooms;
+
+            for (const room of execution.rows) {
+                const recipients = room.get("recipients") as string[];
+                const recipientsTransformer: Partial<User>[] = [];
+
+                for (const recipient of recipients) {
+                    const user = await this.fetchById("users", recipient);
+                    if (user) recipientsTransformer.push(Generator.stripUserInfo(user));
+                }
+
+                rooms.push({ ...await this.fetchById("rooms", room.get("room_id")), recipients: [...recipientsTransformer] } as unknown as Room);
+            }
+
+            return rooms;
+        }
+    }
 
     private static async fetchById(table: string, id: string) {
         const exeuction = await cassandra.execute(`

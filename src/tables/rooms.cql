@@ -12,5 +12,5 @@ CREATE TABLE IF NOT EXISTS {keyspace}.rooms (
     type INT,
     created_at TIMESTAMP,
     edited_at TIMESTAMP,
-    PRIMARY KEY((id), edited_at)
-) WITH CLUSTERING ORDER BY (edited_at DESC);
+    PRIMARY KEY((id), created_at)
+) WITH CLUSTERING ORDER BY (created_at DESC);

@@ -23,4 +23,9 @@ export interface User {
     secret: string;
     last_pass_reset: Date,
     dob: Date;
+    presence: {
+        status: string;
+        status_text: string;
+        online: boolean;
+    }
 }

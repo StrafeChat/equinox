@@ -31,6 +31,7 @@ try {
         const versions = fs.readdirSync("src/routes");
         const types = fs.readdirSync("src/types");
         const tables = fs.readdirSync("src/tables");
+        const indexes = fs.readdirSync("src/indexes");
 
         for (const version of versions) {
             const routes = fs.readdirSync(`src/routes/${version}`);
@@ -46,6 +47,11 @@ try {
 
         for (const table of tables) {
             const query = fs.readFileSync(`src/tables/${table}`).toString("utf-8").replace("{keyspace}", cassandra.keyspace);
+            await cassandra.execute(query);
+        }
+
+        for (const index of indexes) {
+            const query = fs.readFileSync(`src/indexes/${index}`).toString("utf-8").replace("{keyspace}", cassandra.keyspace);
             await cassandra.execute(query);
         }
 

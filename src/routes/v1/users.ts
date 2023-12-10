@@ -235,6 +235,10 @@ router.post("/@me/relationships/:query", Validator.verifyToken, async (req, res)
     }
 });
 
+router.get("/@me", Validator.verifyToken, (req, res) => {
+    res.status(200).json({ user: req.body.user });
+});
+
 router.delete("/@me/relationships/:query", Validator.verifyToken, async (req, res) => {
     try {
         const query = req.params.query.split('-');
@@ -247,5 +251,65 @@ router.delete("/@me/relationships/:query", Validator.verifyToken, async (req, re
     }
 });
 
+router.post("/@me/rooms", Validator.verifyToken, async (req, res) => {
+    try {
+        if (!req.body.recipientId) return res.status(400).json({ message: "You need to specify a recipient id when creating a pm." });
+        if (req.body.type == null || req.body.type == undefined || isNaN(parseInt(req.body.type))) return res.status(400).json({ message: "You must specify a type for the room." });
+        if (req.body.recipientId == req.body.user.id) return res.status(400).json({ message: "You cannot create a pm for only you :/" });
+
+        switch (req.body.type) {
+            // pm room
+            case 0:
+                const execution = await cassandra.execute(`
+                SELECT * FROM ${cassandra.keyspace}.room_recipients_by_user
+                WHERE recipients CONTAINS ?
+                LIMIT 1;
+                `, [req.body.user.id]);
+
+                if (execution.rowLength > 0) return res.status(401).json({ message: "You already have a pm with this user." });
+
+                const id = Generator.snowflake.generate();
+
+                const recipients = [req.body.user.id, req.body.recipientId];
+
+                console.log(recipients);
+
+                await cassandra.batch([
+                    {
+                        query: `
+                        INSERT INTO ${cassandra.keyspace}.rooms (
+                            id, recipients, total_messages_sent, type, created_at, edited_at
+                        ) VALUES (?, ?, ?, ?, ?, ?); 
+                        `,
+                        params: [id, recipients, 0, 0, Date.now(), Date.now()]
+                    },
+                    ...recipients.map((recipient) => {
+                        return {
+                            query: `
+                            INSERT INTO ${cassandra.keyspace}.room_recipients_by_user (
+                                room_id, user_id, recipients, created_at
+                            ) VALUES(?, ?, ?, ?)
+                            `,
+                            params: [id, recipient, recipients, Date.now()]
+                        };
+                    }),
+                ], { prepare: true });
+                break;
+            // group room
+            case 1:
+                break;
+            default:
+                return res.status(401).json({ message: "You can only create a group or pm room on this route." });
+        }
+    } catch (err) {
+        console.log(err);
+        res.status(500).json({ message: "Something went wrong on our side... You should try again maybe?" });
+    }
+});
+
+router.get("/@me/rooms", Validator.verifyToken, async (req, res) => {
+    const rooms = await Collection.rooms.fetchManyByUserId(req.body.user.id);
+    res.status(200).json({ rooms });
+});
 
 export default router;
