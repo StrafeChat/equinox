@@ -1,53 +1,31 @@
-import { Router } from "express";
+import { Request, Response, Router } from "express";
 import { Validator } from "../../utility/Validator";
 import { cassandra } from "../..";
 import { User } from "../../interfaces/User";
 import { WsHandler } from "../../ws";
 import { OpCodes } from "../../ws/OpCodes";
 import { Generator } from "../../utility/Generator";
+import { Collection } from "../../utility/Collection";
+import { Relationship } from "../../interfaces/Request";
 const router = Router();
 
 router.get("/@me/relationships", Validator.verifyToken, async (req, res) => {
     try {
-        const relationships: any[] = [];
+        const relationships: Relationship[] = [];
 
-        const senderQuery = await cassandra.execute(`
-            SELECT * FROM ${cassandra.keyspace}.requests_by_sender
-            WHERE sender_id=?
-        `, [req.body.user.id], { prepare: true });
+        const sent = await Collection.requests.fetchManySenderRequests(req.body.user.id);
+        const received = await Collection.requests.fetchManyReceiverRequests(req.body.user.id);
 
-        const receiverQuery = await cassandra.execute(`
-            SELECT * FROM ${cassandra.keyspace}.requests_by_receiver
-            WHERE receiver_id=?
-        `, [req.body.user.id], { prepare: true });
-
-        const fetchUserInfo = async (userId: string) => {
-            const user = await cassandra.execute(`
-                SELECT * FROM ${cassandra.keyspace}.users
-                WHERE id=? 
-                LIMIT 1;
-            `, [userId]);
-            return Generator.stripUserInfo(user.rows[0] as unknown as User);
-        };
-
-        await Promise.all(senderQuery.rows.map(async (row) => {
-            row.sender = row.get("sender_id") === req.body.user.id
-                ? Generator.stripUserInfo(req.body.user)
-                : await fetchUserInfo(row.get("receiver_id"));
-
-            row.receiver = await fetchUserInfo(row.get("receiver_id"));
-
-            relationships.push(row);
+        await Promise.all(sent.map(async (relationship) => {
+            relationship.sender = (relationship.sender_id === req.body.user.id ? Generator.stripUserInfo(req.body.user) : await Collection.users.fetchById(relationship.receiver_id));
+            relationship.receiver = await Collection.users.fetchById(relationship.receiver_id);
+            relationships.push(relationship);
         }));
 
-        await Promise.all(receiverQuery.rows.map(async (row) => {
-            row.sender = await fetchUserInfo(row.get("sender_id"));
-
-            row.receiver = row.get("receiver_id") === req.body.user.id
-                ? Generator.stripUserInfo(req.body.user)
-                : await fetchUserInfo(row.get("sender_id"));
-
-            relationships.push(row);
+        await Promise.all(received.map(async (relationship) => {
+            relationship.sender = await Collection.users.fetchById(relationship.sender_id);
+            relationship.receiver = (relationship.receiver_id === req.body.user.id ? Generator.stripUserInfo(req.body.user) : await Collection.users.fetchById(relationship.sender_id));
+            relationships.push(relationship);
         }));
 
         res.status(200).json({ relationships });
@@ -56,6 +34,132 @@ router.get("/@me/relationships", Validator.verifyToken, async (req, res) => {
         res.status(500).json({ message: "Something went wrong on our side 0_0, try again maybe?" });
     }
 });
+
+const handleAccept = async (req: Request, res: Response, query: string[]) => {
+    const receiver = req.body.user;
+    const sender = await Collection.users.fetchByUsernameAndDiscrim(query[0], parseInt(query[1]));
+
+    if (!sender) return res.status(404).json({ message: "Oops, looks like this user does not exist anymore. Maybe they were banned?" });
+
+    const request = await Collection.requests.fetchSenderRequest(sender.id, receiver.id);
+
+    if (!request || request.status != "pending") return res.status(404).json({ message: "Friend request not found." });
+
+    await cassandra.batch([
+        {
+            query: `
+            UPDATE ${cassandra.keyspace}.requests_by_sender
+            SET status=?
+            WHERE sender_id=? AND receiver_id=? AND created_at=?
+            `,
+            params: ["accepted", sender.id, receiver.id, request.created_at]
+        },
+        {
+            query: `
+            UPDATE ${cassandra.keyspace}.requests_by_receiver
+            SET status=?
+            WHERE sender_id=? AND receiver_id=? AND created_at=?
+            `,
+            params: ["accepted", sender.id, receiver.id, request.created_at]
+        }
+    ], { prepare: true });
+
+    const relationship = { sender_id: sender.id, sender: Generator.stripUserInfo(sender), receiver_id: receiver.id, receiver: Generator.stripUserInfo(receiver), status: "accepted", created_at: request.created_at };
+
+    WsHandler.sockets.get(sender.id)?.send(JSON.stringify({ op: OpCodes.RELATIONSHIP_UPDATE, data: relationship }));
+
+    return res.status(200).json({ relationship });
+}
+
+const handleReject = async (req: Request, res: Response, query: string[]) => {
+    const userFromQuery = await Collection.users.fetchByUsernameAndDiscrim(query[0], parseInt(query[1]));
+
+    if (!userFromQuery) return res.status(404).json({ message: "Oops, looks like this user does not exist anymore. Maybe they were banned?" });
+
+    let request = await Collection.requests.fetchReceiverRequest(req.body.user.id, userFromQuery.id);
+
+    if (!request) request = await Collection.requests.fetchReceiverRequest(userFromQuery.id, req.body.user.id);
+
+    if (!request || request.status != "pending") return res.status(404).json({ message: "Friend request not found." });
+
+    await cassandra.batch([
+        {
+            query: `
+            DELETE FROM ${cassandra.keyspace}.requests_by_sender
+            WHERE sender_id=? AND receiver_id=? AND created_at=?
+            `,
+            params: [request.sender_id, request.receiver_id, request.created_at]
+        },
+        {
+            query: `
+            DELETE FROM ${cassandra.keyspace}.requests_by_receiver
+            WHERE sender_id=? AND receiver_id=? AND created_at=?
+            `,
+            params: [request.sender_id, request.receiver_id, request.created_at]
+        }
+    ], { prepare: true });
+
+    let sender = req.body.user;
+    if (request.sender_id != req.body.user.id) {
+        sender = await Collection.users.fetchById(userFromQuery.id);
+    }
+
+    let receiver = req.body.user;
+    if (request.receiver_id != req.body.user.id) {
+        receiver = Collection.users.fetchById(userFromQuery.id);
+    }
+
+    const relationship = { sender_id: request.sender_id, sender: Generator.stripUserInfo(sender), receiver_id: request.receiver_id, receiver: Generator.stripUserInfo(receiver), status: "rejected", created_at: request.created_at };
+
+    WsHandler.sockets.get(userFromQuery.id)?.send(JSON.stringify({ op: OpCodes.RELATIONSHIP_UPDATE, data: relationship }));
+
+    return res.status(200).json({ relationship });
+}
+
+const handleDelete = async (req: Request, res: Response, query: string[]) => {
+    const userFromQuery = await Collection.users.fetchByUsernameAndDiscrim(query[0], parseInt(query[1]));
+
+    if (!userFromQuery) return res.status(404).json({ message: "Oops, looks like this user does not exist anymore. Maybe they were banned?" });
+
+    let request = await Collection.requests.fetchReceiverRequest(req.body.user.id, userFromQuery.id);
+
+    if (!request) request = await Collection.requests.fetchReceiverRequest(userFromQuery.id, req.body.user.id);
+
+    if (!request) return res.status(404).json({ message: "Friend request not found." });
+
+    await cassandra.batch([
+        {
+            query: `
+            DELETE FROM ${cassandra.keyspace}.requests_by_sender
+            WHERE sender_id=? AND receiver_id=? AND created_at=?
+            `,
+            params: [request.sender_id, request.receiver_id, request.created_at]
+        },
+        {
+            query: `
+            DELETE FROM ${cassandra.keyspace}.requests_by_receiver
+            WHERE sender_id=? AND receiver_id=? AND created_at=?
+            `,
+            params: [request.sender_id, request.receiver_id, request.created_at]
+        }
+    ], { prepare: true });
+
+    let sender = req.body.user;
+    if (request.sender_id != req.body.user.id) {
+        sender = await Collection.users.fetchById(userFromQuery.id);
+    }
+
+    let receiver = req.body.user;
+    if (request.receiver_id != req.body.user.id) {
+        receiver = await Collection.users.fetchById(userFromQuery.id);
+    }
+
+    const relationship = { sender_id: request.sender_id, sender: Generator.stripUserInfo(sender), receiver_id: request.receiver_id, receiver: Generator.stripUserInfo(receiver), status: "deleted", created_at: request.created_at };
+
+    WsHandler.sockets.get(userFromQuery.id)?.send(JSON.stringify({ op: OpCodes.RELATIONSHIP_UPDATE, data: relationship }));
+
+    return res.status(200).json({ relationship });
+}
 
 router.patch("/@me/relationships/:query", Validator.verifyToken, async (req, res) => {
     try {
@@ -67,97 +171,9 @@ router.patch("/@me/relationships/:query", Validator.verifyToken, async (req, res
 
         switch (action) {
             case "accept":
-                const acceptReceiver = req.body.user;
-                const senderQuery = await cassandra.execute(`
-                SELECT * 
-                FROM ${cassandra.keyspace}.users_by_username_and_discriminator
-                WHERE username=? AND discriminator=?
-                LIMIT 1;
-                `, [query[0], parseInt(query[1])], { prepare: true });
-
-                if (senderQuery.rowLength < 1) return res.status(404).json({ message: "Oops, looks like this user does not exist anymore. Maybe they were banned?" });
-
-                const acceptRequest = await cassandra.execute(`
-                SELECT *
-                FROM ${cassandra.keyspace}.requests_by_sender
-                WHERE sender_id=? AND receiver_id=?
-                LIMIT 1;
-                `, [senderQuery.rows[0].get("id"), acceptReceiver.id]);
-
-                if (!acceptRequest.rows.some((row) => row.status == "pending")) return res.status(404).json({ message: "Friend request not found." });
-
-                await cassandra.batch([
-                    {
-                        query: `
-                        UPDATE ${cassandra.keyspace}.requests_by_sender
-                        SET status=?
-                        WHERE sender_id=? AND receiver_id=? AND created_at=?
-                        `,
-                        params: ["accepted", senderQuery.rows[0].id, acceptReceiver.id, acceptRequest.rows[0].get("created_at")]
-                    },
-                    {
-                        query: `
-                        UPDATE ${cassandra.keyspace}.requests_by_receiver
-                        SET status=?
-                        WHERE sender_id=? AND receiver_id=? AND created_at=?
-                        `,
-                        params: ["accepted", senderQuery.rows[0].id, acceptReceiver.id, acceptRequest.rows[0].get("created_at")]
-                    }
-                ], { prepare: true });
-
-                const acceptSender = await cassandra.execute(`
-                SELECT * FROM ${cassandra.keyspace}.users
-                WHERE id=?
-                LIMIT 1;
-                `, [senderQuery.rows[0].get("id")], { prepare: true });
-
-                var relationship = { sender_id: senderQuery.rows[0].get("id"), sender: Generator.stripUserInfo(acceptSender.rows[0] as unknown as User), receiver_id: acceptReceiver.id, receiver: Generator.stripUserInfo(acceptReceiver), status: "accepted", created_at: acceptRequest.rows[0].get("created_at") };
-
-                WsHandler.sockets.get(senderQuery.rows[0].get("id"))?.send(JSON.stringify({ op: OpCodes.RELATIONSHIP_UPDATE, data: relationship }));
-
-                return res.status(200).json({ relationship });
+                return await handleAccept(req, res, query);
             case "reject":
-                const rejectSender = req.body.user as any;
-                const receiverQuery = await cassandra.execute(`
-                        SELECT * 
-                        FROM ${cassandra.keyspace}.users_by_username_and_discriminator
-                        WHERE username=? AND discriminator=?
-                        LIMIT 1;
-                    `, [query[0], parseInt(query[1])], { prepare: true });
-
-                if (receiverQuery.rowLength < 1) return res.status(404).json({ message: "Oops, looks like this user does not exist anymore. Maybe they were banned?" });
-
-                const rejectRequest = await cassandra.execute(`
-                        SELECT *
-                        FROM ${cassandra.keyspace}.requests_by_receiver
-                        WHERE sender_id=? AND receiver_id=?
-                        LIMIT 1;
-                    `, [rejectSender.id, receiverQuery.rows[0].get("id")]);
-
-                if (!rejectRequest.rows.some((row) => row.status == "pending")) return res.status(404).json({ message: "Friend request not found." });
-
-                await cassandra.batch([
-                    {
-                        query: `
-                        DELETE FROM ${cassandra.keyspace}.requests_by_sender
-                        WHERE sender_id=? AND receiver_id=? AND created_at=?
-                        `,
-                        params: [rejectSender.id, receiverQuery.rows[0].get("id"), rejectRequest.rows[0].get("created_at")]
-                    },
-                    {
-                        query: `
-                        DELETE FROM ${cassandra.keyspace}.requests_by_receiver
-                        WHERE sender_id=? AND receiver_id=? AND created_at=?
-                        `,
-                        params: [rejectSender.id, receiverQuery.rows[0].get("id"), rejectRequest.rows[0].get("created_at")]
-                    }
-                ], { prepare: true });
-
-                relationship = { sender_id: (rejectSender as unknown as User).id, sender: Generator.stripUserInfo(rejectSender as unknown as User), receiver_id: receiverQuery.rows[0].get("id"), receiver: Generator.stripUserInfo(receiverQuery.rows[0] as unknown as User), status: "rejected", created_at: rejectRequest.rows[0].get("created_at") };
-
-                WsHandler.sockets.get(receiverQuery.rows[0].get("id"))?.send(JSON.stringify({ op: OpCodes.RELATIONSHIP_UPDATE, data: relationship }));
-
-                return res.status(200).json({ relationship });
+                return await handleReject(req, res, query);
         }
     } catch (err) {
         console.log(err);
@@ -177,34 +193,16 @@ router.post("/@me/relationships/:query", Validator.verifyToken, async (req, res)
             message: "You cannot add yourself as a friend :/",
         });
 
-        const receiverQuery = await cassandra.execute(`
-        SELECT * 
-        FROM ${cassandra.keyspace}.users_by_username_and_discriminator
-        WHERE username=? AND discriminator=?
-        LIMIT 1;
-        `, [query[0], parseInt(query[1])], { prepare: true });
+        const receiver = await Collection.users.fetchByUsernameAndDiscrim(query[0], parseInt(query[1]));
 
-        if (receiverQuery.rowLength < 1) return res.status(404).json({
+        if (!receiver) return res.status(404).json({
             message: "A user was not found to add as a friend.",
         });
 
-        const existsQuery1 = await cassandra.execute(`
-        SELECT * 
-        FROM ${cassandra.keyspace}.requests_by_sender
-        WHERE receiver_id=? AND sender_id=?
-        LIMIT 1;
-        `, [sender.id, receiverQuery.rows[0].get("id")], { prepare: true });
+        const existsBySender = await Collection.requests.fetchSenderRequest(sender.id, receiver.id);
+        const existsByReceiver = await Collection.requests.fetchSenderRequest(receiver.id, sender.id);
 
-        const existsQuery2 = await cassandra.execute(`
-        SELECT * 
-        FROM ${cassandra.keyspace}.requests_by_receiver
-        WHERE receiver_id=? AND sender_id=?
-        LIMIT 1;
-        `, [receiverQuery.rows[0].get("id"), sender.id]);
-
-        console.log(existsQuery1.rows, existsQuery2.rows);
-
-        if (existsQuery1.rowLength > 0 || existsQuery2.rowLength > 0) return res.status(409).json({ message: "Friend request already sent." });
+        if (existsBySender || existsByReceiver) return res.status(409).json({ message: "Friend request already sent." });
 
         const currentDate = new Date();
 
@@ -215,28 +213,20 @@ router.post("/@me/relationships/:query", Validator.verifyToken, async (req, res)
                 sender_id, receiver_id, status, created_at
             ) VALUES (?, ?, ?, ?); 
             `,
-                params: [sender.id, receiverQuery.rows[0].get("id"), "pending", currentDate],
+                params: [sender.id, receiver.id, "pending", currentDate],
             }, {
                 query: `
             INSERT INTO ${cassandra.keyspace}.requests_by_receiver (
                 sender_id, receiver_id, status, created_at
             ) VALUES (?, ?, ?, ?); 
             `,
-                params: [sender.id, receiverQuery.rows[0].get("id"), "pending", currentDate],
+                params: [sender.id, receiver.id, "pending", currentDate],
             }
         ], { prepare: true })
 
+        const relationship = { sender_id: sender.id, sender: sender, receiver_id: receiver.id, receiver: receiver, status: "pending", created_at: currentDate };
 
-        const receiver = await cassandra.execute(`
-        SELECT *
-        FROM ${cassandra.keyspace}.users
-        WHERE id=?
-        LIMIT 1;
-        `, [receiverQuery.rows[0].get("id")], { prepare: true });
-
-        const relationship = { sender_id: sender.id, sender: sender, receiver_id: receiverQuery.rows[0].get("id"), receiver: receiver.rows[0], status: "pending", created_at: currentDate };
-
-        WsHandler.sockets.get(receiverQuery.rows[0].get("id"))?.send(JSON.stringify({ op: OpCodes.RELATIONSHIP_UPDATE, data: relationship }));
+        WsHandler.sockets.get(receiver.id)?.send(JSON.stringify({ op: OpCodes.RELATIONSHIP_UPDATE, data: relationship }));
 
         return res.status(201).json({ relationship });
     } catch (err) {
@@ -244,5 +234,18 @@ router.post("/@me/relationships/:query", Validator.verifyToken, async (req, res)
         res.status(500).json({ message: "Something went wrong 0_0. Try again later." });
     }
 });
+
+router.delete("/@me/relationships/:query", Validator.verifyToken, async (req, res) => {
+    try {
+        const query = req.params.query.split('-');
+        if (query.length < 2 || query.length > 2) return res.status(401).json({ message: "Invalid query." });
+        if (isNaN(parseInt(query[1]))) return res.status(401).json({ message: "Discriminator must be a number." });
+        await handleDelete(req, res, query);
+    } catch (err) {
+        console.log(err);
+        res.status(500).json({ message: "Something went wrong on our side... You should try again maybe?" });
+    }
+});
+
 
 export default router;
