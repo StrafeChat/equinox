@@ -11,6 +11,6 @@ CREATE TABLE IF NOT EXISTS {keyspace}.rooms (
     total_messages_sent INT,
     type INT,
     created_at TIMESTAMP,
-    edited_at TIMESTAMP
+    edited_at TIMESTAMP,
     PRIMARY KEY((id), edited_at)
-) CLUSTERING ORDER BY (edited_at DESC);
+) WITH CLUSTERING ORDER BY (edited_at DESC);
