@@ -5,4 +5,5 @@ export enum OpCodes {
     IDENTIFY = 2,
     DISPATCH = 3,
     RELATIONSHIP_UPDATE = 4,
+    PRESENCE_UPDATE = 5
 }

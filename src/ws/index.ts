@@ -5,6 +5,7 @@ import { Validator } from "../utility/Validator";
 import { User } from "../interfaces/User";
 import { Generator } from "../utility/Generator";
 import { cassandra } from "..";
+import { Collection } from "../utility/Collection";
 
 export class WsHandler {
 
@@ -12,14 +13,14 @@ export class WsHandler {
     public static sockets = new Map<string, WebSocket>();
 
     constructor(server: Server) {
-        const wss = new WebSocketServer({ server }); // WebSocketServer({ server, path: "/events" }); :pleading_face:
+        const wss = new WebSocketServer({ server, path: "/events" });
 
         wss.on("connection", (client) => {
             WsHandler.clients.set(client, {
                 timer: setTimeout(async () => {
                     client.close(
                         4008,
-                        "You couldn't keep up with strafe, please try reconnecting."
+                        "Sorry we couldn't find your dad, please try reconnecting."
                     );
                 }, parseInt(process.env.HEARTBEAT_INTERVAL!) + 1000), user: null
             });
@@ -45,7 +46,6 @@ export class WsHandler {
                                     4008,
                                     "You couldn't keep up with strafe, please try reconnecting."
                                 );
-
                                 const user = WsHandler.clients.get(client)?.user;
                                 const timer = WsHandler.clients.get(client)?.timer;
                                 if (timer) clearTimeout(timer);
@@ -71,13 +71,55 @@ export class WsHandler {
 
                         WsHandler.sockets.set((res.user as unknown as User).id, client);
 
+                        const friendList = [];
+                        friendList.push(...await Collection.requests.fetchManyReceiverRequests(res.user?.get("id")));
+                        friendList.push(...await Collection.requests.fetchManySenderRequests(res.user?.get("id")));
+
+                        for (const friend of friendList) {
+                            const userId = res.user?.get("id") == friend.receiver_id ? friend.sender_id : friend.receiver_id;
+                            const friendSocket = WsHandler.sockets.get(userId);
+                            if (friendSocket) this.send(friendSocket, { op: OpCodes.PRESENCE_UPDATE, data: { ...res.user?.get("presence"), user_id: res.user?.get("id") } })
+                        }
+
                         this.send(client, { op: OpCodes.DISPATCH, data: Generator.stripUserInfo(res.user as unknown as User), event: "READY" })
+                        break;
+                    case OpCodes.PRESENCE_UPDATE:
+                        const user = WsHandler.clients.get(client)!.user;
+                        const friends = [];
+                        console.log(user);
+                        if (user) {
+                            await cassandra.execute(`
+                            UPDATE ${cassandra.keyspace}.users
+                            SET presence=?
+                            WHERE id=? AND created_at=?
+                            `, [{ ...user.presence, ...data }, user.id, user.created_at], { prepare: true });
+
+                            friends.push(...await Collection.requests.fetchManyReceiverRequests(user.id));
+                            friends.push(...await Collection.requests.fetchManySenderRequests(user.id));
+
+                            for (const friend of friends) {
+                                const userId = user.id == friend.receiver_id ? friend.sender_id : friend.receiver_id;
+                                const friendSocket = WsHandler.sockets.get(userId);
+                                if (friendSocket) this.send(friendSocket, { op: OpCodes.PRESENCE_UPDATE, data: { ...user.presence, status: data.status, status_text: data.status_text ?? user.presence.status_text, user_id: user.id } })
+                            }
+                        }
                         break;
                 }
             });
 
             client.on("close", async () => {
+                const user = WsHandler.clients.get(client)?.user;
+                if (user) {
+                    const friendList = [];
+                    friendList.push(...await Collection.requests.fetchManyReceiverRequests(user.id));
+                    friendList.push(...await Collection.requests.fetchManySenderRequests(user.id));
 
+                    for (const friend of friendList) {
+                        const userId = user.id == friend.receiver_id ? friend.sender_id : friend.receiver_id;
+                        const friendSocket = WsHandler.sockets.get(userId);
+                        if (friendSocket) this.send(friendSocket, { op: OpCodes.PRESENCE_UPDATE, data: { ...user.presence, online: false, user_id: user.id } })
+                    }
+                }
             });
         });
     }

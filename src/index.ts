@@ -9,20 +9,22 @@ import { WsHandler } from "./ws";
 const app = express();
 
 const cassandra = new Client({
-    contactPoints: [process.env.CASSANDRA_CONTACT_POINT!],
-    localDataCenter: process.env.CASSANDRA_DATA_CENTER,
-    keyspace: process.env.CASSANDRA_KEYSPACE
+    contactPoints: [process.env.SCYLLA_CONTACT_POINT1!, process.env.SCYLLA_CONTACT_POINT2!, process.env.SCYLLA_CONTACT_POINT3!],
+    localDataCenter: process.env.SCYLLA_DATA_CENTER,
+    credentials: { username: process.env.SCYLLA_USERNAME!, password: process.env.SCYLLA_PASSWORD! },
+    keyspace: process.env.SCYLLA_KEYSPACE
 })
-const redis = createClient({
-    url: process.env.REDIS_URL,
-});
+
+//const redis = createClient({
+ //   url: process.env.REDIS_URL,
+//});
 
 app.use(bodyParser.json());
 app.use(cors());
 
 try {
     (async () => {
-        await redis.on('error', err => { throw new Error(err) }).connect();
+       // await redis.on('error', err => { throw new Error(err) }).connect();
         await cassandra.connect();
         const server = app.listen(process.env.PORT ?? 443, () => {
             console.log("Listening on port " + process.env.PORT!);
@@ -65,4 +67,4 @@ try {
     console.error(err);
 }
 
-export { cassandra, redis };
+export { cassandra };

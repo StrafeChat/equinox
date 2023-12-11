@@ -239,6 +239,8 @@ router.get("/@me", Validator.verifyToken, (req, res) => {
     res.status(200).json({ user: req.body.user });
 });
 
+router.patch("/@me")
+
 router.delete("/@me/relationships/:query", Validator.verifyToken, async (req, res) => {
     try {
         const query = req.params.query.split('-');
