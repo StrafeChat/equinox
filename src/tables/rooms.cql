@@ -9,6 +9,7 @@ CREATE TABLE IF NOT EXISTS {keyspace}.rooms (
     recipients SET<TEXT>,
     topic TEXT,
     total_messages_sent INT,
+    last_message_id TEXT,
     type INT,
     created_at TIMESTAMP,
     edited_at TIMESTAMP,

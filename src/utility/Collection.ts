@@ -8,7 +8,7 @@ export class Collection {
 
     public static users = {
         fetchById: async (id: string) => {
-            return await Collection.fetchById("users", id);
+            return await Collection.fetchById<User>("users", id);
         },
         fetchByUsernameAndDiscrim: async (username: string, discriminator: number) => {
             const execute = await cassandra.execute(`
@@ -19,7 +19,7 @@ export class Collection {
 
             if (execute.rowLength < 1) return null;
 
-            return await Collection.fetchById("users", execute.rows[0].get("id"));
+            return await Collection.fetchById<User>("users", execute.rows[0].get("id"));
         },
         fetchByEmail: async (email: string) => {
             const execute = await cassandra.execute(`
@@ -30,7 +30,7 @@ export class Collection {
 
             if (execute.rowLength < 1) return null;
 
-            return await Collection.fetchById("users", execute.rows[0].get("id"));
+            return await Collection.fetchById<User>("users", execute.rows[0].get("id"));
         }
     };
 
@@ -77,7 +77,7 @@ export class Collection {
 
     public static rooms = {
         fetchById: async (id: string) => {
-            return await this.fetchById("rooms", id);
+            return await this.fetchById<Room>("rooms", id);
         },
         fetchByUserId: async (userId: string) => {
             const execution = await cassandra.execute(`
@@ -99,24 +99,24 @@ export class Collection {
                 const recipientsTransformer: Partial<User>[] = [];
 
                 for (const recipient of recipients) {
-                    const user = await this.fetchById("users", recipient);
+                    const user = await this.fetchById<User>("users", recipient);
                     if (user) recipientsTransformer.push(Generator.stripUserInfo(user));
                 }
 
-                rooms.push({ ...await this.fetchById("rooms", room.get("room_id")), recipients: [...recipientsTransformer] } as unknown as Room);
+                rooms.push({ ...await this.fetchById<Room>("rooms", room.get("room_id")), recipients: [...recipientsTransformer] } as unknown as Room);
             }
 
             return rooms;
         }
     }
 
-    private static async fetchById(table: string, id: string) {
+    private static async fetchById<T>(table: string, id: string) {
         const exeuction = await cassandra.execute(`
         SELECT * FROM ${cassandra.keyspace}.${table}
         WHERE id=?
         LIMIT 1;
         `, [id], { prepare: true });
 
-        return exeuction.rowLength < 1 ? null : exeuction.rows[0] as unknown as User;
+        return exeuction.rowLength < 1 ? null : exeuction.rows[0] as unknown as T;
     }
 }
