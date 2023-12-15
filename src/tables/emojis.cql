@@ -3,5 +3,6 @@ CREATE TABLE IF NOT EXISTS {keyspace}.emojis (
     name TEXT,
     roles SET<TEXT>,
     user_id TEXT,
-    animated BOOLEAN
+    animated BOOLEAN,
+    PRIMARY KEY (id)
 );
