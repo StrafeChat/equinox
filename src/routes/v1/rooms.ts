@@ -99,7 +99,7 @@ router.get("/:roomId/messages", Validator.verifyToken, async (req, res) => {
     WHERE room_id=? AND id${after ? '>' : '<'}?
     ORDER BY id DESC
     LIMIT ?;
-  `, [req.params.roomId, after ?? before, limit], { prepare: true });  
+  `, [req.params.roomId, after ?? before, limit], { prepare: true });
 
     if (data.rowLength < 1) return res.status(404).json({ message: "There are no messages in this channel" });
 

@@ -23,4 +23,4 @@ CREATE TABLE IF NOT EXISTS {keyspace}.messages (
     components SET<FROZEN<message_component>>,
     stickers SET<TEXT>,
     PRIMARY KEY((id), created_at)
-) WITH CLUSTERING ORDER BY(created_at DESC);
+) WITH CLUSTERING ORDER BY(created_at ASC);
