@@ -19,7 +19,7 @@ const cassandra = new Client({
  //   url: process.env.REDIS_URL,
 //});
 
-app.use(bodyParser.json());
+app.use(bodyParser.json({limit: "25mb"}));
 app.use(cors());
 
 try {

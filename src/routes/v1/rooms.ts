@@ -45,7 +45,8 @@ router.get("/:roomId/messages", Validator.verifyToken, async (req, res) => {
 
 router.post("/:roomId/messages", Validator.verifyToken, async (req, res) => {
     try {
-        if (!req.body.content || req.body.content.trim() == '') return res.status(400).json({ message: "At the moment, content is required for messages." });
+        const { content, reference_id } = req.body;
+        if (!content || content.trim() == '') return res.status(400).json({ message: "At the moment, content is required for messages." });
 
         const room = await Collection.rooms.fetchById(req.params.roomId);
         if (!room) return res.status(404).json({ message: "The room you are trying to send a message in does not exist." });
@@ -59,10 +60,21 @@ router.post("/:roomId/messages", Validator.verifyToken, async (req, res) => {
                     status: "Sent"
                 });
 
+                if (reference_id) {
+                    const result = await cassandra.execute(`
+                    SELECT * FROM ${cassandra.keyspace}.messages_by_room
+                    WHERE id=? AND room_id=?
+                    LIMIT 1;
+                    `, [reference_id, req.params.roomId]);
+
+                    if (result.rowLength < 1) return res.status(404).json({ message: "The message you were trying to reply to does not exist in this room." });
+                }
+
                 const data = {
                     id,
                     room_id: room.id,
                     author_id: req.body.user.id,
+                    message_reference_id: reference_id ?? null,
                     content: req.body.content,
                     created_at: currentTimestamp,
                     edited_at: null,
@@ -74,7 +86,7 @@ router.post("/:roomId/messages", Validator.verifyToken, async (req, res) => {
                     embeds: [],
                     reactions: [],
                     pinned: false,
-                    type: 0
+                    type: 0,
                 };
 
                 const keys = Object.keys(data);

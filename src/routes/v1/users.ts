@@ -239,7 +239,38 @@ router.get("/@me", Validator.verifyToken, (req, res) => {
     res.status(200).json({ user: req.body.user });
 });
 
-router.patch("/@me")
+router.patch("/@me", Validator.verifyToken, async (req, res) => {
+    try {
+        const { username, avatar } = req.body;
+        if (!username) return res.status(401).json({ message: "You must specify what you are trying to update." });
+
+        const token = Generator.token(req.body.user.id, req.body.user.last_pass_reset, req.body.user.secret);
+        
+        if (avatar) {
+            await fetch(`${process.env.CDN}/avatars`, {
+                method: "PATCH",
+                headers: {
+                    "Content-Type": "application/json",
+                    "Authorization": token
+                },
+                body: JSON.stringify({
+                    data: avatar.replace(/^data:image\/(png|jpeg|jpg|gif|webp);base64,/, '')
+                })
+            });
+        }
+
+        await cassandra.execute(`
+        UPDATE ${cassandra.keyspace}.users
+        SET username=?
+        WHERE id=? and created_at=?
+        `, [username, req.body.user.id, req.body.user.created_at], { prepare: true });
+
+        return res.status(200).json({ ...req.body.user, username });
+    } catch (err) {
+        console.log(err);
+        return res.status(500).json({ message: "Oops" });
+    }
+});
 
 router.delete("/@me/relationships/:query", Validator.verifyToken, async (req, res) => {
     try {

@@ -41,8 +41,6 @@ router.post("/register", async (req, res) => {
         const insertEntries = Object.entries({
             id, email, username, global_name, locale, discriminator, dob, secret, last_pass_reset,
             password: hashedPass,
-            avatar: Buffer.from(Buffer.from(id + "_avatar").toString("hex")).toString("base64url"),
-            banner: Buffer.from(Buffer.from(id + "_banner").toString("hex")).toString("base64url"),
             bot: false,
             system: false,
             mfa_enabled: false,
@@ -87,9 +85,9 @@ router.post("/register", async (req, res) => {
 
         fs.readdir("avatars", (err, files) => {
             if (files.length < 1) throw new Error("No default avatars exist in the avatars directory.");
-            fs.readFile(`avatars/avatar${Math.floor(Math.random() * (files.length - 1 + 1)) + 1}.png`, async (err, data) => {
+            fs.readFile(`avatars/avatar${Math.floor(Math.random() * (files.length - 1 + 1)) + 1}.png`, async (_err, data) => {
                 await fetch(`${process.env.CDN}/avatars`, {
-                    method: "POST",
+                    method: "PATCH",
                     headers: {
                         "Content-Type": "application/json",
                         "Authorization": token
