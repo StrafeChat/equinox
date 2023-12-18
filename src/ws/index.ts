@@ -1,4 +1,4 @@
-import { Server } from "http";
+import { Server } from "https";
 import { WebSocket, WebSocketServer } from "ws";
 import { OpCodes } from "./OpCodes";
 import { Validator } from "../utility/Validator";
