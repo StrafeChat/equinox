@@ -1,4 +1,3 @@
-import { Server } from "https";
 import { WebSocket, WebSocketServer } from "ws";
 import { OpCodes } from "./OpCodes";
 import { Validator } from "../utility/Validator";
@@ -6,13 +5,15 @@ import { User } from "../interfaces/User";
 import { Generator } from "../utility/Generator";
 import { cassandra } from "..";
 import { Collection } from "../utility/Collection";
+import http from "http";
+import https from "https";
 
 export class WsHandler {
 
     public static clients = new Map<WebSocket, { timer: NodeJS.Timeout | null; user: User | null }>();
     public static sockets = new Map<string, WebSocket>();
 
-    constructor(server: Server) {
+    constructor(server: http.Server | https.Server) {
         const wss = new WebSocketServer({ server, path: "/events" });
 
         wss.on("connection", (client) => {
