@@ -1,5 +1,6 @@
 CREATE TABLE IF NOT EXISTS {keyspace}.users (
     id TEXT,
+    about TEXT,
     accent_color INT,
     avatar TEXT,
     avatar_decoration TEXT,

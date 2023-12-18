@@ -69,6 +69,8 @@ export class WsHandler {
 
                         res.user!.presence.online = true;
 
+                        console.log("SET!");
+
                         WsHandler.sockets.set((res.user as unknown as User).id, client);
 
                         const friendList = [];

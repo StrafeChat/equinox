@@ -1,6 +1,5 @@
 require('dotenv').config();
-import { Client, auth } from "cassandra-driver";
-import { createClient } from 'redis';
+import { Client } from "cassandra-driver";
 import express from "express";
 import fs from "fs";
 import bodyParser from "body-parser";
@@ -16,15 +15,15 @@ const cassandra = new Client({
 })
 
 //const redis = createClient({
- //   url: process.env.REDIS_URL,
+//   url: process.env.REDIS_URL,
 //});
 
-app.use(bodyParser.json({limit: "25mb"}));
+app.use(bodyParser.json({ limit: "25mb" }));
 app.use(cors());
 
 try {
     (async () => {
-       // await redis.on('error', err => { throw new Error(err) }).connect();
+        // await redis.on('error', err => { throw new Error(err) }).connect();
         await cassandra.connect();
         const server = app.listen(process.env.PORT ?? 443, () => {
             console.log("Listening on port " + process.env.PORT!);
@@ -53,7 +52,7 @@ try {
             await cassandra.execute(query);
         }
 
-        for(const materialView of materialViews) {
+        for (const materialView of materialViews) {
             const query = fs.readFileSync(`src/material_views/${materialView}`).toString("utf-8").replaceAll("{keyspace}", cassandra.keyspace);
             await cassandra.execute(query);
         }

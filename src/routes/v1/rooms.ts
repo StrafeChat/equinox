@@ -207,4 +207,9 @@ router.delete("/:roomId/messages/:messageId", Validator.verifyToken, async (req,
     }
 });
 
+router.put("/:roomId/messages/:messageId/reactions/:emoji", Validator.verifyToken, async (req, res) => {
+    const { roomId, messageId, emoji } = req.params;
+    return res.status(501).json({ message: "This route is not implemented yet." });
+});
+
 export default router;

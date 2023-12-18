@@ -242,12 +242,12 @@ router.get("/@me", Validator.verifyToken, (req, res) => {
 router.patch("/@me", Validator.verifyToken, async (req, res) => {
     try {
         const { username, avatar } = req.body;
-        if (!username) return res.status(401).json({ message: "You must specify what you are trying to update." });
+        if (!username && !avatar) return res.status(401).json({ message: "You must specify what you are trying to update." });
 
         const token = Generator.token(req.body.user.id, req.body.user.last_pass_reset, req.body.user.secret);
-        
+
         if (avatar) {
-            await fetch(`${process.env.CDN}/avatars`, {
+            const response = await fetch(`${process.env.CDN}/avatars`, {
                 method: "PATCH",
                 headers: {
                     "Content-Type": "application/json",
@@ -257,15 +257,42 @@ router.patch("/@me", Validator.verifyToken, async (req, res) => {
                     data: avatar.replace(/^data:image\/(png|jpeg|jpg|gif|webp);base64,/, '')
                 })
             });
+
+            if (!response.ok) return res.status(400).json({ message: "Something went wrong." });
+
+            const data = await response.json();
+
+            req.body.user.avatar = data.hash;
+        }
+
+        if (username) {
+            await cassandra.execute(`
+            UPDATE ${cassandra.keyspace}.users
+            SET username=?
+            WHERE id=? and created_at=?
+            `, [username, req.body.user.id, req.body.user.created_at], { prepare: true });
+            req.body.user.username = username;
         }
 
         await cassandra.execute(`
-        UPDATE ${cassandra.keyspace}.users
-        SET username=?
-        WHERE id=? and created_at=?
-        `, [username, req.body.user.id, req.body.user.created_at], { prepare: true });
+        SELECT * FROM ${cassandra.keyspace}.requests_by_receiver
+        WHERE receiver_id=?
+        `, [req.body.user.id]).then((request) => {
+            for (const row of request.rows) {
+                WsHandler.sockets.get(row.get("sender_id"))?.send(JSON.stringify({ op: OpCodes.DISPATCH, data: { ...req.body.user }, event: "USER_UPDATE" }))
+            }
+        });
 
-        return res.status(200).json({ ...req.body.user, username });
+        await cassandra.execute(`
+        SELECT * FROM ${cassandra.keyspace}.requests_by_sender
+        WHERE sender_id=?
+        `, [req.body.user.id]).then((request) => {
+            for (const row of request.rows) {
+                WsHandler.sockets.get(row.get("receiver_id"))?.send(JSON.stringify({ op: OpCodes.DISPATCH, data: { ...req.body.user }, event: "USER_UPDATE" }))
+            }
+        });
+
+        return res.status(200).json({ ...req.body.user });
     } catch (err) {
         console.log(err);
         return res.status(500).json({ message: "Oops" });
@@ -295,17 +322,15 @@ router.post("/@me/rooms", Validator.verifyToken, async (req, res) => {
             case 0:
                 const execution = await cassandra.execute(`
                 SELECT * FROM ${cassandra.keyspace}.room_recipients_by_user
-                WHERE recipients CONTAINS ?
-                LIMIT 1;
-                `, [req.body.user.id]);
+                WHERE recipients CONTAINS ? AND recipients CONTAINS ?
+                LIMIT 1 ALLOW FILTERING;
+                `, [req.body.user.id, req.body.recipientId], { prepare: true });
 
                 if (execution.rowLength > 0) return res.status(401).json({ message: "You already have a pm with this user." });
 
                 const id = Generator.snowflake.generate();
 
                 const recipients = [req.body.user.id, req.body.recipientId];
-
-                console.log(recipients);
 
                 await cassandra.batch([
                     {

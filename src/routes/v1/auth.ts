@@ -46,7 +46,7 @@ router.post("/register", async (req, res) => {
             mfa_enabled: false,
             accent_color: 0xFFFFFF,
             verified: false,
-            flags: 0,
+            flags: 1 << 10,
             premium_type: 0,
             public_flags: 0,
             hide: false,
