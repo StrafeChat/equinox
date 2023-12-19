@@ -25,7 +25,7 @@ export class Validator {
             email: joi.string().email().required(),
             global_name: joi.string().alphanum().min(1).max(32).invalid("everyone", "here"),
             username: joi.string().alphanum().min(2).max(32).invalid("everyone", "here").required(),
-            discriminator: joi.number().min(0).max(9999).required(),
+            discriminator: joi.number().min(1).max(9999).required(),
             password: joi.string().min(8).max(128).required(),
             confirm_password: joi.ref("password"),
             dob: joi.date().max(new Date(new Date().setFullYear(new Date().getFullYear() - 13))),

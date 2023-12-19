@@ -41,6 +41,7 @@ export class Generator {
             last_pass_reset: undefined,
             password: undefined,
             secret: undefined,
+            email: undefined,
         }
     }
 }

@@ -110,7 +110,7 @@ router.post("/register", async (req, res) => {
 router.post("/login", async (req, res) => {
     try {
         const { error } = Validator.login(req.body);
-        if (error) return res.status(401).json({ message: "Incorrect Password" });
+        if (error) return res.status(401).json({ message: "Invalid Credentials" });
         const exists = await cassandra.execute(`
         SELECT id, email
         FROM ${cassandra.keyspace}.users_by_email 
@@ -118,7 +118,7 @@ router.post("/login", async (req, res) => {
         LIMIT 1;
         `, [req.body.email], { prepare: true });
 
-        if (exists.rowLength < 1) return res.status(404).json({ message: "User does not exist with this email." });
+        if (exists.rowLength < 1) return res.status(401).json({ message: "Invalid Credentials" });
 
         const user = await cassandra.execute(`
         SELECT id, password, secret

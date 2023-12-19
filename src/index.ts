@@ -23,11 +23,6 @@ const cassandra = new Client({
 app.use(bodyParser.json({ limit: "25mb" }));
 app.use(cors());
 
-const options = {
-    key: fs.readFileSync('src/ssl/priv.pem'),
-    cert: fs.readFileSync('src/ssl/pub.pem'),
-};
-
 try {
     (async () => {
         // await redis.on('error', err => { throw new Error(err) }).connect();
@@ -36,6 +31,10 @@ try {
         let server: https.Server | http.Server;
 
         if (process.env.ENV == "PROD") {
+            const options = {
+                key: fs.readFileSync('src/ssl/priv.pem'),
+                cert: fs.readFileSync('src/ssl/pub.pem'),
+            };
             server = https.createServer(options, app).listen(process.env.PORT ?? 443, function () {
                 console.log("Listening on port " + process.env.PORT ?? 443);
             });
