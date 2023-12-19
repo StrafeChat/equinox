@@ -4,6 +4,7 @@ import { cassandra } from "../..";
 import { Generator } from "../../utility/Generator";
 import bcrypt from "bcrypt";
 import fs from "fs";
+import staff from "../../resources/staff.json";
 
 const router = Router();
 
