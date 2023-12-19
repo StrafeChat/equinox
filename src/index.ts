@@ -87,4 +87,11 @@ try {
     console.error(err);
 }
 
+process.on("unhandledRejection", (reason, promise) =>
+  console.log(`Unhandled Rejection at: ${promise} reason: ${reason}`)
+);
+process.on("uncaughtException", (err) =>
+  console.log(`Uncaught Exception: ${err}`)
+);
+
 export { cassandra };
