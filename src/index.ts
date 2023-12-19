@@ -79,6 +79,12 @@ try {
 
         new WsHandler(server);
 
+        app.get("/", (_req, res) => {
+            res.redirect("/v1");
+        });
+        app.get("/v1", async (_req, res) => {
+            res.status(200).json({ version: "1.0.0", release: "Early Alpha", ws: "https://api.strafe.chat/events", file_system: "https://nebula.strafe.chat", web_application: "https://web.strafe.chat" });
+        });
         app.use("", (_req, res) => {
             res.status(404).json({ message: "0_o the resource you were looking for was not found!" });
         });
