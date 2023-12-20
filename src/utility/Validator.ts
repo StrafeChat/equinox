@@ -56,7 +56,7 @@ export class Validator {
 
         if (user.rowLength < 1) return res.status(403).json({ message: "Access Denied." });
         if (user.rows[0].get("last_pass_reset") > timestamp || user.rows[0].get("secret") != secret) return res.status(403).json({ message: "Access Denied." });
-        req.body.user = user.rows[0];
+        (req as any).user = user.rows[0];
         next();
     }
 

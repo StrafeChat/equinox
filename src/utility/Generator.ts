@@ -33,6 +33,16 @@ export class Generator {
         return result;
     }
 
+    public static stripSpecific<T>(data: any, keys: (keyof T)[]): Partial<T> {
+        const strippedData: Partial<T> = { ...data };
+
+        for (const key of keys) {
+            if (strippedData[key]) strippedData[key] = undefined;
+        }
+
+        return strippedData;
+    }
+
     public static stripUserInfo(info: User) {
         return {
             ...info,
