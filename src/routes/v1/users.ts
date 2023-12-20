@@ -276,8 +276,8 @@ router.patch("/@me", Validator.verifyToken, async (req, res) => {
 
         await cassandra.execute(`
         SELECT * FROM ${cassandra.keyspace}.requests_by_receiver
-        WHERE receiver_id=?
-        `, [(req as any).user.id]).then((request) => {
+        WHERE receiver_id=?;
+        `, [(req as any).user.id], { prepare: true }).then((request) => {
             for (const row of request.rows) {
                 WsHandler.sockets.get(row.get("sender_id"))?.send(JSON.stringify({ op: OpCodes.DISPATCH, data: { ...(req as any).user.id }, event: "USER_UPDATE" }))
             }
@@ -285,8 +285,8 @@ router.patch("/@me", Validator.verifyToken, async (req, res) => {
 
         await cassandra.execute(`
         SELECT * FROM ${cassandra.keyspace}.requests_by_sender
-        WHERE sender_id=?
-        `, [(req as any).user.id]).then((request) => {
+        WHERE sender_id=?;
+        `, [(req as any).user.id], { prepare: true }).then((request) => {
             for (const row of request.rows) {
                 WsHandler.sockets.get(row.get("receiver_id"))?.send(JSON.stringify({ op: OpCodes.DISPATCH, data: { ...(req as any).user.id }, event: "USER_UPDATE" }))
             }

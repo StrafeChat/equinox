@@ -91,11 +91,30 @@ router.post("/:roomId/messages", Validator.verifyToken, async (req, res) => {
 
                 const keys = Object.keys(data);
 
-                await cassandra.execute(`
-                INSERT INTO ${cassandra.keyspace}.messages (
-                    ${keys.join(", ")}
-                ) VALUES (${keys.map(() => '?').join(", ")});
-                `, keys.map((key) => (data as any)[key]), { prepare: true });
+                // await cassandra.execute(`
+                // INSERT INTO ${cassandra.keyspace}.messages (
+                //     ${keys.join(", ")}
+                // ) VALUES (${keys.map(() => '?').join(", ")});
+                // `, keys.map((key) => (data as any)[key]), { prepare: true });
+
+                await cassandra.batch([
+                    {
+                        query: `
+                        INSERT INTO ${cassandra.keyspace}.messages (
+                            ${keys.join(", ")}
+                        ) VALUES(${keys.map(() => '?').join(", ")});
+                        `,
+                        params: keys.map((key) => (data as any)[key])
+                    },
+                    {
+                        query: `
+                        UPDATE ${cassandra.keyspace}.rooms
+                        SET last_message_id=?
+                        WHERE id=? AND created_at=?;
+                        `,
+                        params: [data.id, data.room_id, room.created_at]
+                    }
+                ], { prepare: true });
 
                 let author: Partial<User>;
 
