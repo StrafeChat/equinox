@@ -79,7 +79,7 @@ try {
             await cassandra.execute(query);
         }
 
-        new WsHandler(server);
+        new WsHandler();
 
         app.get("/", (_req, res) => {
             res.redirect("/v1");

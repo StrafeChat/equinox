@@ -5,15 +5,13 @@ import { User } from "../interfaces/User";
 import { Generator } from "../utility/Generator";
 import { cassandra } from "..";
 import { Collection } from "../utility/Collection";
-import http from "http";
-import https from "https";
 
 export class WsHandler {
 
     public static clients = new Map<WebSocket, { timer: NodeJS.Timeout | null; user: User | null }>();
     public static sockets = new Map<string, WebSocket>();
 
-    constructor(server: http.Server | https.Server) {
+    constructor() {
         const wss = new WebSocketServer({ port: parseInt(process.env.WEBSOCKET_PORT!) });
 
         wss.on("connection", (client) => {
