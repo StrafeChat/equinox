@@ -6,7 +6,7 @@ import http from "http";
 import https from "https";
 import bodyParser from "body-parser";
 import cors from "cors";
-import { WsHandler } from "./ws";
+import { WsHandler } from "./stargate";
 const app = express();
 
 const cassandra = new Client({

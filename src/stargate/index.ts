@@ -14,7 +14,7 @@ export class WsHandler {
     public static sockets = new Map<string, WebSocket>();
 
     constructor(server: http.Server | https.Server) {
-        const wss = new WebSocketServer({ server, path: "/events" });
+        const wss = new WebSocketServer({ port: parseInt(process.env.WEBSOCKET_PORT!) });
 
         wss.on("connection", (client) => {
             WsHandler.clients.set(client, {
