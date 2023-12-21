@@ -4,7 +4,6 @@ import { cassandra } from "../..";
 import { Generator } from "../../utility/Generator";
 import bcrypt from "bcrypt";
 import fs from "fs";
-import staff from "../../resources/staff.json";
 
 const router = Router();
 
@@ -110,7 +109,8 @@ router.post("/register", async (req, res) => {
 router.post("/login", async (req, res) => {
     try {
         const { error } = Validator.login(req.body);
-        if (error) return res.status(401).json({ message: "Invalid Credentials" });
+        if (error) return res.status(400).json({ message: error.details[0].message });
+
         const exists = await cassandra.execute(`
         SELECT id, email
         FROM ${cassandra.keyspace}.users_by_email 
@@ -118,7 +118,7 @@ router.post("/login", async (req, res) => {
         LIMIT 1;
         `, [req.body.email], { prepare: true });
 
-        if (exists.rowLength < 1) return res.status(401).json({ message: "Invalid Credentials" });
+        if (exists.rowLength < 1) return res.status(401).json({ message: "A user does not exist with this email." });
 
         const user = await cassandra.execute(`
         SELECT id, password, secret
@@ -130,7 +130,7 @@ router.post("/login", async (req, res) => {
         if (user.rowLength < 1) return res.status(500).json({ message: "Something went very wrong when trying to login, please contact strafe support!" });
 
         const validPass = await bcrypt.compare(req.body.password, user.rows[0].get("password"));
-        if (!validPass) return res.status(401).json({ message: "The password you have entered is incorrect." });
+        if (!validPass) return res.status(400).json({ message: "The password you have entered is incorrect." });
         const token = Generator.token(user.rows[0].get("id"), Date.now(), user.rows[0].get("secret"));
         return res.status(200).json({ token });
     } catch (err) {

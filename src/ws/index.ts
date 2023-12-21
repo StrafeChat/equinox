@@ -37,7 +37,10 @@ export class WsHandler {
                         break;
                     case OpCodes.IDENTIFY:
                         const res = await Validator.token(data.token);
-                        if (res.code) return client.close(res.code, res.message);
+                        if (res.code) {
+                            client.send(JSON.stringify({ op: OpCodes.INVALID_SESSION, data: null }));
+                            return client.close(res.code, res.message);
+                        };
 
                         clearTimeout(WsHandler.clients.get(client)?.timer!);
 
@@ -47,18 +50,16 @@ export class WsHandler {
                                     4008,
                                     "You couldn't keep up with strafe, please try reconnecting."
                                 );
-                                const user = WsHandler.clients.get(client)?.user;
                                 const timer = WsHandler.clients.get(client)?.timer;
                                 if (timer) clearTimeout(timer);
 
-                                if (user) {
-                                    await cassandra.execute(`
+                                await cassandra.execute(`
                                  UPDATE ${cassandra.keyspace}.users
                                  SET presence=?
                                  WHERE id=? AND created_at=? 
-                                 `, [{ status: user.presence.status, status_text: user.presence.status_text, online: false }, user.id, user.created_at], { prepare: true });
-                                    WsHandler.clients.delete(client);
-                                }
+                                 `, [{ status: res.user!.presence.status, status_text: res.user!.presence.status_text, online: false }, res.user!.id, res.user!.created_at], { prepare: true });
+
+                                WsHandler.clients.delete(client);
                             }, parseInt(process.env.HEARTBEAT_INTERVAL!) + 1000), user: res.user as unknown as User
                         });
 
