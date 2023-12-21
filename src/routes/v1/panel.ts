@@ -46,8 +46,8 @@ router.post("/auth", async (req, res) => {
 });
 
 router.get("/@me", Validator.verifyToken, (req, res) => {
-    if (!staff.includes((req as any).user.id)) return res.status(401).json({ message: "Not Authorized" });
-    res.status(200).json({ ...(req as any).user });
+    if (!staff.includes(req.user!.id)) return res.status(401).json({ message: "Not Authorized" });
+    res.status(200).json({ ...req.user });
 });
 
 router.get("/users/:id", Validator.verifyToken, async (req, res) => {
@@ -68,7 +68,7 @@ router.get("/users/:id", Validator.verifyToken, async (req, res) => {
 
 router.patch("/users/:userId", Validator.verifyToken, async (req, res) => {
     try {
-        if (!staff.includes((req as any).user.id)) return res.status(401).json({ message: "Not Authorized" });
+        if (!staff.includes(req.user!.id)) return res.status(401).json({ message: "Not Authorized" });
 
         const user = await cassandra.execute(`
         SELECT * FROM ${cassandra.keyspace}.users

@@ -53,7 +53,7 @@ router.post("/:roomId/messages", Validator.verifyToken, async (req, res) => {
 
         switch (room.type) {
             case 0:
-                if (!room.recipients.includes((req as any).user.id)) return res.status(401).json({ message: "You do not have permission to send messages in this room." });
+                if (!room.recipients.includes(req.user!.id)) return res.status(401).json({ message: "You do not have permission to send messages in this room." });
                 const id = Generator.snowflake.generate();
                 const currentTimestamp = Date.now();
                 res.status(202).send({
@@ -73,7 +73,7 @@ router.post("/:roomId/messages", Validator.verifyToken, async (req, res) => {
                 const data = {
                     id,
                     room_id: room.id,
-                    author_id: (req as any).user.id,
+                    author_id: req.user!.id,
                     message_reference_id: reference_id ?? null,
                     content: req.body.content,
                     created_at: currentTimestamp,
@@ -147,7 +147,7 @@ router.patch("/:roomId/messages/:messageId", Validator.verifyToken, async (req, 
         `, [req.params.roomId, req.params.messageId]);
 
         if (messageQuery.rowLength < 1 || messageQuery.rows[0].get("room_id") != req.params.roomId) return res.status(404).json({ message: "The message you were trying to edit does not exist in this room." });
-        if (messageQuery.rows[0].get("author_id") != (req as any).user.id) return res.status(401).json({ message: "You are not the author of the message you are trying to edit!" });
+        if (messageQuery.rows[0].get("author_id") != req.user!.id) return res.status(401).json({ message: "You are not the author of the message you are trying to edit!" });
 
         const editedAt = new Date();
 
@@ -198,7 +198,7 @@ router.delete("/:roomId/messages/:messageId", Validator.verifyToken, async (req,
         `, [req.params.roomId, req.params.messageId]);
 
         if (messageQuery.rowLength < 1 || messageQuery.rows[0].get("room_id") != req.params.roomId) return res.status(404).json({ message: "The message you were trying to delete does not exist in this room." });
-        if (messageQuery.rows[0].get("author_id") != (req as any).user.id) return res.status(401).json({ message: "You are not the author of the message you are trying to delete!" });
+        if (messageQuery.rows[0].get("author_id") != req.user!.id) return res.status(401).json({ message: "You are not the author of the message you are trying to delete!" });
 
         await cassandra.execute(`
         DELETE FROM ${cassandra.keyspace}.messages

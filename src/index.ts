@@ -45,10 +45,10 @@ try {
         }
 
         const versions = fs.readdirSync("src/routes");
-        const types = fs.readdirSync("src/types");
-        const tables = fs.readdirSync("src/tables");
-        const materialViews = fs.readdirSync("src/material_views");
-        const indexes = fs.readdirSync("src/indexes");
+        const types = fs.readdirSync("src/database/types");
+        const tables = fs.readdirSync("src/database/tables");
+        const materialViews = fs.readdirSync("src/database/material_views");
+        const indexes = fs.readdirSync("src/database/indexes");
 
         for (const version of versions) {
             const routes = fs.readdirSync(`src/routes/${version}`);
@@ -58,22 +58,24 @@ try {
         }
 
         for (const type of types) {
-            const query = fs.readFileSync(`src/types/${type}`).toString("utf-8").replace("{keyspace}", cassandra.keyspace);
+            const query = fs.readFileSync(`src/database/types/${type}`).toString("utf-8").replace("{keyspace}", cassandra.keyspace);
             await cassandra.execute(query);
         }
 
         for (const table of tables) {
-            const query = fs.readFileSync(`src/tables/${table}`).toString("utf-8").replace("{keyspace}", cassandra.keyspace);
+            const query = fs.readFileSync(`src/database/tables/${table}`).toString("utf-8").replace("{keyspace}", cassandra.keyspace);
             await cassandra.execute(query);
         }
 
         for (const materialView of materialViews) {
-            const query = fs.readFileSync(`src/material_views/${materialView}`).toString("utf-8").replaceAll("{keyspace}", cassandra.keyspace);
-            await cassandra.execute(query);
+            const queryPath = `src/database/material_views/${materialView}`;
+            const query = fs.readFileSync(queryPath, 'utf-8');
+            const modifiedQuery = query.split('{keyspace}').join(cassandra.keyspace);
+            await cassandra.execute(modifiedQuery);
         }
 
         for (const index of indexes) {
-            const query = fs.readFileSync(`src/indexes/${index}`).toString("utf-8").replace("{keyspace}", cassandra.keyspace);
+            const query = fs.readFileSync(`src/database/indexes/${index}`).toString("utf-8").replace("{keyspace}", cassandra.keyspace);
             await cassandra.execute(query);
         }
 
@@ -94,10 +96,10 @@ try {
 }
 
 process.on("unhandledRejection", (reason, promise) =>
-  console.log(`Unhandled Rejection at: ${promise} reason: ${reason}`)
+    console.log(`Unhandled Rejection at: ${promise} reason: ${reason}`)
 );
 process.on("uncaughtException", (err) =>
-  console.log(`Uncaught Exception: ${err}`)
+    console.log(`Uncaught Exception: ${err}`)
 );
 
 export { cassandra };

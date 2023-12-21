@@ -1,30 +1,30 @@
 import { Request, Response, Router } from "express";
 import { Validator } from "../../utility/Validator";
 import { cassandra } from "../..";
-import { User } from "../../interfaces/User";
 import { WsHandler } from "../../ws";
 import { OpCodes } from "../../ws/OpCodes";
 import { Generator } from "../../utility/Generator";
 import { Collection } from "../../utility/Collection";
 import { Relationship } from "../../interfaces/Request";
+import { User } from "../../interfaces/User";
 const router = Router();
 
 router.get("/@me/relationships", Validator.verifyToken, async (req, res) => {
     try {
         const relationships: Relationship[] = [];
 
-        const sent = await Collection.requests.fetchManySenderRequests((req as any).user.id);
-        const received = await Collection.requests.fetchManyReceiverRequests((req as any).user.id);
+        const sent = await Collection.requests.fetchManySenderRequests(req.user!.id);
+        const received = await Collection.requests.fetchManyReceiverRequests(req.user!.id);
 
         await Promise.all(sent.map(async (relationship) => {
-            relationship.sender = (relationship.sender_id === (req as any).user.id ? Generator.stripUserInfo((req as any).user.id) : await Collection.users.fetchById(relationship.receiver_id));
+            relationship.sender = (relationship.sender_id === req.user!.id ? Generator.stripUserInfo(req.user!) : await Collection.users.fetchById(relationship.receiver_id));
             relationship.receiver = await Collection.users.fetchById(relationship.receiver_id);
             relationships.push(relationship);
         }));
 
         await Promise.all(received.map(async (relationship) => {
             relationship.sender = await Collection.users.fetchById(relationship.sender_id);
-            relationship.receiver = (relationship.receiver_id === (req as any).user.id ? Generator.stripUserInfo((req as any).user.id) : await Collection.users.fetchById(relationship.sender_id));
+            relationship.receiver = (relationship.receiver_id === req.user!.id ? Generator.stripUserInfo(req.user!) : await Collection.users.fetchById(relationship.sender_id));
             relationships.push(relationship);
         }));
 
@@ -35,9 +35,9 @@ router.get("/@me/relationships", Validator.verifyToken, async (req, res) => {
     }
 });
 
-const handleAccept = async (req: Request, res: Response, query: string[]) => {
-    const receiver = (req as any).user.id;
-    const sender = await Collection.users.fetchByUsernameAndDiscrim(query[0], parseInt(query[1]));
+const handleAccept = async (req: Request, res: Response, id: string) => {
+    const receiver = req.user!;
+    const sender = await Collection.users.fetchById(id);
 
     if (!sender) return res.status(404).json({ message: "Oops, looks like this user does not exist anymore. Maybe they were banned?" });
 
@@ -71,14 +71,14 @@ const handleAccept = async (req: Request, res: Response, query: string[]) => {
     return res.status(200).json({ relationship });
 }
 
-const handleReject = async (req: Request, res: Response, query: string[]) => {
-    const userFromQuery = await Collection.users.fetchByUsernameAndDiscrim(query[0], parseInt(query[1]));
+const handleReject = async (req: Request, res: Response, id: string) => {
+    const user = await Collection.users.fetchById(id);
 
-    if (!userFromQuery) return res.status(404).json({ message: "Oops, looks like this user does not exist anymore. Maybe they were banned?" });
+    if (!user) return res.status(404).json({ message: "Oops, looks like this user does not exist anymore. Maybe they were banned?" });
 
-    let request = await Collection.requests.fetchReceiverRequest((req as any).user.id, userFromQuery.id);
+    let request = await Collection.requests.fetchReceiverRequest(req.user!.id, user.id);
 
-    if (!request) request = await Collection.requests.fetchReceiverRequest(userFromQuery.id, (req as any).user.id);
+    if (!request) request = await Collection.requests.fetchReceiverRequest(user.id, req.user!.id);
 
     if (!request || request.status != "pending") return res.status(404).json({ message: "Friend request not found." });
 
@@ -99,19 +99,19 @@ const handleReject = async (req: Request, res: Response, query: string[]) => {
         }
     ], { prepare: true });
 
-    let sender = (req as any).user.id;
-    if (request.sender_id != (req as any).user.id) {
-        sender = await Collection.users.fetchById(userFromQuery.id);
+    let sender = req.user!;
+    if (request.sender_id != req.user!.id) {
+        sender = user;
     }
 
-    let receiver = (req as any).user.id;
-    if (request.receiver_id != (req as any).user.id) {
-        receiver = Collection.users.fetchById(userFromQuery.id);
+    let receiver = req.user!;
+    if (request.receiver_id != req.user!.id) {
+        receiver = user;
     }
 
     const relationship = { sender_id: request.sender_id, sender: Generator.stripUserInfo(sender), receiver_id: request.receiver_id, receiver: Generator.stripUserInfo(receiver), status: "rejected", created_at: request.created_at };
 
-    WsHandler.sockets.get(userFromQuery.id)?.send(JSON.stringify({ op: OpCodes.RELATIONSHIP_UPDATE, data: relationship }));
+    WsHandler.sockets.get(user.id)?.send(JSON.stringify({ op: OpCodes.RELATIONSHIP_UPDATE, data: relationship }));
 
     return res.status(200).json({ relationship });
 }
@@ -121,9 +121,9 @@ const handleDelete = async (req: Request, res: Response, query: string[]) => {
 
     if (!userFromQuery) return res.status(404).json({ message: "Oops, looks like this user does not exist anymore. Maybe they were banned?" });
 
-    let request = await Collection.requests.fetchReceiverRequest((req as any).user.id, userFromQuery.id);
+    let request = await Collection.requests.fetchReceiverRequest(req.user!.id, userFromQuery.id);
 
-    if (!request) request = await Collection.requests.fetchReceiverRequest(userFromQuery.id, (req as any).user.id);
+    if (!request) request = await Collection.requests.fetchReceiverRequest(userFromQuery.id, req.user!.id);
 
     if (!request) return res.status(404).json({ message: "Friend request not found." });
 
@@ -144,14 +144,15 @@ const handleDelete = async (req: Request, res: Response, query: string[]) => {
         }
     ], { prepare: true });
 
-    let sender = (req as any).user.id;
-    if (request.sender_id != (req as any).user.id) {
-        sender = await Collection.users.fetchById(userFromQuery.id);
+    let sender = req.user!;
+    if (request.sender_id != req.user!.id) {
+        sender = (await Collection.users.fetchById(userFromQuery.id))!;
     }
 
-    let receiver = (req as any).user.id;
-    if (request.receiver_id != (req as any).user.id) {
-        receiver = await Collection.users.fetchById(userFromQuery.id);
+    let receiver: User = req.user!;
+
+    if (request.receiver_id != req.user!.id) {
+        receiver = (await Collection.users.fetchById(userFromQuery.id))!;
     }
 
     const relationship = { sender_id: request.sender_id, sender: Generator.stripUserInfo(sender), receiver_id: request.receiver_id, receiver: Generator.stripUserInfo(receiver), status: "deleted", created_at: request.created_at };
@@ -161,19 +162,17 @@ const handleDelete = async (req: Request, res: Response, query: string[]) => {
     return res.status(200).json({ relationship });
 }
 
-router.patch("/@me/relationships/:query", Validator.verifyToken, async (req, res) => {
+router.patch("/@me/relationships/:userId", Validator.verifyToken, async (req, res) => {
     try {
-        const query = req.params.query.split('-');
         const { action } = req.body;
 
-        if (query.length < 2 || query.length > 2) return res.status(401).json({ message: "Invalid query." });
-        if (isNaN(parseInt(query[1]))) return res.status(401).json({ message: "Discriminator must be a number." });
+        if (isNaN(parseInt(req.params.userId))) return res.status(401).json({ message: "The user id does not look right." });
 
         switch (action) {
             case "accept":
-                return await handleAccept(req, res, query);
+                return await handleAccept(req, res, req.params.userId);
             case "reject":
-                return await handleReject(req, res, query);
+                return await handleReject(req, res, req.params.userId);
         }
     } catch (err) {
         console.log(err);
@@ -183,7 +182,7 @@ router.patch("/@me/relationships/:query", Validator.verifyToken, async (req, res
 
 router.post("/@me/relationships/:query", Validator.verifyToken, async (req, res) => {
     try {
-        const sender: User = (req as any).user.id;
+        const sender = req.user!;
         const query = req.params.query.split("-");
 
         if (query.length < 2 || query.length > 2) return res.status(401).json({ message: "Invalid query." });
@@ -236,17 +235,16 @@ router.post("/@me/relationships/:query", Validator.verifyToken, async (req, res)
 });
 
 router.get("/@me", Validator.verifyToken, (req, res) => {
-    res.status(200).json({ user: (req as any).user.id });
+    res.status(200).json({ user: req.user! });
 });
 
 router.patch("/@me", Validator.verifyToken, async (req, res) => {
     try {
-        const { username, avatar } = req.body;
-        if (!username && !avatar) return res.status(401).json({ message: "You must specify what you are trying to update." });
-
-        const token = Generator.token((req as any).user.id, (req as any).user.last_pass_reset, (req as any).user.secret);
+        const { username, discriminator, avatar, global_name } = req.body;
+        if (!username && !avatar && !discriminator && !global_name) return res.status(401).json({ message: "You must specify what you are trying to update." });
 
         if (avatar) {
+            const token = Generator.token(req.user!.id, req.user!.last_pass_reset.getTime(), req.user!.secret);
             const response = await fetch(`${process.env.CDN}/avatars`, {
                 method: "PATCH",
                 headers: {
@@ -262,37 +260,79 @@ router.patch("/@me", Validator.verifyToken, async (req, res) => {
 
             const data = await response.json();
 
-            (req as any).user.avatar = data.hash;
+            req.user!.avatar = data.hash;
         }
 
-        if (username) {
-            await cassandra.execute(`
-            UPDATE ${cassandra.keyspace}.users
-            SET username=?
-            WHERE id=? and created_at=?
-            `, [username, (req as any).user.id, (req as any).user.created_at], { prepare: true });
-            (req as any).user.username = username;
+        if (username || discriminator) {
+            console.log(global_name);
+            const usernameToInsert = username ?? req.user.username;
+            const discriminatorToInsert = isNaN(parseInt(`${discriminator}`)) ? req.user.discriminator : parseInt(`${discriminator}`);
+
+            if (username != req.user.username || discriminator != req.user.discriminator) {
+                const update = [usernameToInsert, discriminatorToInsert];
+
+                if (global_name && global_name != req.user.global_name) update.push(global_name);
+                update.push(req.user!.id, req.user!.created_at);
+
+                await cassandra.batch([
+                    {
+                        query: `
+                        UPDATE ${cassandra.keyspace}.users
+                        SET username=?, discriminator=?${global_name ? (global_name != req.user.global_name ? ", global_name=?" : '') : ''}
+                        WHERE id=? AND created_at=?;
+                        `,
+                        params: update
+                    },
+                    {
+                        query: `
+                        DELETE FROM ${cassandra.keyspace}.users_by_username_and_discriminator
+                        WHERE username=? AND discriminator=?;
+                        `,
+                        params: [req.user!.username, req.user!.discriminator]
+                    },
+                    {
+                        query: `
+                            INSERT INTO ${cassandra.keyspace}.users_by_username_and_discriminator (
+                                username, discriminator, id
+                            ) VALUES (?, ?, ?);
+                        `,
+                        params: [usernameToInsert, discriminatorToInsert, req.user.id]
+                    }
+                ], { prepare: true });
+                req.user.username = usernameToInsert;
+                req.user.discriminator = discriminatorToInsert;
+            }
+        } else {
+            console.log(global_name);
+            if (global_name && req.user.global_name != global_name) {
+                await cassandra.execute(`
+                UPDATE ${cassandra.keyspace}.users
+                SET global_name=?
+                WHERE id=? AND created_at=?;
+                `, [global_name, req.user.id, req.user.created_at]);
+                req.user.global_name = global_name;
+            }
         }
 
         await cassandra.execute(`
         SELECT * FROM ${cassandra.keyspace}.requests_by_receiver
         WHERE receiver_id=?;
-        `, [(req as any).user.id], { prepare: true }).then((request) => {
+        `, [req.user!.id], { prepare: true }).then((request) => {
             for (const row of request.rows) {
-                WsHandler.sockets.get(row.get("sender_id"))?.send(JSON.stringify({ op: OpCodes.DISPATCH, data: { ...(req as any).user.id }, event: "USER_UPDATE" }))
+                WsHandler.sockets.get(row.get("sender_id"))?.send(JSON.stringify({ op: OpCodes.DISPATCH, data: { ...req.user }, event: "USER_UPDATE" }))
             }
         });
 
         await cassandra.execute(`
         SELECT * FROM ${cassandra.keyspace}.requests_by_sender
         WHERE sender_id=?;
-        `, [(req as any).user.id], { prepare: true }).then((request) => {
+        `, [req.user!.id], { prepare: true }).then((request) => {
             for (const row of request.rows) {
-                WsHandler.sockets.get(row.get("receiver_id"))?.send(JSON.stringify({ op: OpCodes.DISPATCH, data: { ...(req as any).user.id }, event: "USER_UPDATE" }))
+                WsHandler.sockets.get(row.get("receiver_id"))?.send(JSON.stringify({ op: OpCodes.DISPATCH, data: { ...req.user }, event: "USER_UPDATE" }))
             }
         });
 
-        return res.status(200).json({ ...(req as any).user.id });
+        return res.status(200).json({ ...req.user });
     } catch (err) {
         console.log(err);
         return res.status(500).json({ message: "Oops" });
@@ -315,7 +355,7 @@ router.post("/@me/rooms", Validator.verifyToken, async (req, res) => {
     try {
         if (!req.body.recipientId) return res.status(400).json({ message: "You need to specify a recipient id when creating a pm." });
         if (req.body.type == null || req.body.type == undefined || isNaN(parseInt(req.body.type))) return res.status(400).json({ message: "You must specify a type for the room." });
-        if (req.body.recipientId == (req as any).user.id) return res.status(400).json({ message: "You cannot create a pm for only you :/" });
+        if (req.body.recipientId == req.user!.id) return res.status(400).json({ message: "You cannot create a pm for only you :/" });
 
         switch (req.body.type) {
             // pm room
@@ -324,13 +364,13 @@ router.post("/@me/rooms", Validator.verifyToken, async (req, res) => {
                 SELECT * FROM ${cassandra.keyspace}.room_recipients_by_user
                 WHERE recipients CONTAINS ? AND recipients CONTAINS ?
                 LIMIT 1 ALLOW FILTERING;
-                `, [(req as any).user.id, req.body.recipientId], { prepare: true });
+                `, [req.user!.id, req.body.recipientId], { prepare: true });
 
                 if (execution.rowLength > 0) return res.status(401).json({ message: "You already have a pm with this user." });
 
                 const id = Generator.snowflake.generate();
 
-                const recipients = [(req as any).user.id, req.body.recipientId];
+                const recipients = [req.user!.id, req.body.recipientId];
 
                 await cassandra.batch([
                     {
@@ -366,7 +406,7 @@ router.post("/@me/rooms", Validator.verifyToken, async (req, res) => {
 });
 
 router.get("/@me/rooms", Validator.verifyToken, async (req, res) => {
-    const rooms = await Collection.rooms.fetchManyByUserId((req as any).user.id);
+    const rooms = await Collection.rooms.fetchManyByUserId(req.user!.id);
     res.status(200).json({ rooms });
 });
 
