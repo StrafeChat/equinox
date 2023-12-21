@@ -73,7 +73,7 @@ export class WsHandler {
 
                         WsHandler.sockets.set((res.user as unknown as User).id, client);
 
-                        const friendList = [];
+                        const friendList: any[] = [];
                         friendList.push(...await Collection.requests.fetchManyReceiverRequests(res.user?.get("id")));
                         friendList.push(...await Collection.requests.fetchManySenderRequests(res.user?.get("id")));
 
@@ -87,7 +87,7 @@ export class WsHandler {
                         break;
                     case OpCodes.PRESENCE_UPDATE:
                         const user = WsHandler.clients.get(client)!.user;
-                        const friends = [];
+                        const friends: any[] = [];
                         console.log(user);
                         if (user) {
                             await cassandra.execute(`
@@ -112,7 +112,7 @@ export class WsHandler {
             client.on("close", async () => {
                 const user = WsHandler.clients.get(client)?.user;
                 if (user) {
-                    const friendList = [];
+                    const friendList: any[] = [];
                     friendList.push(...await Collection.requests.fetchManyReceiverRequests(user.id));
                     friendList.push(...await Collection.requests.fetchManySenderRequests(user.id));
 

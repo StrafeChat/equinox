@@ -11,9 +11,7 @@ const router = Router();
 
 router.post("/auth", async (req, res) => {
     try {
-        console.log(req.body);
         const { error } = Validator.login(req.body);
-        console.log(error);
         if (error) return res.status(401).json({ message: "Incorrect Password" });
 
         const exists = await cassandra.execute(`
