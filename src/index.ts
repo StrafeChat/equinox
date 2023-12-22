@@ -35,22 +35,17 @@ const sslOptions = {
 
 const startServer = async ({ secure }: { secure: boolean }) => {
     if (secure) {
-        try {
-            cassandra = new Client({
-                contactPoints: [SCYLLA_CONTACT_POINT1!],
-                localDataCenter: SCYLLA_DATA_CENTER,
-                // credentials: { username: SCYLLA_USERNAME!, password: SCYLLA_PASSWORD! },
-                keyspace: SCYLLA_KEYSPACE
-            });
+        cassandra = new Client({
+            contactPoints: [SCYLLA_CONTACT_POINT1!],
+            localDataCenter: SCYLLA_DATA_CENTER,
+            // credentials: { username: SCYLLA_USERNAME!, password: SCYLLA_PASSWORD! },
+            keyspace: SCYLLA_KEYSPACE
+        });
 
 
-            await cassandra.connect().catch((err) => console.log(err));
+        await cassandra.connect().catch((err) => console.log(err));
 
-        } catch (err) {
-            console.log(err);
-        }
-
-        server = http.createServer(app).listen(PORT ?? 443, () => {
+        server = app.listen(PORT ?? 443, () => {
             console.log("Equinox Listening on port " + PORT ?? 443);
         });
 
