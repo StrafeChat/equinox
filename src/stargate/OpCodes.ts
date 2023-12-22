@@ -8,3 +8,5 @@ export enum OpCodes {
     PRESENCE_UPDATE = 5,
     INVALID_SESSION = 6,
 }
+
+export default OpCodes;

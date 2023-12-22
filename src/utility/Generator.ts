@@ -1,9 +1,9 @@
 import { Snowflake } from "./Snowflake";
 import { types } from "cassandra-driver";
 import crypto from "crypto";
-import { User } from "../interfaces/User";
+import User from "../interfaces/User";
 
-export class Generator {
+export default class Generator {
     public static snowflake = new Snowflake();
 
     public static randomKey = (length = 12) => {

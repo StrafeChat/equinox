@@ -1,10 +1,10 @@
 import { Router } from "express";
-import { Validator } from "../../utility/Validator";
+import Validator from "../../utility/Validator";
 import staff from "../../resources/staff.json";
 import { cassandra } from "../..";
 import bcrypt from "bcrypt";
-import { Generator } from "../../utility/Generator";
-import { WsHandler } from "../../stargate";
+import Generator from "../../utility/Generator";
+import WsHandler from "../../stargate";
 import { OpCodes } from "../../stargate/OpCodes";
 
 const router = Router();

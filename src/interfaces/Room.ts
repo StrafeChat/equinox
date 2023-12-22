@@ -1,4 +1,4 @@
-export interface Room {
+export default interface Room {
     id: string;
     space_id: string | null;
     icon: string | null;

@@ -1,6 +1,6 @@
-import { User } from "./User";
+import User from "./User";
 
-export interface Relationship {
+export default interface Relationship {
     sender_id: string;
     sender: Partial<User> | null;
     receiver_id: string;

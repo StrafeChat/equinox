@@ -1,7 +1,7 @@
 import joi from "joi";
 import { cassandra } from "..";
 import { NextFunction, Request, Response } from "express";
-import { User } from "../interfaces/User";
+import User from "../interfaces/User";
 
 export interface Register {
     email: string;
@@ -19,7 +19,7 @@ export interface Login {
     password: string;
 }
 
-export class Validator {
+export default class Validator {
 
     public static register(data: Register) {
         return joi.object({
@@ -128,6 +128,6 @@ export class Validator {
 
         if (user.rowLength < 1) return { code: 4004, message: "Access Denied" };
         if (user.rows[0].get("last_pass_reset") > timestamp || user.rows[0].get("secret") != secret) return { code: 4004, message: "Access Denied." };
-        return { user: user.rows[0] };
+        return { user: user.rows[0] as unknown as User };
     }
 }

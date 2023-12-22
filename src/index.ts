@@ -6,7 +6,7 @@ import http from "http";
 import https from "https";
 import bodyParser from "body-parser";
 import cors from "cors";
-import { WsHandler } from "./stargate";
+import WsHandler from "./stargate";
 import rateLimit from "express-rate-limit";
 import Database from "./utility/Database";
 
@@ -50,8 +50,8 @@ const startServer = async ({ secure }: { secure: boolean }) => {
                 console.log("Equinox Listening on port " + process.env.PORT ?? 443);
             });
 
-            wsServer = https.createServer(sslOptions).listen(process.env.WEBSOCKET_PORT ?? 8080, () => {
-                console.log("Stargate Listening on port " + process.env.PORT ?? 8080);
+            wsServer = https.createServer(sslOptions).listen(WEBSOCKET_PORT ?? 8080, () => {
+                console.log("Stargate Listening on port " + WEBSOCKET_PORT ?? 8080);
             });
         } else {
             cassandra = new Client({
@@ -80,7 +80,7 @@ const startServer = async ({ secure }: { secure: boolean }) => {
 
 try {
     (async () => {
-        if (process.env.ENV == "PROD") await startServer({ secure: true })
+        if (ENV == "PROD") await startServer({ secure: true })
         else await startServer({ secure: false });
 
         const versions = fs.readdirSync("src/routes");

@@ -1,4 +1,4 @@
-export interface User {
+export default interface User {
     id: string;
     username: string;
     discriminator: number;
@@ -23,9 +23,11 @@ export interface User {
     secret: string;
     last_pass_reset: Date,
     dob: Date;
-    presence: {
-        status: string;
-        status_text: string;
-        online: boolean;
-    }
+    presence: UserPresence
+}
+
+export interface UserPresence {
+    status: string;
+    status_text: string;
+    online: boolean;
 }

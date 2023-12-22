@@ -1,10 +1,12 @@
 import { cassandra } from "..";
-import { Relationship } from "../interfaces/Request";
-import { Room } from "../interfaces/Room";
-import { User } from "../interfaces/User";
-import { Generator } from "./Generator";
+import Relationship from "../interfaces/Request";
+import Room from "../interfaces/Room";
+import User from "../interfaces/User";
+import Generator from "./Generator";
 
-export class Collection {
+type Selection<T> = ({ name: keyof T, value: T[keyof T] });
+
+export default class Collection {
 
     public static users = {
         fetchById: async (id: string) => {
@@ -118,5 +120,18 @@ export class Collection {
         `, [id], { prepare: true });
 
         return exeuction.rowLength < 1 ? null : exeuction.rows[0] as unknown as T;
+    }
+
+    public static async updateTable<T>(name: string, { update, where, prepare }: { update: Selection<T>[], where: Selection<T>[], prepare?: boolean }) {
+        try {
+            await cassandra.execute(`
+            UPDATE ${cassandra.keyspace}.${name}
+            SET ${update.map(($) => `${new String($.name)}=?`).join(", ")}
+            WHERE ${where.map(($) => `${new String($.name)}=?`).join(" AND ")}
+            IF EXISTS;
+            `, [...update.map(($) => $.value), ...where.map(($) => $.value)], { prepare: prepare ?? true });
+        } catch (error) {
+            console.trace(`Error updating table ${name}: ${error}`);
+        }
     }
 }

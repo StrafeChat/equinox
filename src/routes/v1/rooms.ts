@@ -1,11 +1,11 @@
 import { Router } from "express";
-import { Validator } from "../../utility/Validator";
-import { Collection } from "../../utility/Collection";
-import { Generator } from "../../utility/Generator";
+import Validator from "../../utility/Validator";
+import Collection from "../../utility/Collection";
+import Generator from "../../utility/Generator";
 import { cassandra } from "../..";
-import { WsHandler } from "../../stargate";
-import { OpCodes } from "../../stargate/OpCodes";
-import { User } from "../../interfaces/User";
+import WsHandler from "../../stargate";
+import OpCodes from "../../stargate/OpCodes";
+import User from "../../interfaces/User";
 
 const router = Router();
 
