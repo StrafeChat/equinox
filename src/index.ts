@@ -26,8 +26,8 @@ app.use(bodyParser.json({ limit: "25mb" }));
 app.use(cors());
 app.use(limiter);
 
-let server: https.Server | http.Server;
-let wsServer: https.Server | http.Server;
+let server!: https.Server | http.Server;
+let wsServer!: https.Server | http.Server;
 
 const sslOptions = {
     key: fs.readFileSync('src/ssl/priv.pem'),
@@ -35,18 +35,22 @@ const sslOptions = {
 };
 
 const startServer = async ({ secure }: { secure: boolean }) => {
-    console.log("start server called!");
     try {
         if (secure) {
+            console.log(SCYLLA_CONTACT_POINT1, SCYLLA_DATA_CENTER, SCYLLA_USERNAME, SCYLLA_PASSWORD, SCYLLA_KEYSPACE);
             try {
                 cassandra = new Client({
                     contactPoints: [SCYLLA_CONTACT_POINT1!],
                     localDataCenter: SCYLLA_DATA_CENTER,
-                    credentials: { username: SCYLLA_USERNAME!, password: SCYLLA_PASSWORD! },
+                    // credentials: { username: SCYLLA_USERNAME!, password: SCYLLA_PASSWORD! },
                     keyspace: SCYLLA_KEYSPACE
                 });
 
-                await cassandra.connect();
+                console.log("cassandra");
+
+                await cassandra.connect().catch((err) => console.log(err));
+
+                console.log("cassanda connect!");
             } catch (err) {
                 console.log(err);
             }
