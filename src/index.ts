@@ -34,6 +34,8 @@ const sslOptions = {
     cert: fs.readFileSync('src/ssl/pub.pem'),
 };
 
+console.log("test");
+
 const startServer = async ({ secure }: { secure: boolean }) => {
     try {
         if (secure) {
