@@ -46,11 +46,11 @@ const startServer = async ({ secure }: { secure: boolean }) => {
 
             await cassandra.connect();
 
-            server = https.createServer(sslOptions, app).listen(process.env.PORT ?? 443, () => {
+            server = http.createServer(app).listen(process.env.PORT ?? 443, () => {
                 console.log("Equinox Listening on port " + process.env.PORT ?? 443);
             });
 
-            wsServer = http.createServer().listen(WEBSOCKET_PORT ?? 8080, () => {
+            wsServer = https.createServer(sslOptions).listen(WEBSOCKET_PORT ?? 8080, () => {
                 console.log("Stargate Listening on port " + WEBSOCKET_PORT ?? 8080);
             });
         } else {
