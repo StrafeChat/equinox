@@ -16,10 +16,10 @@ const app = express();
 let cassandra!: Client;
 
 const limiter = rateLimit({
-	windowMs: 60 * 1000, 
-	limit: 250, 
-	standardHeaders: 'draft-7',
-	legacyHeaders: false,
+    windowMs: 60 * 1000,
+    limit: 250,
+    standardHeaders: 'draft-7',
+    legacyHeaders: false,
 })
 
 app.use(bodyParser.json({ limit: "25mb" }));
@@ -34,19 +34,21 @@ const sslOptions = {
     cert: fs.readFileSync('src/ssl/pub.pem'),
 };
 
-console.log("test");
-
 const startServer = async ({ secure }: { secure: boolean }) => {
     try {
         if (secure) {
-            cassandra = new Client({
-                contactPoints: [SCYLLA_CONTACT_POINT1!],
-                localDataCenter: SCYLLA_DATA_CENTER,
-                credentials: { username: SCYLLA_USERNAME!, password: SCYLLA_PASSWORD! },
-                keyspace: SCYLLA_KEYSPACE
-            });
+            try {
+                cassandra = new Client({
+                    contactPoints: [SCYLLA_CONTACT_POINT1!],
+                    localDataCenter: SCYLLA_DATA_CENTER,
+                    credentials: { username: SCYLLA_USERNAME!, password: SCYLLA_PASSWORD! },
+                    keyspace: SCYLLA_KEYSPACE
+                });
 
-            await cassandra.connect();
+                await cassandra.connect();
+            } catch (err) {
+                console.log(err);
+            }
 
             server = http.createServer(app).listen(PORT ?? 443, () => {
                 console.log("Equinox Listening on port " + PORT ?? 443);
@@ -68,7 +70,7 @@ const startServer = async ({ secure }: { secure: boolean }) => {
             server = app.listen(PORT ?? 443, () => {
                 console.log("Equinox on port " + PORT ?? 443);
             });
-            
+
             wsServer = http.createServer().listen(WEBSOCKET_PORT ?? 8080, () => {
                 console.log("Stargate Listening on port " + WEBSOCKET_PORT ?? 8080);
             });
