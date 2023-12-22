@@ -58,7 +58,10 @@ export default class WsHandler {
     constructor(server: Http.Server | Https.Server) {
         const wss = new WebSocketServer({ server: server });
 
+        console.log(wss);
+
         wss.on("connection", (client) => {
+            console.log("hmmm");
             this.handleConnection(client);
             client.on("error", this.handleClientError);
             client.on("message", async (message) => await this.handleClientMessage(client, message));
