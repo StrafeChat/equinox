@@ -40,6 +40,7 @@ const startServer = async ({ secure }: { secure: boolean }) => {
             cassandra = new Client({
                 contactPoints: [SCYLLA_CONTACT_POINT1!],
                 localDataCenter: SCYLLA_DATA_CENTER,
+                credentials: { username: SCYLLA_USERNAME!, password: SCYLLA_PASSWORD! },
                 keyspace: SCYLLA_KEYSPACE
             });
 
