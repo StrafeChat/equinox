@@ -35,55 +35,46 @@ const sslOptions = {
 };
 
 const startServer = async ({ secure }: { secure: boolean }) => {
-    try {
-        if (secure) {
-            console.log(SCYLLA_CONTACT_POINT1, SCYLLA_DATA_CENTER, SCYLLA_USERNAME, SCYLLA_PASSWORD, SCYLLA_KEYSPACE);
-            try {
-                cassandra = new Client({
-                    contactPoints: [SCYLLA_CONTACT_POINT1!],
-                    localDataCenter: SCYLLA_DATA_CENTER,
-                    // credentials: { username: SCYLLA_USERNAME!, password: SCYLLA_PASSWORD! },
-                    keyspace: SCYLLA_KEYSPACE
-                });
-
-                console.log("cassandra");
-
-                await cassandra.connect().catch((err) => console.log(err));
-
-                console.log("cassanda connect!");
-            } catch (err) {
-                console.log(err);
-            }
-
-            server = http.createServer(app).listen(PORT ?? 443, () => {
-                console.log("Equinox Listening on port " + PORT ?? 443);
-            });
-
-            wsServer = http.createServer().listen(WEBSOCKET_PORT ?? 8080, () => {
-                console.log("Stargate Listening on port " + WEBSOCKET_PORT ?? 8080);
-            });
-        } else {
+    if (secure) {
+        try {
             cassandra = new Client({
-                contactPoints: [SCYLLA_CONTACT_POINT1!, SCYLLA_CONTACT_POINT2!, SCYLLA_CONTACT_POINT3!],
+                contactPoints: [SCYLLA_CONTACT_POINT1!],
                 localDataCenter: SCYLLA_DATA_CENTER,
-                credentials: { username: SCYLLA_USERNAME!, password: SCYLLA_PASSWORD! },
+                // credentials: { username: SCYLLA_USERNAME!, password: SCYLLA_PASSWORD! },
                 keyspace: SCYLLA_KEYSPACE
             });
 
-            await cassandra.connect();
 
-            server = app.listen(PORT ?? 443, () => {
-                console.log("Equinox on port " + PORT ?? 443);
-            });
+            await cassandra.connect().catch((err) => console.log(err));
 
-            wsServer = http.createServer().listen(WEBSOCKET_PORT ?? 8080, () => {
-                console.log("Stargate Listening on port " + WEBSOCKET_PORT ?? 8080);
-            });
+        } catch (err) {
+            console.log(err);
         }
-    } catch (err) {
-        console.log('Error during server startup:', err);
-        if (server) server.close();
-        if (wsServer) wsServer.close();
+
+        server = http.createServer(app).listen(PORT ?? 443, () => {
+            console.log("Equinox Listening on port " + PORT ?? 443);
+        });
+
+        wsServer = http.createServer().listen(WEBSOCKET_PORT ?? 8080, () => {
+            console.log("Stargate Listening on port " + WEBSOCKET_PORT ?? 8080);
+        });
+    } else {
+        cassandra = new Client({
+            contactPoints: [SCYLLA_CONTACT_POINT1!, SCYLLA_CONTACT_POINT2!, SCYLLA_CONTACT_POINT3!],
+            localDataCenter: SCYLLA_DATA_CENTER,
+            credentials: { username: SCYLLA_USERNAME!, password: SCYLLA_PASSWORD! },
+            keyspace: SCYLLA_KEYSPACE
+        });
+
+        await cassandra.connect();
+
+        server = app.listen(PORT ?? 443, () => {
+            console.log("Equinox on port " + PORT ?? 443);
+        });
+
+        wsServer = http.createServer().listen(WEBSOCKET_PORT ?? 8080, () => {
+            console.log("Stargate Listening on port " + WEBSOCKET_PORT ?? 8080);
+        });
     }
 }
 
