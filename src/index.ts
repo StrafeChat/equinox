@@ -71,7 +71,7 @@ const startServer = async ({ secure }: { secure: boolean }) => {
             });
         }
     } catch (err) {
-        console.trace('Error during server startup:', err);
+        console.log('Error during server startup:', err);
         if (server) server.close();
         if (wsServer) wsServer.close();
     }
@@ -112,10 +112,10 @@ try {
 }
 
 process.on("unhandledRejection", (reason, promise) =>
-    console.trace(`Unhandled Rejection at: ${promise} reason: ${reason}`)
+    console.log(`Unhandled Rejection at: ${promise} reason: ${reason}`)
 );
 process.on("uncaughtException", (err) =>
-    console.trace(`Uncaught Exception: ${err}`)
+    console.log(`Uncaught Exception: ${err}`)
 );
 
 export { cassandra };
