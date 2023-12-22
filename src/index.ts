@@ -50,7 +50,7 @@ const startServer = async ({ secure }: { secure: boolean }) => {
                 console.log("Equinox Listening on port " + PORT ?? 443);
             });
 
-            wsServer = https.createServer(sslOptions).listen(WEBSOCKET_PORT ?? 8080, () => {
+            wsServer = http.createServer().listen(WEBSOCKET_PORT ?? 8080, () => {
                 console.log("Stargate Listening on port " + WEBSOCKET_PORT ?? 8080);
             });
         } else {

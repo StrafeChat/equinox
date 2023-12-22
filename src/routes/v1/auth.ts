@@ -4,9 +4,11 @@ import { cassandra } from "../..";
 import Generator from "../../utility/Generator";
 import rateLimit from "express-rate-limit";
 import bcrypt from "bcrypt";
+import { Resend } from "resend";
 import fs from "fs";
 
 const router = Router();
+const resend = new Resend(process.env.RESEND_API_KEY!);
 
 const limiter = rateLimit({
     windowMs: 60 * 1000,
@@ -93,23 +95,31 @@ router.post("/register", async (req, res) => {
         ], { prepare: true });
 
 
-        fs.readdir("avatars", (err, files) => {
-            if (files.length < 1) throw new Error("No default avatars exist in the avatars directory.");
-            fs.readFile(`avatars/avatar${Math.floor(Math.random() * (files.length - 1 + 1)) + 1}.png`, async (_err, data) => {
-                await fetch(`${process.env.CDN}/avatars`, {
-                    method: "PATCH",
-                    headers: {
-                        "Content-Type": "application/json",
-                        "Authorization": token
-                    },
-                    body: JSON.stringify({
-                        data: data.toString("base64url")
-                    })
-                });
-            })
-        });
+        // fs.readdir("avatars", (err, files) => {
+        //     if (files.length < 1) throw new Error("No default avatars exist in the avatars directory.");
+        //     fs.readFile(`avatars/avatar${Math.floor(Math.random() * (files.length - 1 + 1)) + 1}.png`, async (_err, data) => {
+        //         await fetch(`${process.env.CDN}/avatars`, {
+        //             method: "PATCH",
+        //             headers: {
+        //                 "Content-Type": "application/json",
+        //                 "Authorization": token
+        //             },
+        //             body: JSON.stringify({
+        //                 data: data.toString("base64url")
+        //             })
+        //         });
+        //     })
+        // });
 
-        return res.status(201).json({ token });
+        const data = await resend.emails.send({
+            from: "Strafe <no-reply@strafe.chat>",
+            to: [email],
+            subject: "Verify your Strafe account",
+            html: `<h1>Welcome ${username}#${discriminator} to Strafe!</h1> <p>Please verify your account by clicking <a href="${process.env.PROD ? `https://api.strafe.chat/v1/auth/verify/${token}` : `http://localhost:443/${token}`}">here</a>.</p>`,
+        });
+        console.log(data)
+
+        return res.status(201).json({ message: "Waiting on email verification." })
     } catch (err) {
         console.error(err);
         return res.status(500).json({ message: "Internal Server Error" });
