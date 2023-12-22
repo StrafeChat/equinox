@@ -55,8 +55,8 @@ export default class WsHandler {
         }
     }
 
-    constructor(server: Http.Server | Https.Server) {
-        const wss = new WebSocketServer({ server: server });
+    constructor() {
+        const wss = new WebSocket.Server({ port: 8080 });
 
         console.log(wss);
 

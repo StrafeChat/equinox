@@ -27,7 +27,6 @@ app.use(cors());
 app.use(limiter);
 
 let server!: https.Server | http.Server;
-let wsServer!: https.Server | http.Server;
 
 const sslOptions = {
     key: fs.readFileSync('src/ssl/priv.pem'),
@@ -55,9 +54,9 @@ const startServer = async ({ secure }: { secure: boolean }) => {
             console.log("Equinox Listening on port " + PORT ?? 443);
         });
 
-        wsServer = http.createServer().listen(WEBSOCKET_PORT ?? 8080, () => {
-            console.log("Stargate Listening on port " + WEBSOCKET_PORT ?? 8080);
-        });
+        // wsServer = http.createServer().listen(WEBSOCKET_PORT ?? 8080, () => {
+        //     console.log("Stargate Listening on port " + WEBSOCKET_PORT ?? 8080);
+        // });
     } else {
         cassandra = new Client({
             contactPoints: [SCYLLA_CONTACT_POINT1!, SCYLLA_CONTACT_POINT2!, SCYLLA_CONTACT_POINT3!],
@@ -72,9 +71,9 @@ const startServer = async ({ secure }: { secure: boolean }) => {
             console.log("Equinox on port " + PORT ?? 443);
         });
 
-        wsServer = http.createServer().listen(WEBSOCKET_PORT ?? 8080, () => {
-            console.log("Stargate Listening on port " + WEBSOCKET_PORT ?? 8080);
-        });
+        // wsServer = http.createServer().listen(WEBSOCKET_PORT ?? 8080, () => {
+        //     console.log("Stargate Listening on port " + WEBSOCKET_PORT ?? 8080);
+        // });
     }
 }
 
@@ -94,9 +93,7 @@ try {
 
         Database.init();
 
-        console.log(wsServer!);
-
-        new WsHandler(wsServer!);
+        new WsHandler();
 
         app.get("/", (_req, res) => {
             res.redirect("/v1");
