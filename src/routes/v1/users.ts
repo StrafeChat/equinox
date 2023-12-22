@@ -1,8 +1,8 @@
 import { Request, Response, Router } from "express";
 import { Validator } from "../../utility/Validator";
 import { cassandra } from "../..";
-import { WsHandler } from "../../ws";
-import { OpCodes } from "../../ws/OpCodes";
+import { WsHandler } from "../../stargate";
+import { OpCodes } from "../../stargate/OpCodes";
 import { Generator } from "../../utility/Generator";
 import { Collection } from "../../utility/Collection";
 import { Relationship } from "../../interfaces/Request";

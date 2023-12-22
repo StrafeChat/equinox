@@ -7,48 +7,82 @@ import https from "https";
 import bodyParser from "body-parser";
 import cors from "cors";
 import { WsHandler } from "./stargate";
+import rateLimit from "express-rate-limit";
+import Database from "./utility/Database";
+
+const { SCYLLA_CONTACT_POINT1, SCYLLA_CONTACT_POINT2, SCYLLA_CONTACT_POINT3, SCYLLA_DATA_CENTER, SCYLLA_USERNAME, SCYLLA_PASSWORD, SCYLLA_KEYSPACE, ENV, PORT, WEBSOCKET_PORT } = process.env;
+
 const app = express();
+let cassandra!: Client;
 
-const cassandra = new Client({
-    contactPoints: [process.env.SCYLLA_CONTACT_POINT1!, process.env.SCYLLA_CONTACT_POINT2!, process.env.SCYLLA_CONTACT_POINT3!],
-    localDataCenter: process.env.SCYLLA_DATA_CENTER,
-    credentials: { username: process.env.SCYLLA_USERNAME!, password: process.env.SCYLLA_PASSWORD! },
-    keyspace: process.env.SCYLLA_KEYSPACE
+const limiter = rateLimit({
+	windowMs: 60 * 1000, 
+	limit: 250, 
+	standardHeaders: 'draft-7',
+	legacyHeaders: false,
 })
-
-//const redis = createClient({
-//   url: process.env.REDIS_URL,
-//});
 
 app.use(bodyParser.json({ limit: "25mb" }));
 app.use(cors());
+app.use(limiter);
+
+let server: https.Server | http.Server;
+let wsServer: https.Server | http.Server;
+
+const sslOptions = {
+    key: fs.readFileSync('src/ssl/priv.pem'),
+    cert: fs.readFileSync('src/ssl/pub.pem'),
+};
+
+const startServer = async ({ secure }: { secure: boolean }) => {
+    try {
+        if (secure) {
+            cassandra = new Client({
+                contactPoints: [SCYLLA_CONTACT_POINT1!],
+                localDataCenter: SCYLLA_DATA_CENTER,
+                credentials: { username: SCYLLA_USERNAME!, password: SCYLLA_PASSWORD! },
+                keyspace: SCYLLA_KEYSPACE
+            });
+
+            await cassandra.connect();
+
+            server = https.createServer(sslOptions, app).listen(process.env.PORT ?? 443, () => {
+                console.log("Equinox Listening on port " + process.env.PORT ?? 443);
+            });
+
+            wsServer = https.createServer(sslOptions).listen(process.env.WEBSOCKET_PORT ?? 8080, () => {
+                console.log("Stargate Listening on port " + process.env.PORT ?? 8080);
+            });
+        } else {
+            cassandra = new Client({
+                contactPoints: [SCYLLA_CONTACT_POINT1!, SCYLLA_CONTACT_POINT2!, SCYLLA_CONTACT_POINT3!],
+                localDataCenter: SCYLLA_DATA_CENTER,
+                credentials: { username: SCYLLA_USERNAME!, password: SCYLLA_PASSWORD! },
+                keyspace: SCYLLA_KEYSPACE
+            });
+
+            server = app.listen(process.env.PORT ?? 443, () => {
+                console.log("Listening on port " + process.env.PORT ?? 443);
+            });
+            wsServer = http.createServer().listen(process.env.WEBSOCKET_PORT ?? 8080, () => {
+                console.log("Stargate Listening on port " + process.env.WEBSOCKET_PORT ?? 8080);
+            });
+
+            await cassandra.connect();
+        }
+    } catch (err) {
+        console.trace('Error during server startup:', err);
+        if (server) server.close();
+        if (wsServer) wsServer.close();
+    }
+}
 
 try {
     (async () => {
-        // await redis.on('error', err => { throw new Error(err) }).connect();
-        await cassandra.connect();
-
-        let server: https.Server | http.Server;
-
-        if (process.env.ENV == "PROD") {
-            const options = {
-                key: fs.readFileSync('src/ssl/priv.pem'),
-                cert: fs.readFileSync('src/ssl/pub.pem'),
-            };
-            server = https.createServer(options, app).listen(process.env.PORT ?? 443, function () {
-                console.log("Listening on port " + process.env.PORT ?? 443);
-            });
-        } else {
-            server = app.listen(process.env.PORT ?? 443, () => {
-                console.log("Listening on port " + process.env.PORT ?? 443);
-            })
-        }
+        if (process.env.ENV == "PROD") startServer({ secure: true })
+        else startServer({ secure: false });
 
         const versions = fs.readdirSync("src/routes");
-        const types = fs.readdirSync("src/database/types");
-        const tables = fs.readdirSync("src/database/tables");
-        const materialViews = fs.readdirSync("src/database/material_views");
-        const indexes = fs.readdirSync("src/database/indexes");
 
         for (const version of versions) {
             const routes = fs.readdirSync(`src/routes/${version}`);
@@ -57,35 +91,15 @@ try {
             }
         }
 
-        for (const type of types) {
-            const query = fs.readFileSync(`src/database/types/${type}`).toString("utf-8").replace("{keyspace}", cassandra.keyspace);
-            await cassandra.execute(query);
-        }
+        Database.init();
 
-        for (const table of tables) {
-            const query = fs.readFileSync(`src/database/tables/${table}`).toString("utf-8").replace("{keyspace}", cassandra.keyspace);
-            await cassandra.execute(query);
-        }
-
-        for (const materialView of materialViews) {
-            const queryPath = `src/database/material_views/${materialView}`;
-            const query = fs.readFileSync(queryPath, 'utf-8');
-            const modifiedQuery = query.split('{keyspace}').join(cassandra.keyspace);
-            await cassandra.execute(modifiedQuery);
-        }
-
-        for (const index of indexes) {
-            const query = fs.readFileSync(`src/database/indexes/${index}`).toString("utf-8").replace("{keyspace}", cassandra.keyspace);
-            await cassandra.execute(query);
-        }
-
-        new WsHandler();
+        new WsHandler(wsServer!);
 
         app.get("/", (_req, res) => {
             res.redirect("/v1");
         });
         app.get("/v1", async (_req, res) => {
-            res.status(200).json({ version: "1.0.0", release: "Early Alpha", ws: "https://api.strafe.chat/events", file_system: "https://nebula.strafe.chat", web_application: "https://web.strafe.chat" });
+            res.status(200).json({ version: "1.0.0", release: "Early Alpha", ws: "wss://stargate.strafe.chat", file_system: "https://nebula.strafe.chat", web_application: "https://web.strafe.chat" });
         });
         app.use("", (_req, res) => {
             res.status(404).json({ message: "0_o the resource you were looking for was not found!" });
@@ -96,10 +110,10 @@ try {
 }
 
 process.on("unhandledRejection", (reason, promise) =>
-    console.log(`Unhandled Rejection at: ${promise} reason: ${reason}`)
+    console.trace(`Unhandled Rejection at: ${promise} reason: ${reason}`)
 );
 process.on("uncaughtException", (err) =>
-    console.log(`Uncaught Exception: ${err}`)
+    console.trace(`Uncaught Exception: ${err}`)
 );
 
 export { cassandra };

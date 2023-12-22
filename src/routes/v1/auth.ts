@@ -2,10 +2,20 @@ import { Router } from "express";
 import { Register, Validator } from "../../utility/Validator";
 import { cassandra } from "../..";
 import { Generator } from "../../utility/Generator";
+import rateLimit from "express-rate-limit";
 import bcrypt from "bcrypt";
 import fs from "fs";
 
 const router = Router();
+
+const limiter = rateLimit({
+	windowMs: 60 * 1000, 
+	limit: 10, 
+	standardHeaders: 'draft-7',
+	legacyHeaders: false,
+})
+
+router.use(limiter);
 
 router.post("/register", async (req, res) => {
     const { error } = Validator.register(req.body);
