@@ -56,7 +56,7 @@ export default class WsHandler {
     }
 
     constructor(server: Http.Server | Https.Server) {
-        const wss = new WebSocketServer({ server: server });
+        const wss = new WebSocketServer({ server: server, path: "/events" });
 
         wss.on("connection", (client) => {
             this.handleConnection(client);
