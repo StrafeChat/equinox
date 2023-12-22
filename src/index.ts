@@ -61,14 +61,15 @@ const startServer = async ({ secure }: { secure: boolean }) => {
                 keyspace: SCYLLA_KEYSPACE
             });
 
+            await cassandra.connect();
+
             server = app.listen(process.env.PORT ?? 443, () => {
-                console.log("Listening on port " + process.env.PORT ?? 443);
+                console.log("Equinox on port " + process.env.PORT ?? 443);
             });
+            
             wsServer = http.createServer().listen(process.env.WEBSOCKET_PORT ?? 8080, () => {
                 console.log("Stargate Listening on port " + process.env.WEBSOCKET_PORT ?? 8080);
             });
-
-            await cassandra.connect();
         }
     } catch (err) {
         console.trace('Error during server startup:', err);
@@ -79,8 +80,8 @@ const startServer = async ({ secure }: { secure: boolean }) => {
 
 try {
     (async () => {
-        if (process.env.ENV == "PROD") startServer({ secure: true })
-        else startServer({ secure: false });
+        if (process.env.ENV == "PROD") await startServer({ secure: true })
+        else await startServer({ secure: false });
 
         const versions = fs.readdirSync("src/routes");
 
