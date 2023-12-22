@@ -35,6 +35,7 @@ const sslOptions = {
 };
 
 const startServer = async ({ secure }: { secure: boolean }) => {
+    console.log("start server called!");
     try {
         if (secure) {
             try {
