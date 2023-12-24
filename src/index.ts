@@ -1,5 +1,6 @@
 require("dotenv").config();
 import bodyParser from "body-parser";
+import session from "express-session";
 import { Client } from "cassandra-driver";
 import cors from "cors";
 import express from "express";
@@ -16,6 +17,7 @@ const {
     SCYLLA_KEYSPACE,
     RESEND_API_KEY,
     PORT,
+    SESSION_SECRET
 } = process.env;
 
 // Throw errors if important contants are missing
@@ -29,6 +31,9 @@ if (!RESEND_API_KEY) throw new Error("Missing RESEND_API_KEY in the environmenta
 const app = express();
 app.use(cors());
 app.use(bodyParser.json());
+app.use(session({
+    secret: SESSION_SECRET || "equinox" // TODO: implement a better way of handling this
+}));
 
 // Initialize cassandra client
 let cassandra: Client = new Client({
@@ -68,6 +73,13 @@ const startServer = async () => {
     // TODO: Captcha
     app.get("/captcha", cors({ origin: process.env.FRONTEND_URL }), middleware(captcha), async (req, res) => {
         res.status(200);
+        res.send({ image: await (req as any).generateCaptcha() });
+
+        /*
+        // verifying captchas looks like this:
+        const captchaInput = req.body.captcha;
+        const verified = (req as any).verifyCaptcha(capchtaInput);
+        */
     });
 
     app.listen(port, () => {
