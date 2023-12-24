@@ -53,11 +53,12 @@ export const JoiRegister = (req: Request<{}, {}, Partial<RegisterBody>>, res: Re
             "string.empty": "The locale field is required.",
             "string.pattern.base": "The locale should be a string.",
         })
+        // TODO: Verify that captcha exists.
     });
 
     const { error } = schema.validate(req.body);
 
-    if (error) return res.status(400).json({ message: error.message });
+    if (error) return res.status(400).json({ message: error.details[0].message });
 
     next();
 }
