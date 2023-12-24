@@ -4,7 +4,9 @@ import { Client } from "cassandra-driver";
 import cors from "cors";
 import express from "express";
 import fs from "fs";
+const { CaptchaGenerator, middleware } = require("@strafechat/captcha");
 
+// Grab constants
 const {
     FRONTEND_URL,
     SCYLLA_CONTACT_POINTS,
@@ -15,15 +17,18 @@ const {
     PORT,
 } = process.env;
 
+// Throw errors if important contants are missing
 if (!FRONTEND_URL) throw new Error("Missing FRONTEND_URL in environment variables.");
 if (!SCYLLA_CONTACT_POINTS) throw new Error("Missing an array of contact points for cassandra or scylla in the environmental variables.");
 if (!SCYLLA_DATA_CENTER) throw new Error("Missing data center for cassandra or scylla in the environmental variables.");
 if (!SCYLLA_KEYSPACE) throw new Error("Missing keyspace for cassandra or scylla in the environmental variables.");
 
+// Initialize express
 const app = express();
 app.use(cors());
 app.use(bodyParser.json());
 
+// Initialize cassandra client
 let cassandra: Client = new Client({
     contactPoints: JSON.parse(SCYLLA_CONTACT_POINTS),
     localDataCenter: SCYLLA_DATA_CENTER,
@@ -34,6 +39,10 @@ let cassandra: Client = new Client({
     } : undefined
 });
 
+// TODO: Not sure how to use this, will have to have shadow do it.
+const captcha = new CaptchaGenerator();
+
+// Startup logic for equinox
 const startServer = async () => {
     const port = PORT ?? 443;
 
@@ -54,12 +63,20 @@ const startServer = async () => {
         res.status(200).json({ version: "1.0.0", release: "Early Alpha", ws: "wss://stargate.strafe.chat", file_system: "https://nebula.strafe.chat", web_application: "https://web.strafe.chat" });
     });
 
+    // TODO: Captcha
+    app.get("/captcha", cors({ origin: process.env.FRONTEND_URL }), middleware(captcha), async (req, res) => {
+        res.status(200);
+    });
+
     app.listen(port, () => {
         console.log(`Equinox is listening on ${port}!`);
     });
 };
 
+//  Start everything up
 (async () => {
     await cassandra.connect();
     await startServer();
 })();
+
+export { cassandra };
