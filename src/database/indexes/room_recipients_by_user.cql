@@ -1,1 +1,0 @@
-CREATE INDEX IF NOT EXISTS ON {keyspace}.room_recipients_by_user(recipients);
