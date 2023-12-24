@@ -1,6 +1,6 @@
 export interface RegisterBody {
     email: string;
-    global_name: string;
+    global_name?: string;
     username: string;
     discriminator: number;
     password: string;
