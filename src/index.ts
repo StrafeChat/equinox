@@ -5,6 +5,7 @@ import { Client } from "cassandra-driver";
 import cors from "cors";
 import express from "express";
 import fs from "fs";
+
 const { CaptchaGenerator, middleware } = require("@strafechat/captcha");
 
 // Grab constants
@@ -20,7 +21,7 @@ const {
     SESSION_SECRET
 } = process.env;
 
-// Throw errors if important contants are missing
+// Throw errors if important constants are missing
 if (!FRONTEND_URL) throw new Error("Missing FRONTEND_URL in environment variables.");
 if (!SCYLLA_CONTACT_POINTS) throw new Error("Missing an array of contact points for cassandra or scylla in the environmental variables.");
 if (!SCYLLA_DATA_CENTER) throw new Error("Missing data center for cassandra or scylla in the environmental variables.");
@@ -29,10 +30,17 @@ if (!RESEND_API_KEY) throw new Error("Missing RESEND_API_KEY in the environmenta
 
 // Initialize express
 const app = express();
-app.use(cors());
+
+// TODO: Use wildcard for cors whenever bots are added.
+app.use(cors({
+    origin: FRONTEND_URL,
+}));
+
 app.use(bodyParser.json());
 app.use(session({
-    secret: SESSION_SECRET || "equinox" // TODO: implement a better way of handling this
+    secret: SESSION_SECRET || "equinox", // TODO: implement a better way of handling this
+    resave: false,
+    saveUninitialized: false
 }));
 
 // Initialize cassandra client
@@ -46,7 +54,6 @@ let cassandra: Client = new Client({
     } : undefined
 });
 
-// TODO: Not sure how to use this, will have to have shadow do it.
 const captcha = new CaptchaGenerator();
 
 // Startup logic for equinox
@@ -74,13 +81,13 @@ const startServer = async () => {
     app.get("/captcha", cors({ origin: process.env.FRONTEND_URL }), middleware(captcha), async (req, res) => {
         res.status(200);
         res.send({ image: await (req as any).generateCaptcha() });
+    });
 
-        /*
+            /*
         // verifying captchas looks like this:
         const captchaInput = req.body.captcha;
         const verified = (req as any).verifyCaptcha(capchtaInput);
         */
-    });
 
     app.listen(port, () => {
         console.log(`Equinox is listening on ${port}!`);
@@ -93,4 +100,4 @@ const startServer = async () => {
     await startServer();
 })();
 
-export { cassandra };
+export { cassandra, captcha };

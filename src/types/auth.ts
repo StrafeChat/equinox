@@ -6,5 +6,5 @@ export interface RegisterBody {
     password: string;
     dob: Date;
     locale: string;
-    captcha: any;
+    captcha: string;
 };
