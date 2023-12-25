@@ -1,24 +1,24 @@
 import { NextFunction, Request, Response } from "express";
-import { object, string, number, date, ref } from "joi";
+import joi from "joi";
 import { RegisterBody } from "../types/auth";
 
 export const JoiRegister = (req: Request<{}, {}, Partial<RegisterBody>>, res: Response, next: NextFunction) => {
-    const schema = object({
-        email: string().email().required().messages({
+    const schema = joi.object({
+        email: joi.string().email().required().messages({
             "string.base": "The email should be a string.",
             "string.empty": "The email field is required.",
             "string.email": "The email that you have provided does not seem to be correct.",
             "string.required": "The email field is required.",
         }),
-        global_name: string().alphanum().min(1).max(32).invalid("everyone", "here").messages({
+        global_name: joi.string().alphanum().min(1).max(32).invalid("everyone", "here").messages({
             "string.base": "The display name should be a string.",
-            "string.empty": "The display name cannot be empty.",
+            // "string.empty": "The display name cannot be empty.",
             "string.alphanum": "The display name should only include numbers and letters.",
             "string.min": "The display name cannot be less than 1 character long.",
             "string.max": "The display name cannot be more than 32 characters long.",
             "any.invalid": "Your display name cannot be 'everyone' or 'here'.",
         }),
-        username: string().alphanum().min(2).max(32).invalid("everyone", "here").required().messages({
+        username: joi.string().alphanum().min(2).max(32).invalid("everyone", "here").required().messages({
             "string.base": "The username should be a string.",
             "string.empty": "The username cannot be empty.",
             "string.alphanum": "The username should only include numbers and letters.",
@@ -27,7 +27,7 @@ export const JoiRegister = (req: Request<{}, {}, Partial<RegisterBody>>, res: Re
             "any.invalid": "Your username cannot be 'everyone' or 'here'.",
             "string.required": "The username field is required.",
         }),
-        discriminator: number().integer().min(1).max(9999).required().messages({
+        discriminator: joi.number().integer().min(1).max(9999).required().messages({
             "number.base": "The discriminator should be an integer.",
             "number.infinity": "The discriminator cannot be infinite",
             "number.integer": "The discriminator should be an integer.",
@@ -35,25 +35,25 @@ export const JoiRegister = (req: Request<{}, {}, Partial<RegisterBody>>, res: Re
             "number.max": "The discriminator must be less than 9999.",
             "number.required": "The discriminator field is required.",
         }),
-        password: string().min(8).max(128).required().messages({
+        password: joi.string().min(8).max(128).required().messages({
             "string.base": "The password should be a string.",
             "string.empty": "The password cannot be empty.",
             "string.min": "The password cannot be less than 8 characters long.",
             "string.max": "The password cannot be more than 128 characters long.",
             "string.required": "The password field is required.",
         }),
-        confirm_password: ref("password"),
-        dob: date().max(new Date(new Date().setFullYear(new Date().getFullYear() - 13))).required().messages({
+        confirm_password: joi.ref("password"),
+        dob: joi.date().max(new Date(new Date().setFullYear(new Date().getFullYear() - 13))).required().messages({
             "date.base": "The date of birth must be a date.",
             "date.max": "You must be at least 13 years old to use strafe.",
             "date.required": "The date of birth field is required.",
         }),
-        locale: string().regex(/^[a-z]{2}-[A-Z]{2}$/).required().messages({
+        captcha: joi.string().required(),
+        locale: joi.string().regex(/^[a-z]{2}-[A-Z]{2}$/).required().messages({
             "string.base": "The locale should be a string.",
             "string.empty": "The locale field is required.",
             "string.pattern.base": "The locale should be a string.",
-        })
-        // TODO: Verify that captcha exists.
+        }),
     });
 
     const { error } = schema.validate(req.body);

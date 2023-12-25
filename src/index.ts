@@ -32,15 +32,14 @@ if (!RESEND_API_KEY) throw new Error("Missing RESEND_API_KEY in the environmenta
 const app = express();
 
 // TODO: Use wildcard for cors whenever bots are added.
+app.use(bodyParser.json());
+
 app.use(cors({
     origin: FRONTEND_URL,
 }));
 
-app.use(bodyParser.json());
 app.use(session({
     secret: SESSION_SECRET || "equinox", // TODO: implement a better way of handling this
-    resave: false,
-    saveUninitialized: false
 }));
 
 // Initialize cassandra client
@@ -54,7 +53,7 @@ let cassandra: Client = new Client({
     } : undefined
 });
 
-const captcha = new CaptchaGenerator();
+const captcha = new CaptchaGenerator(75, 300);
 
 // Startup logic for equinox
 const startServer = async () => {
