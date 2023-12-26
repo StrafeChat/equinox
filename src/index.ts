@@ -1,11 +1,11 @@
 require("dotenv").config();
 import bodyParser from "body-parser";
-import session from "express-session";
 import { Client } from "cassandra-driver";
 import cors from "cors";
 import express from "express";
 import fs from "fs";
-
+// import cookieParser from "cookie-parser";
+import session from 'express-session';
 const { CaptchaGenerator, middleware } = require("@strafechat/captcha");
 
 // Grab constants
@@ -18,7 +18,7 @@ const {
     SCYLLA_KEYSPACE,
     RESEND_API_KEY,
     PORT,
-    SESSION_SECRET
+    // SESSION_SECRET
 } = process.env;
 
 // Throw errors if important constants are missing
@@ -31,16 +31,29 @@ if (!RESEND_API_KEY) throw new Error("Missing RESEND_API_KEY in the environmenta
 // Initialize express
 const app = express();
 
-// TODO: Use wildcard for cors whenever bots are added.
+const captcha = new CaptchaGenerator(100, 300);
+
+app.use(session({
+    secret: "strafechat",
+}));
+
+app.use(middleware(captcha))
 app.use(bodyParser.json());
 
 app.use(cors({
     origin: FRONTEND_URL,
 }));
 
-app.use(session({
-    secret: SESSION_SECRET || "equinox", // TODO: implement a better way of handling this
-}));
+app.set('trust proxy', 1);
+
+// app.use(session({
+//     secret: SESSION_SECRET ?? "equinox", // TODO: implement a better way of handling this
+// }));
+
+
+// const captcha = new CaptchaGenerator();
+// app.use(middleware(captcha))
+
 
 // Initialize cassandra client
 let cassandra: Client = new Client({
@@ -53,7 +66,7 @@ let cassandra: Client = new Client({
     } : undefined
 });
 
-const captcha = new CaptchaGenerator(75, 300);
+// const captcha = new CaptchaGenerator(75, 300);
 
 // Startup logic for equinox
 const startServer = async () => {
@@ -77,16 +90,16 @@ const startServer = async () => {
     });
 
     // TODO: Captcha
-    app.get("/captcha", cors({ origin: process.env.FRONTEND_URL }), middleware(captcha), async (req, res) => {
-        res.status(200);
-        res.send({ image: await (req as any).generateCaptcha() });
-    });
+    // app.get("/captcha", cors({ origin: process.env.FRONTEND_URL }), async (req, res) => {
+    //     res.status(200);
+    //     res.send({ image: await (req as any).generateCaptcha() });
+    // });
 
-            /*
-        // verifying captchas looks like this:
-        const captchaInput = req.body.captcha;
-        const verified = (req as any).verifyCaptcha(capchtaInput);
-        */
+    /*
+// verifying captchas looks like this:
+const captchaInput = req.body.captcha;
+const verified = (req as any).verifyCaptcha(capchtaInput);
+*/
 
     app.listen(port, () => {
         console.log(`Equinox is listening on ${port}!`);
@@ -99,4 +112,4 @@ const startServer = async () => {
     await startServer();
 })();
 
-export { cassandra, captcha };
+export { cassandra };
