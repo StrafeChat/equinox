@@ -1,36 +1,29 @@
 import { Router } from "express";
-import cors from "cors";
+import { ErrorCodes } from "../../config";
+import { generateSnowflake } from "../../helpers/generator";
 import { JoiRegister } from "../../helpers/validator";
 import { RegisterBody } from "../../types/auth";
-import rateLimit from "express-rate-limit";
-import { ErrorCodes } from "../../config";
-import session from "express-session";
 const { middleware, CaptchaGenerator } = require("@strafechat/captcha");
 
 const router = Router();
 
-// Set a rate limit of 5 requests every 12 hours for an ip.
-// router.use(rateLimit({
-//     windowMs: 12 * 60 * 60 * 1000,
-//     limit: 5,
-//     standardHeaders: "draft-7",
-//     legacyHeaders: false,
-// }));
+const captcha = new CaptchaGenerator(75, 600);
 
-// router.use(cors({ origin: process.env.FRONTEND_URL }));
+router.use(middleware(captcha));
 
 router.get("/captcha", async (req, res) => {
-    res.status(200).json({ image: await (req as any).generateCaptcha() });
+    req.sessionID = generateSnowflake(0);
+    res.status(200).json({ image: await (req as any).generateCaptcha(), sessionId: req.sessionID });
+    console.log((req as any).sessions);
 })
 
 // Route for handling register requests
 router.post<{}, {}, RegisterBody>("/register", JoiRegister, async (req, res) => {
     // Express will return the error so we should try and catch to prevent that if it does happen.
     try {
-        console.log((req as any).session);
-        console.log((req as unknown as { verifyCaptcha: (input: string) => void }).verifyCaptcha(req.body.captcha));
-
-        res.status(200).json({ message: "Success!" });
+        const result = (req as unknown as { verifyCaptcha: (input: string) => boolean }).verifyCaptcha(req.body.captcha);
+        if (!result) return res.status(400).json({ message: "Invalid captcha" });
+        res.status(200).json({ status: result });
 
     } catch (err) {
         // Send back internal server error if something goes wrong.

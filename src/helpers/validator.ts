@@ -42,7 +42,7 @@ export const JoiRegister = (req: Request<{}, {}, Partial<RegisterBody>>, res: Re
             "string.max": "The password cannot be more than 128 characters long.",
             "string.required": "The password field is required.",
         }),
-        confirm_password: joi.ref("password"),
+        // confirm_password: joi.ref("password"),
         dob: joi.date().max(new Date(new Date().setFullYear(new Date().getFullYear() - 13))).required().messages({
             "date.base": "The date of birth must be a date.",
             "date.max": "You must be at least 13 years old to use strafe.",
