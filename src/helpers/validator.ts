@@ -1,6 +1,6 @@
 import { NextFunction, Request, Response } from "express";
 import joi from "joi";
-import { RegisterBody } from "../types/auth";
+import { RegisterBody } from "../types";
 
 export const JoiRegister = (req: Request<{}, {}, Partial<RegisterBody>>, res: Response, next: NextFunction) => {
     const schema = joi.object({
@@ -12,7 +12,6 @@ export const JoiRegister = (req: Request<{}, {}, Partial<RegisterBody>>, res: Re
         }),
         global_name: joi.string().alphanum().min(1).max(32).invalid("everyone", "here").messages({
             "string.base": "The display name should be a string.",
-            // "string.empty": "The display name cannot be empty.",
             "string.alphanum": "The display name should only include numbers and letters.",
             "string.min": "The display name cannot be less than 1 character long.",
             "string.max": "The display name cannot be more than 32 characters long.",

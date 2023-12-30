@@ -2,7 +2,7 @@ import { Router } from "express";
 import { ErrorCodes } from "../../config";
 import { generateSnowflake } from "../../helpers/generator";
 import { JoiRegister } from "../../helpers/validator";
-import { RegisterBody } from "../../types/auth";
+import { RegisterBody } from "../../types";
 const { middleware, CaptchaGenerator } = require("@strafechat/captcha");
 
 const router = Router();
@@ -30,6 +30,6 @@ router.post<{}, {}, RegisterBody>("/register", JoiRegister, async (req, res) => 
         console.trace(err);
         res.status(ErrorCodes.INTERNAL_SERVER_ERROR.CODE).json({ message: ErrorCodes.INTERNAL_SERVER_ERROR.MESSAGE })
     }
-});
+}); 
 
 export default router;

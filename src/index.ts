@@ -1,9 +1,10 @@
 require("dotenv").config();
+import { Client } from "better-cassandra";
 import bodyParser from "body-parser";
-import { Client } from "cassandra-driver";
 import cors from "cors";
 import express from "express";
 import fs from "fs";
+import path from "path";
 
 // Grab constants
 const {
@@ -34,19 +35,17 @@ app.use(cors({
 
 app.set('trust proxy', 1);
 
-
 // Initialize cassandra client
-let cassandra: Client = new Client({
+const cassandra = new Client({
     contactPoints: JSON.parse(SCYLLA_CONTACT_POINTS),
     localDataCenter: SCYLLA_DATA_CENTER,
     keyspace: SCYLLA_KEYSPACE,
     credentials: (SCYLLA_USERNAME && SCYLLA_PASSWORD) ? {
         username: SCYLLA_USERNAME,
         password: SCYLLA_PASSWORD
-    } : undefined
-});
-
-// const captcha = new CaptchaGenerator(75, 300);
+    } : undefined,
+    modelsPath: path.join(__dirname, "/database/models")
+})
 
 // Startup logic for equinox
 const startServer = async () => {
@@ -81,3 +80,4 @@ const startServer = async () => {
 })();
 
 export { cassandra };
+
