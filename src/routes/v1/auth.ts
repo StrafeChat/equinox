@@ -6,6 +6,7 @@ import { redis } from "../..";
 import { ErrorCodes } from "../../config";
 import { JoiRegister } from "../../helpers/validator";
 import { RegisterBody } from "../../types";
+import rateLimit from "express-rate-limit";
 
 const router = Router();
 
@@ -13,8 +14,15 @@ const captcha = new CaptchaGenerator(75, 600);
 
 const store = new RedisStore({
     client: redis,
-    prefix: "strafechat:",
+    prefix: "sess:",
 });
+
+router.use(rateLimit({
+    windowMs: 3 * 60 * 60 * 1000,
+    limit: 5,
+    standardHeaders: "draft-7",
+    legacyHeaders: false
+}));
 
 router.use(session({
     store,
@@ -36,6 +44,11 @@ router.post<{}, {}, RegisterBody>("/register", JoiRegister, async (req, res) => 
     try {
         const result = (req as unknown as { verifyCaptcha: (input: string) => boolean }).verifyCaptcha(req.body.captcha);
         if (!result) return res.status(400).json({ message: "Invalid captcha" });
+
+        req.session.destroy((err) => {
+            if (err) console.log(err);
+        });
+        
         res.status(200).json({ status: result });
 
     } catch (err) {
