@@ -1,12 +1,12 @@
 import { CaptchaGenerator, middleware } from "@strafechat/captcha";
 import RedisStore from "connect-redis";
 import { Router } from "express";
+import rateLimit from "express-rate-limit";
 import session from "express-session";
-import { redis } from "../..";
 import { ErrorCodes } from "../../config";
+import { redis } from "../../database";
 import { JoiRegister } from "../../helpers/validator";
 import { RegisterBody } from "../../types";
-import rateLimit from "express-rate-limit";
 
 const router = Router();
 
