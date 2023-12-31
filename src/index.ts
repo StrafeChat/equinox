@@ -5,6 +5,7 @@ import cors from "cors";
 import express from "express";
 import fs from "fs";
 import path from "path";
+import { createClient } from "redis";
 
 // Grab constants
 const {
@@ -31,6 +32,8 @@ app.use(bodyParser.json());
 
 app.use(cors({
     origin: FRONTEND_URL,
+    methods: ["POST", "PUT", "GET", "OPTIONS", "HEAD"],
+    credentials: true
 }));
 
 app.set('trust proxy', 1);
@@ -45,7 +48,9 @@ const cassandra = new Client({
         password: SCYLLA_PASSWORD
     } : undefined,
     modelsPath: path.join(__dirname, "/database/models")
-})
+});
+
+const redis = createClient();
 
 // Startup logic for equinox
 const startServer = async () => {
@@ -75,9 +80,10 @@ const startServer = async () => {
 
 //  Start everything up
 (async () => {
-    await cassandra.connect();
+    await cassandra.connect().catch(console.error);
+    await redis.connect().catch(console.error);
     await startServer();
 })();
 
-export { cassandra };
+export { cassandra, redis };
 
