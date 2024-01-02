@@ -3,8 +3,10 @@ import cors from "cors";
 import express from "express";
 import fs from "fs";
 import {
-    FRONTEND_URL,
-    PORT
+    FRONTEND,
+    NEBULA,
+    PORT,
+    STARGATE
 } from './config';
 import database from "./database";
 
@@ -14,7 +16,7 @@ const app = express();
 app.use(bodyParser.json());
 
 app.use(cors({
-    origin: FRONTEND_URL,
+    origin: FRONTEND,
     methods: ["POST", "PUT", "GET", "OPTIONS", "HEAD"],
     credentials: true
 }));
@@ -34,12 +36,14 @@ const startServer = async () => {
         }
     }
 
+    // Redirect to newest info route
     app.get("/", (_req, res) => {
-        res.redirect("/v1");
+        res.redirect("/v1/gateway");
     });
 
-    app.get("/v1", async (_req, res) => {
-        res.status(200).json({ version: "1.0.0", release: "Early Alpha", ws: "wss://stargate.strafe.chat", file_system: "https://nebula.strafe.chat", web_application: "https://web.strafe.chat" });
+    // Send info about strafe
+    app.get("/v1/gateway", async (_req, res) => {
+        res.status(200).json({ version: "1.0.0", release: "Early Alpha", ws: STARGATE, file_system: NEBULA, web_application: FRONTEND });
     });
 
     app.listen(port, () => {

@@ -16,13 +16,26 @@ export interface RegisterBody {
     captcha: string;
 };
 
+export interface IUserByEmail {
+    created_at: Date | number;
+    email: string;
+    id: string;
+}
+
+export interface IUserByUsernameAndDiscriminator {
+    created_at: Date | number;
+    discriminator: number;
+    id: string;
+    username: string;
+}
+
 export interface UserPresence {
     online: boolean;
     status: string;
     status_text: string;
 }
 
-export interface User {
+export interface IUser {
     id: string;
     accent_color: number;
     avatar: string;

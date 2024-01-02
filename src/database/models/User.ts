@@ -1,7 +1,7 @@
 import { FrozenType, Model, Schema } from "better-cassandra";
-import { User } from "../../types";
+import { IUser } from "../../types";
 
-const schema = new Schema<User>({
+const schema = new Schema<IUser>({
     id: {
         type: "text",
         partitionKey: true,
@@ -82,6 +82,6 @@ const schema = new Schema<User>({
     verified: {
         type: "boolean"
     }
-});
+}, { sortBy: { "column": "created_at", order: "DESC" } });
 
 export default new Model("users", schema);
