@@ -22,6 +22,7 @@ export const PASSWORD_HASHING_SALT = process.env.PASSWORD_HASHING_SALT ? parseIn
 export const STARGATE = process.env.STARGATE ?? "wss://stargate.strafe.chat";
 export const NEBULA = process.env.NEBULA ?? "wss://nebula.strafe.chat";
 export const FRONTEND = process.env.FRONTEND ?? "https://web.strafe.chat";
+export const EQUINOX = process.env.EQUINOX ?? "http://localhost:443";
 
 export const ErrorCodes = {
     INTERNAL_SERVER_ERROR: {

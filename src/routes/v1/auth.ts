@@ -31,6 +31,7 @@ router.use(rateLimit({
 
 router.use(session({
     store,
+    resave: true,
     saveUninitialized: true,
     secret: process.env.SESSION_SECRET ?? "StrafeChat",
 }));
