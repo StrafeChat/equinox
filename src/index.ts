@@ -19,16 +19,15 @@ const app = express();
 app.use(bodyParser.json());
 app.use(helmet());
 app.use(cors({
-    origin: FRONTEND,
+    origin: '*',
     methods: ["POST", "PUT", "GET", "OPTIONS", "HEAD", "DELETE", "PATCH", "CONNECT", "TRACE"],
-    credentials: true
 }));
 
 app.set('trust proxy', 1);
 app.disable('x-powered-by');
 
 app.use((req, res, next) => {
-    res.header('Access-Control-Allow-Origin', EQUINOX);
+    res.header('Access-Control-Allow-Origin', '*');
     res.header('Access-Control-Allow-Headers', '*');
     res.header('Access-Control-Allow-Methods', '*');
     if (req.method === 'OPTIONS') {

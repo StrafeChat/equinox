@@ -17,10 +17,10 @@ const router = Router();
 
 const captcha = new CaptchaGenerator(75, 600);
 
-const store = new RedisStore({
-    client: redis,
-    prefix: "sess:",
-});
+// const store = new RedisStore({
+//     client: redis,
+//     prefix: "sess:",
+// });
 
 router.use(rateLimit({
     windowMs: 3 * 60 * 60 * 1000,
@@ -30,7 +30,7 @@ router.use(rateLimit({
 }));
 
 router.use(session({
-    store,
+    //store,
     resave: true,
     saveUninitialized: true,
     secret: process.env.SESSION_SECRET ?? "StrafeChat",
@@ -109,7 +109,7 @@ router.post<{}, {}, RegisterBody>("/register", JoiRegister, async (req, res) => 
 
     } catch (err) {
         // Send back internal server error if something goes wrong.
-        console.trace(err);
+        console.log(err);
         res.status(ErrorCodes.INTERNAL_SERVER_ERROR.CODE).json({ message: ErrorCodes.INTERNAL_SERVER_ERROR.MESSAGE })
     }
 });

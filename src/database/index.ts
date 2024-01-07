@@ -32,7 +32,7 @@ const redis = createClient();
 
 export const init = async () => {
     await cassandra.connect().catch(Logger.error);
-   // await redis.connect().catch(Logger.error);
+  // await redis.connect().catch(Logger.error);
 }
 
 export { cassandra, redis };
