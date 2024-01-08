@@ -16,6 +16,12 @@ export interface RegisterBody {
     captcha: string;
 };
 
+export interface LoginBody {
+    email: string;
+    password: string;
+    captcha: string;
+}
+
 export interface IUserByEmail {
     created_at: Date | number;
     email: string;
@@ -50,7 +56,7 @@ export interface IUser {
     email: string;
     flags: number;
     global_name: string;
-    last_pass_reset: Date | number;
+    last_pass_reset: number;
     locale: string;
     mfa_enabled: boolean;
     password: string;
@@ -62,4 +68,10 @@ export interface IUser {
     theme: string;
     username: string;
     verified: boolean;
+}
+
+export interface IVerification {
+    id: string;
+    code: string;
+    created_at: number;
 }

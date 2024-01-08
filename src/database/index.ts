@@ -1,5 +1,4 @@
 import { Client } from 'better-cassandra';
-import { Logger } from "../helpers/logger";
 import path from "path";
 import { createClient } from 'redis';
 import {
@@ -9,6 +8,8 @@ import {
     SCYLLA_PASSWORD,
     SCYLLA_USERNAME
 } from '../config';
+import { Logger } from "../helpers/logger";
+import Verification from './models/Verification';
 
 const cassandra = new Client({
     contactPoints: JSON.parse(SCYLLA_CONTACT_POINTS),
@@ -21,18 +22,18 @@ const cassandra = new Client({
     modelsPath: path.join(__dirname, "/models"),
     typesPath: path.join(__dirname, "/types"),
 
-     logging: {
-          success: Logger.success,
-          info: Logger.info,
-          error: Logger.error,
-     }
+    logging: {
+        success: Logger.success,
+        info: Logger.info,
+        error: Logger.error,
+    }
 });
 
 const redis = createClient();
 
 export const init = async () => {
     await cassandra.connect().catch(Logger.error);
-  // await redis.connect().catch(Logger.error);
+    await redis.connect().catch(Logger.error);
 }
 
 export { cassandra, redis };

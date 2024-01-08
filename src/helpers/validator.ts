@@ -1,6 +1,7 @@
 import { NextFunction, Request, Response } from "express";
 import joi from "joi";
-import { RegisterBody } from "../types";
+import User from "../database/models/User";
+import { IUser, RegisterBody } from "../types";
 
 export const JoiRegister = (req: Request<{}, {}, Partial<RegisterBody>>, res: Response, next: NextFunction) => {
     const schema = joi.object({
@@ -58,5 +59,31 @@ export const JoiRegister = (req: Request<{}, {}, Partial<RegisterBody>>, res: Re
 
     if (error) return res.status(400).json({ message: error.details[0].message });
 
+    next();
+}
+
+export const verifyToken = async (req: Request, res: Response & { locals: { user: IUser } }, next: NextFunction) => {
+    const token = req.headers["authorization"];
+    if (typeof token != "string") return res.status(401).json({ message: "Unauthorized" });
+    const splitToken = token.split('.');
+    if (splitToken.length < 3) return res.status(401).json({ message: "Unauthorized" });
+
+    const id = atob(splitToken[0]);
+    const last_pass_reset = atob(splitToken[1]);
+    const secret = atob(splitToken[2]);
+
+    const users = await User.select({
+        $include: ["id", "last_pass_reset", "secret"],
+        $where: [
+            {
+                equals: ["id", id]
+            }
+        ]
+    });
+
+    if (users!.length < 1) return res.status(401).json({ message: "Unauthorized" });
+
+    if (users![0].last_pass_reset != parseInt(last_pass_reset) || users![0].secret != secret) return res.status(401).json({ message: "Unauthorized" });
+    res.locals.user = users![0] as unknown as IUser;
     next();
 }

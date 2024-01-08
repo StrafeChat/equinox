@@ -1,17 +1,17 @@
 import bodyParser from "body-parser";
-import { Logger } from "./helpers/logger";
 import cors from "cors";
-import helmet from "helmet";
 import express from "express";
 import fs from "fs";
+import helmet from "helmet";
 import {
     FRONTEND,
     NEBULA,
     PORT,
     STARGATE,
-    EQUINOX,
 } from './config';
 import database from "./database";
+import { Logger } from "./helpers/logger";
+import rateLimit from "express-rate-limit";
 
 //-Initialize express-//
 const app = express();
@@ -19,23 +19,27 @@ const app = express();
 app.use(bodyParser.json());
 app.use(helmet());
 app.use(cors({
-    origin: '*',
-    methods: ["POST", "PUT", "GET", "OPTIONS", "HEAD", "DELETE", "PATCH", "CONNECT", "TRACE"],
+    origin: [FRONTEND, NEBULA, STARGATE],
+    credentials: true,
 }));
 
 app.set('trust proxy', 1);
 app.disable('x-powered-by');
 
 app.use((req, res, next) => {
-    res.header('Access-Control-Allow-Origin', '*');
-    res.header('Access-Control-Allow-Headers', '*');
-    res.header('Access-Control-Allow-Methods', '*');
     if (req.method === 'OPTIONS') {
         res.status(200).send();
     } else {
         next();
     }
 });
+
+app.use(rateLimit({
+    windowMs: 3 * 60 * 60 * 1000,
+    limit: 100,
+    standardHeaders: "draft-7",
+    legacyHeaders: false
+}));
 
 // Startup logic for equinox
 const startServer = async () => {

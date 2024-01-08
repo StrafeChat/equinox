@@ -1,4 +1,4 @@
-import utils from "log-utils";
+const utils = require("log-utils");
 
 export class Logger {
     public static start() {
