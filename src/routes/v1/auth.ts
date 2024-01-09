@@ -1,6 +1,6 @@
 import { CaptchaGenerator, middleware } from "@strafechat/captcha";
 import bcrypt from "bcrypt";
-import { BatchInsert } from "better-cassandra";
+import { BatchDelete, BatchInsert, BatchUpdate } from "better-cassandra";
 import crypto from "crypto";
 import { Router } from "express";
 import rateLimit from "express-rate-limit";
@@ -23,7 +23,7 @@ const captcha = new CaptchaGenerator(75, 600);
 
 router.use(rateLimit({
     windowMs: 3 * 60 * 60 * 1000,
-    limit: 5,
+    limit: 25,
     standardHeaders: "draft-7",
     legacyHeaders: false
 }));
@@ -127,27 +127,42 @@ router.post<{}, {}, RegisterBody>("/register", JoiRegister, async (req, res) => 
     }
 });
 
-router.post<string, { id: string }, {}, { code: string }, {}, { user: IUser }>("/verify", verifyToken, async (req, res) => {
+router.post<string, {}, {}, { code: string }, {}, { user: IUser }>("/verify", verifyToken, async (req, res) => {
     try {
-        if (typeof req.params.id != "string") return res.status(400).json({ message: "You need to specify an id to proceed with verification." });
         if (typeof req.body.code != "string") return res.status(400).json({ message: "You need to specify a verification code to proceed with verification." });
-
-        if (res.locals.user.id != atob(req.params.id)) return res.status(401).json({ message: "You can only verify yourself." });
+        if (req.body.code.length < 6 || req.body.code.length > 6) return res.status(400).json({ message: "The verification code should be 6 characters long." });
 
         const verifications = await Verification.select({
             $where: [{
-                equals: ["code", req.body.code]
-            }, {
-                equals: ["id", req.params.id]
+                equals: ["id", Buffer.from(res.locals.user.id).toString("base64url")]
             }]
         });
 
         if (verifications!.length < 1) return res.status(404).json({ message: "You are already verified!" });
+        if (verifications[0].code != req.body.code) return res.status(400).json({ message: "The code you put in is incorrect." });
 
-        // TODO: Delete row and send token back to user and message.
+        await cassandra.batch([
+            BatchDelete<IVerification>({
+                name: "verifications",
+                where: [{
+                    "equals": ["id", req.body.code]
+                }]
+            }),
+            BatchUpdate<IUser>({
+                name: "users",
+                where: [{
+                    "equals": ["id", res.locals.user.id]
+                }],
+                set: {
+                    "verified": true
+                }
+            })
+        ], { prepare: true });
+
+        res.status(200).json({ message: "Verification successful. Your account has been verified." }); // send back token?
     } catch (err) {
         console.error(err);
-        return res.status(500).json({ message: "Internal Server Error" });
+        res.status(ErrorCodes.INTERNAL_SERVER_ERROR.CODE).json({ message: ErrorCodes.INTERNAL_SERVER_ERROR.MESSAGE })
     }
 });
 
