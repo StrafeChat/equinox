@@ -26,7 +26,6 @@ const schema = new Schema<IUser>({
     },
     created_at: {
         type: "timestamp",
-        cluseringKey: true
     },
     discriminator: {
         type: "int"

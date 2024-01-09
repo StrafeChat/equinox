@@ -5,11 +5,13 @@ import crypto from "crypto";
 import { Router } from "express";
 import rateLimit from "express-rate-limit";
 import session from "express-session";
+import fs from "fs";
 import { Resend } from "resend";
 import { ErrorCodes, FRONTEND, PASSWORD_HASHING_SALT } from "../../config";
 import { cassandra } from "../../database";
 import User from "../../database/models/User";
 import UserByEmail from "../../database/models/UserByEmail";
+import { redis } from "../../database";
 import UserByUsernameAndDiscriminator from "../../database/models/UserByUsernameAndDiscriminator";
 import Verification from "../../database/models/Verification";
 import { generateRandomString, generateSnowflake, generateToken } from "../../helpers/generator";
@@ -112,14 +114,26 @@ router.post<{}, {}, RegisterBody>("/register", JoiRegister, async (req, res) => 
             })
         ], { prepare: true });
 
-        await resend.emails.send({
-            from: "Strafe <no-reply@strafe.chat>",
+
+        resend.emails.send({
+            from: "Strafe Chat <no-reply@strafe.chat>",
             to: [email],
-            subject: "Verify your Strafe account",
-            html: `<html lang="en" style="overflow:hidden"><meta content="width=100%,initial-scale=1" name="viewport"><body style="color:#fff;font-family:Arial"><div style="background:#232629;border-radius:8px;padding:5px;width:100%;display:inline-block"><a href="https://strafe.chat" style="text-decoration:none;color:#fff"><center><center><img src="https://res.cloudinary.com/sup/image/upload/v1704245175/avatars/c5kpdx4pgkreomdlppta.png" style="background-color:#0000004d;border-radius:50%;width:80px;margin-top:20px;margin-bottom:10px"><h1 style="font-size:24px">Strafe</h1></center></center><p style="text-align:center;padding:0;font-size:18px;margin:10px 0 20px 0">Your confirmation Code:<center><code style="background-color:#f1f1f1;color:#333;padding:2px 4px;border-radius:4px;font-family:'Courier New',monospace">${verifyCode}</code></center><p style="text-align:center;margin:30px 10px 20px 10px;opacity:.8;font-size:14px"><a style="color:#22c55e" href="${FRONTEND}/verify/${verifyId}?code=${verifyCode}">Click here</a>to verify your email.<br><br>If you did not request this code, you can safely ignore this email.<br>Sent by<a style="color:#fff" href="https://strafe.chat">StrafeChat</a></div></body></html>`
+            subject: "Verify your Strafe Chat account!",
+            html: `
+            <div style="background-color: #36393f; padding: 20px; border-radius: 5px; items-align: center">
+                <h1>Verify your Strafe Chat account!</h1>
+                <p>Hey there ${username}#${discriminator},</p>
+                <p>Thanks for signing up for StrafeChat! You're almost ready to start chatting with your friends.</p>
+                <p>To verify your account, please enter the following code in the verification page:</p>
+                <h2>${verifyCode}</h2>
+                <p>If you didn't sign up for StrafeChat, you can safely ignore this email.</p>
+                <p>Thanks,</p>
+                <p>The Strafe Chat Team</p>
+            </div>
+            `
         });
 
-        return res.status(201).json({ message: "Waiting on email verification." })
+        return res.status(201).json({ message: "Waiting on email verification.", token: generateToken(id!, created_at!, secret!) })
     } catch (err) {
         // Send back internal server error if something goes wrong.
         console.log(err);
@@ -159,7 +173,19 @@ router.post<string, {}, {}, { code: string }, {}, { user: IUser }>("/verify", ve
             })
         ], { prepare: true });
 
-        res.status(200).json({ message: "Verification successful. Your account has been verified." }); // send back token?
+        fs.readdir("avatars", (err, files) => {
+            if (files.length < 1) throw new Error("No default avatars exist in the avatars directory.");
+            fs.readFile(`avatars/avatar${Math.floor(Math.random() * (files.length - 1 + 1)) + 1}.png`, async (_err, data) => {
+                redis.publish("nebula-avatars", `${JSON.stringify(
+                    {
+                        id: res.locals.user.id,
+                        avatar: data.toString("base64")
+                    }   
+                )}`);  
+            });
+        });
+
+        res.status(200).json({ message: "Verification successful. Your account has been verified." });
     } catch (err) {
         console.error(err);
         res.status(ErrorCodes.INTERNAL_SERVER_ERROR.CODE).json({ message: ErrorCodes.INTERNAL_SERVER_ERROR.MESSAGE })
@@ -168,14 +194,7 @@ router.post<string, {}, {}, { code: string }, {}, { user: IUser }>("/verify", ve
 
 router.post<{}, {}, LoginBody>("/login", async (req, res) => {
     try {
-        const { email, captcha } = req.body;
-
-        const result = (req as unknown as { verifyCaptcha: (input: string) => boolean }).verifyCaptcha(captcha);
-        if (!result) return res.status(400).json({ message: "Invalid captcha" });
-
-        req.session.destroy((err) => {
-            if (err) console.log(err);
-        });
+        const { email } = req.body;
 
         const existsEmails = await UserByEmail.select({ $where: [{ equals: ["email", email] }] });
         if (existsEmails?.length! < 1) return res.status(409).json({ message: "A user does not exist with this email." });
