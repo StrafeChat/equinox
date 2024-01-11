@@ -211,12 +211,14 @@ router.post<{}, {}, LoginBody>("/login", async (req, res) => {
         const existsEmails = await UserByEmail.select({ $where: [{ equals: ["email", email] }] });
         if (existsEmails?.length! < 1) return res.status(409).json({ message: "A user does not exist with this email." });
 
-        const users = await User.select({ $include: ["id", "last_pass_reset", "secret", "password"], $where: [{ equals: ["id", existsEmails![0].id] }, { equals: ["created_at", existsEmails![0].created_at] }] });
+        const users = await User.select({ $include: ["id", "last_pass_reset", "secret", "password"], $where: [{ equals: ["id", existsEmails![0].id] }] });
+        
+        if (!users[0]) return res.status(404).json({ message: "Invaild email or password." });
 
         const { id, last_pass_reset, secret, password } = users![0];
 
         const validPass = await bcrypt.compare(req.body.password, password!);
-        if (!validPass) return res.status(401).json({ message: "Invalid Password" });
+        if (!validPass) return res.status(401).json({ message: "Invaild email or password." });
 
         res.status(200).json({ token: generateToken(id!, last_pass_reset!, secret!) });
     } catch (err) {
