@@ -74,7 +74,7 @@ export const verifyToken = async (req: Request, res: Response & { locals: { user
     
 
     const users = await User.select({
-        $include: ["id", "last_pass_reset", "secret", "verified"],
+        $include: ["id", "last_pass_reset", "secret", "verified", "created_at"],
         $where: [
             {
                 equals: ["id", id]
@@ -83,7 +83,7 @@ export const verifyToken = async (req: Request, res: Response & { locals: { user
     });
 
     if (users!.length < 1) return res.status(401).json({ message: "Unauthorized" });
-    if (!users![0].verified && req.route.path != "/verify") return res.status(401).json({ message: "You need to verify your email to use your account!" });
+    if (!users![0].verified && req.route.path != "/verify") return res.status(401).json({ message: "You need to verify your email to procced." });
   
     if (users![0].last_pass_reset! > parseInt(last_pass_reset) || users![0].secret != secret) return res.status(401).json({ message: "Unauthorized" });
     res.locals.user = users![0] as unknown as IUser;

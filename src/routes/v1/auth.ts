@@ -7,20 +7,18 @@ import rateLimit from "express-rate-limit";
 import session from "express-session";
 import fs from "fs";
 import { Resend } from "resend";
-import { ErrorCodes, FRONTEND, PASSWORD_HASHING_SALT } from "../../config";
+import { ErrorCodes, NEBULA, PASSWORD_HASHING_SALT } from "../../config";
 import { cassandra } from "../../database";
 import User from "../../database/models/User";
 import UserByEmail from "../../database/models/UserByEmail";
-import { redis } from "../../database";
 import UserByUsernameAndDiscriminator from "../../database/models/UserByUsernameAndDiscriminator";
 import Verification from "../../database/models/Verification";
 import { generateRandomString, generateSnowflake, generateToken } from "../../helpers/generator";
 import { JoiRegister, verifyToken } from "../../helpers/validator";
 import { IUser, IUserByEmail, IUserByUsernameAndDiscriminator, IVerification, LoginBody, RegisterBody } from "../../types";
+
 const resend = new Resend(process.env.RESEND_API_KEY!);
-
 const router = Router();
-
 const captcha = new CaptchaGenerator(75, 600);
 
 router.use(rateLimit({
@@ -136,7 +134,7 @@ router.post<{}, {}, RegisterBody>("/register", JoiRegister, async (req, res) => 
         return res.status(201).json({ message: "Waiting on email verification.", token: generateToken(id!, created_at!, secret!) })
     } catch (err) {
         // Send back internal server error if something goes wrong.
-        console.log(err);
+        console.log("Register failed:", err);
         res.status(ErrorCodes.INTERNAL_SERVER_ERROR.CODE).json({ message: ErrorCodes.INTERNAL_SERVER_ERROR.MESSAGE })
     }
 });
@@ -155,6 +153,8 @@ router.post<string, {}, {}, { code: string }, {}, { user: IUser }>("/verify", ve
         if (verifications!.length < 1) return res.status(404).json({ message: "You are already verified!" });
         if (verifications[0].code != req.body.code) return res.status(400).json({ message: "The code you put in is incorrect." });
 
+        console.log(res.locals.user);
+
         await cassandra.batch([
             BatchDelete<IVerification>({
                 name: "verifications",
@@ -166,6 +166,8 @@ router.post<string, {}, {}, { code: string }, {}, { user: IUser }>("/verify", ve
                 name: "users",
                 where: [{
                     "equals": ["id", res.locals.user.id]
+                }, {
+                    "equals": ["created_at", res.locals.user.created_at]
                 }],
                 set: {
                     "verified": true
@@ -176,19 +178,29 @@ router.post<string, {}, {}, { code: string }, {}, { user: IUser }>("/verify", ve
         fs.readdir("avatars", (err, files) => {
             if (files.length < 1) throw new Error("No default avatars exist in the avatars directory.");
             fs.readFile(`avatars/avatar${Math.floor(Math.random() * (files.length - 1 + 1)) + 1}.png`, async (_err, data) => {
-                redis.publish("nebula-avatars", `${JSON.stringify(
-                    {
-                        id: res.locals.user.id,
-                        avatar: data.toString("base64")
-                    }   
-                )}`);  
+                const resp = await fetch(`${NEBULA}/avatars`, {
+                    method: "PATCH",
+                    headers: {
+                        "Content-Type": "application/json",
+                        "Authorization": req.headers["authorization"]!,
+                    },
+                    body: JSON.stringify({
+                        data: data.toString("base64")
+                    })
+                });
+
+                if (!resp.ok) {
+                    const data = await resp.json();
+                    console.error("Failed to update avatar:", data);
+                    return res.status(500).json({ message: ErrorCodes.INTERNAL_SERVER_ERROR.MESSAGE });
+                }
             });
         });
 
         res.status(200).json({ message: "Verification successful. Your account has been verified." });
     } catch (err) {
-        console.error(err);
-        res.status(ErrorCodes.INTERNAL_SERVER_ERROR.CODE).json({ message: ErrorCodes.INTERNAL_SERVER_ERROR.MESSAGE })
+        console.error("Failed to verify user:", err);
+        res.status(500).json({ message: ErrorCodes.INTERNAL_SERVER_ERROR.MESSAGE })
     }
 });
 
@@ -209,7 +221,7 @@ router.post<{}, {}, LoginBody>("/login", async (req, res) => {
         res.status(200).json({ token: generateToken(id!, last_pass_reset!, secret!) });
     } catch (err) {
         // Send back internal server error if something goes wrong.
-        console.log(err);
+        console.log("Login failed:", err);
         res.status(ErrorCodes.INTERNAL_SERVER_ERROR.CODE).json({ message: ErrorCodes.INTERNAL_SERVER_ERROR.MESSAGE })
     }
 });
