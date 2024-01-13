@@ -19,10 +19,11 @@ export {
 };
 
 export const PASSWORD_HASHING_SALT = process.env.PASSWORD_HASHING_SALT ? parseInt(process.env.PASSWORD_HASHING_SALT) : 12;
+
 export const STARGATE = process.env.STARGATE ?? "wss://stargate.strafe.chat";
-export const NEBULA = process.env.NEBULA ?? "wss://nebula.strafe.chat";
+export const NEBULA = process.env.NEBULA ?? "https://nebula.strafe.chat";
 export const FRONTEND = process.env.FRONTEND ?? "https://web.strafe.chat";
-export const EQUINOX = process.env.EQUINOX ?? "http://localhost:443";
+export const EQUINOX = process.env.EQUINOX ?? "https://equinox.strafe.chat";
 
 export const ErrorCodes = {
     INTERNAL_SERVER_ERROR: {
