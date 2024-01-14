@@ -195,8 +195,6 @@ router.post<string, {}, {}, { code: string }, {}, { user: IUser }>("/verify", ve
                 name: "users",
                 where: [{
                     "equals": ["id", res.locals.user.id]
-                }, {
-                    "equals": ["created_at", res.locals.user.created_at]
                 }],
                 set: {
                     "verified": true
@@ -215,7 +213,8 @@ router.post<string, {}, {}, { code: string }, {}, { user: IUser }>("/verify", ve
             return res.status(500).json({ message: "Failed to create an avatar for the user. Expect some weirdness to occur with your avatar." });
         });
 
-        console.log(_res.json);
+        const data = await _res.json();
+         console.log(data);
 
         res.status(200).json({ message: "Verification successful. Your account has been verified." });
     } catch (err) {
