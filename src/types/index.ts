@@ -56,7 +56,7 @@ export interface IUser {
     email: string;
     flags: number;
     global_name: string;
-    last_pass_reset: number;
+    last_pass_reset: Date;
     locale: string;
     mfa_enabled: boolean;
     password: string;

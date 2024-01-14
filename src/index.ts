@@ -1,8 +1,8 @@
 import bodyParser from "body-parser";
 import cors from "cors";
 import express from "express";
+import rateLimit from "express-rate-limit";
 import fs from "fs";
-import helmet from "helmet";
 import {
     FRONTEND,
     NEBULA,
@@ -11,15 +11,14 @@ import {
 } from './config';
 import database from "./database";
 import { Logger } from "./helpers/logger";
-import rateLimit from "express-rate-limit";
 
 //-Initialize express-//
 const app = express();
 
 app.use(bodyParser.json());
-app.use(helmet());
 app.use(cors({
-    origin: [FRONTEND, NEBULA, STARGATE],
+    origin: FRONTEND,
+    methods: ["POST", "PUT", "GET", "OPTIONS", "HEAD"],
     credentials: true,
 }));
 
