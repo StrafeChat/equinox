@@ -195,6 +195,8 @@ router.post<string, {}, {}, { code: string }, {}, { user: IUser }>("/verify", ve
                 name: "users",
                 where: [{
                     "equals": ["id", res.locals.user.id]
+                }, {
+                    "equals": ["created_at", res.locals.user.created_at]
                 }],
                 set: {
                     "verified": true
@@ -214,7 +216,7 @@ router.post<string, {}, {}, { code: string }, {}, { user: IUser }>("/verify", ve
         });
 
         const data = await _res.json();
-         console.log(data);
+        console.log(data);
 
         res.status(200).json({ message: "Verification successful. Your account has been verified." });
     } catch (err) {
