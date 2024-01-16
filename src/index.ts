@@ -33,12 +33,12 @@ app.use((req, res, next) => {
     }
 });
 
-app.use(rateLimit({
-    windowMs: 3 * 60 * 60 * 1000,
-    limit: 100,
-    standardHeaders: "draft-7",
-    legacyHeaders: false
-}));
+// app.use(rateLimit({
+//     windowMs: 3 * 60 * 60 * 1000,
+//     limit: 100,
+//     standardHeaders: "draft-7",
+//     legacyHeaders: false
+// }));
 
 // Startup logic for equinox
 const startServer = async () => {

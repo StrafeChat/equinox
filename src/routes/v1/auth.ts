@@ -89,7 +89,7 @@ router.post<{}, {}, RegisterBody>("/register", JoiRegister, async (req, res) => 
                     "premium_type": 0,
                     "presence": {
                         "online": false,
-                        "status": "offline",
+                        "status": "online",
                         "status_text": ""
                     },
                     "public_flags": 0,

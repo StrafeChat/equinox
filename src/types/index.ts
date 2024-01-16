@@ -37,7 +37,7 @@ export interface IUserByUsernameAndDiscriminator {
 
 export interface UserPresence {
     online: boolean;
-    status: string;
+    status: "online" | "offline" | "idle" | "dnd";
     status_text: string;
 }
 
