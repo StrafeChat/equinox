@@ -195,8 +195,6 @@ router.post<string, {}, {}, { code: string }, {}, { user: IUser }>("/verify", ve
                 name: "users",
                 where: [{
                     "equals": ["id", res.locals.user.id]
-                }, {
-                    "equals": ["created_at", res.locals.user.created_at]
                 }],
                 set: {
                     "verified": true

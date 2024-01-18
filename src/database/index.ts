@@ -9,7 +9,6 @@ import {
     SCYLLA_USERNAME
 } from '../config';
 import { Logger } from "../helpers/logger";
-import Verification from './models/Verification';
 
 const cassandra = new Client({
     contactPoints: JSON.parse(SCYLLA_CONTACT_POINTS),
