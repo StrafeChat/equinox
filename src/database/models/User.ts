@@ -26,6 +26,7 @@ const schema = new Schema<IUser>({
     },
     created_at: {
         type: "timestamp",
+        cluseringKey: false
     },
     discriminator: {
         type: "int"
@@ -81,6 +82,6 @@ const schema = new Schema<IUser>({
     verified: {
         type: "boolean"
     }
-}, { sortBy: { "column": "created_at", order: "DESC" } });
+});
 
 export default new Model("users", schema);
