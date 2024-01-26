@@ -1,4 +1,4 @@
-import { FrozenType, UDT, UDTSchema } from "better-cassandra";
+import { UDT, UDTSchema } from "better-cassandra";
 import { UserPresence } from "../../types";
 
 const schema = new UDTSchema<UserPresence>({
