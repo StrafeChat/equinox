@@ -42,7 +42,6 @@ router.use("/", (req, res, next) => mw(req, res, next));
 
 router.get("/captcha", async (req, res) => {
     res.status(200).json({ image: await (req as any).generateCaptcha() });
-    console.log(req.session);
 })
 
 // Route for handling register requests
@@ -51,14 +50,11 @@ router.post<{}, {}, RegisterBody>("/register", JoiRegister, async (req, res) => 
     try {
         const { email, global_name, username, discriminator, password, dob, locale, captcha } = req.body;
 
-        console.log(req.session);
-        console.log(captcha);
-
         const result = (req as unknown as { verifyCaptcha: (input: string) => boolean }).verifyCaptcha(captcha);
         if (!result) return res.status(400).json({ message: "Invalid captcha" });
 
         req.session.destroy((err) => {
-            if (err) console.log(err);
+            if (err) console.error(err);
         });
 
         const existsEmail = await UserByEmail.count({ $where: [{ equals: ["email", email] }] });
@@ -139,7 +135,7 @@ router.post<{}, {}, RegisterBody>("/register", JoiRegister, async (req, res) => 
         return res.status(201).json({ message: "Waiting on email verification.", token: generateToken(id!, created_at.getTime(), secret!) })
     } catch (err) {
         // Send back internal server error if something goes wrong.
-        console.log("Register failed:", err);
+        console.error("Register failed:", err);
         res.status(ErrorCodes.INTERNAL_SERVER_ERROR.CODE).json({ message: ErrorCodes.INTERNAL_SERVER_ERROR.MESSAGE })
     }
 });
@@ -163,7 +159,7 @@ router.post<{}, {}, LoginBody>("/login", async (req, res) => {
         res.status(200).json({ token: generateToken(id!, last_pass_reset?.getTime()!, secret!) });
     } catch (err) {
         // Send back internal server error if something goes wrong.
-        console.log("Login failed:", err);
+        console.error("Login failed:", err);
         res.status(ErrorCodes.INTERNAL_SERVER_ERROR.CODE).json({ message: ErrorCodes.INTERNAL_SERVER_ERROR.MESSAGE })
     }
 });
@@ -214,7 +210,6 @@ router.post<string, {}, {}, { code: string }, {}, { user: IUser }>("/verify", ve
         });
 
         const data = await _res.json();
-        console.log(data);
 
         res.status(200).json({ message: "Verification successful. Your account has been verified." });
     } catch (err) {
