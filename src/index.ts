@@ -18,7 +18,7 @@ const app = express();
 app.use(bodyParser.json());
 app.use(cors({
     origin: FRONTEND,
-    methods: ["POST", "PUT", "GET", "OPTIONS", "HEAD"],
+    methods: "*",
     credentials: true,
 }));
 
@@ -26,6 +26,7 @@ app.set('trust proxy', 1);
 app.disable('x-powered-by');
 
 app.use((req, res, next) => {
+  res.header('Access-Control-Allow-Headers', "*");
     if (req.method === 'OPTIONS') {
         res.status(200).send();
     } else {
