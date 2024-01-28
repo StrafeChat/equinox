@@ -8,6 +8,7 @@ import { IUser, IUserByEmail, IUserByUsernameAndDiscriminator } from "../../type
 const router = Router();
 
 router.patch<string, {}, {}, { email: string, username: string, discriminator: number }, {}, { user: IUser }>('/@me', verifyToken, JoiEditData, async (req, res) => {
+    
     if (req.body.email) {
         const users = await UserByEmail.select({ $where: [{ equals: ["email", req.body.email] }] });
         if (users.length > 1) return res.status(400).json({ message: "Email is already in use" });
@@ -18,9 +19,10 @@ router.patch<string, {}, {}, { email: string, username: string, discriminator: n
     ];
 
     if ((req.body.username && req.body.username !== res.locals.user.username) || (req.body.discriminator && req.body.discriminator !== res.locals.user.discriminator)) {
+        
         const users = await UserByUsernameAndDiscriminator.select({ $where: [{ equals: ["username", req.body.username || res.locals.user.username] }, { equals: ["discriminator", req.body.discriminator || res.locals.user.discriminator] }], $prepare: true });
 
-        if (users.length > 1) {
+        if (users.length > 0) {
             if (users[0].username === res.locals.user.username && users[0].discriminator === res.locals.user.discriminator) return res.status(400).json({ message: "Username and discriminator is already in use" });
             else if (users[0].username === res.locals.user.username) return res.status(400).json({ message: "Username is already in use" });
             else return res.status(400).json({ message: "Discriminator is already in use" })
