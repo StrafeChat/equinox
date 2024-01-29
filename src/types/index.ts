@@ -75,3 +75,20 @@ export interface IVerification {
     code: string;
     created_at: number;
 }
+
+export interface IRoom {
+    id: string;
+    created_at: number;
+    name: string;
+    permissions: string[];
+}
+
+export interface ISpace {
+    id: string;
+    created_at: number;
+    name: string;
+    icon: string;
+    banner: string;
+    owner_id: string;
+    rooms: IRoom[];
+}
