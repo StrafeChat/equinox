@@ -85,10 +85,19 @@ export interface IRoom {
 
 export interface ISpace {
     id: string;
-    created_at: number;
     name: string;
     icon: string;
-    banner: string;
     owner_id: string;
-    rooms: IRoom[];
+    afk_room_id: string;
+    afk_timeout: number;
+    verifcation_level: number;
+    room_ids: string[];
+    role_ids: string[];
+    rules_room_id: string;
+    description: string;
+    banner: string;
+    preferred_locale: string;
+    sticker_ids: string[];
+    created_at: number;
+    edited_at: number;
 }
