@@ -1,11 +1,11 @@
 import { Router } from "express";
 import cors from "cors";
+import rateLimit from "express-rate-limit";
+import session from "express-session";
+import { middleware, CaptchaGenerator } from "@strafechat/captcha";
 import { JoiRegister } from "../../helpers/validator";
 import { RegisterBody } from "../../types/auth";
-import rateLimit from "express-rate-limit";
 import { ErrorCodes } from "../../config";
-import session from "express-session";
-const { middleware, CaptchaGenerator } = require("@strafechat/captcha");
 
 const router = Router();
 
@@ -20,8 +20,14 @@ const router = Router();
 // router.use(cors({ origin: process.env.FRONTEND_URL }));
 
 router.get("/captcha", async (req, res) => {
-    res.status(200).json({ image: await (req as any).generateCaptcha() });
-})
+    try {
+        const captchaImage = await (req as any).generateCaptcha();
+        res.status(200).json({ image: captchaImage });
+    } catch (err) {
+        console.error(err);
+        res.status(ErrorCodes.INTERNAL_SERVER_ERROR.CODE).json({ message: ErrorCodes.INTERNAL_SERVER_ERROR.MESSAGE });
+    }
+});
 
 // Route for handling register requests
 router.post<{}, {}, RegisterBody>("/register", JoiRegister, async (req, res) => {
