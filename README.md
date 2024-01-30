@@ -39,4 +39,4 @@ This project holds our HTTP API as well as our events websocket.
 
 You can connect to the websocket on this webserver with your domain, localhost:443 for exmaple. With the /events pathname.
 - Ex. ws://localhost:443/events
-- Production: wss://api.strafe.chat/events
+- Production: wss://stargate.strafe.chat
