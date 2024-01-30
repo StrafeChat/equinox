@@ -1,77 +1,49 @@
-require("dotenv").config();
 import bodyParser from "body-parser";
-import { Client } from "cassandra-driver";
 import cors from "cors";
 import express from "express";
+import rateLimit from "express-rate-limit";
 import fs from "fs";
-// import cookieParser from "cookie-parser";
-import session from 'express-session';
-const { CaptchaGenerator, middleware } = require("@strafechat/captcha");
-
-// Grab constants
-const {
-    FRONTEND_URL,
-    SCYLLA_CONTACT_POINTS,
-    SCYLLA_DATA_CENTER,
-    SCYLLA_USERNAME,
-    SCYLLA_PASSWORD,
-    SCYLLA_KEYSPACE,
-    RESEND_API_KEY,
+import {
+    FRONTEND,
+    NEBULA,
     PORT,
-    // SESSION_SECRET
-} = process.env;
+    STARGATE,
+} from './config';
+import database from "./database";
+import { Logger } from "./helpers/logger";
 
-// Throw errors if important constants are missing
-if (!FRONTEND_URL) throw new Error("Missing FRONTEND_URL in environment variables.");
-if (!SCYLLA_CONTACT_POINTS) throw new Error("Missing an array of contact points for cassandra or scylla in the environmental variables.");
-if (!SCYLLA_DATA_CENTER) throw new Error("Missing data center for cassandra or scylla in the environmental variables.");
-if (!SCYLLA_KEYSPACE) throw new Error("Missing keyspace for cassandra or scylla in the environmental variables.");
-if (!RESEND_API_KEY) throw new Error("Missing RESEND_API_KEY in the environmental variables.");
-
-// Initialize express
+//-Initialize express-//
 const app = express();
 
-const captcha = new CaptchaGenerator(100, 300);
-
-app.use(session({
-    secret: "strafechat",
-}));
-
-app.use(middleware(captcha))
 app.use(bodyParser.json());
-
 app.use(cors({
-    origin: FRONTEND_URL,
+    origin: FRONTEND,
+    methods: "*",
+    credentials: true,
 }));
 
 app.set('trust proxy', 1);
+app.disable('x-powered-by');
 
-// app.use(session({
-//     secret: SESSION_SECRET ?? "equinox", // TODO: implement a better way of handling this
-// }));
-
-
-// const captcha = new CaptchaGenerator();
-// app.use(middleware(captcha))
-
-
-// Initialize cassandra client
-let cassandra: Client = new Client({
-    contactPoints: JSON.parse(SCYLLA_CONTACT_POINTS),
-    localDataCenter: SCYLLA_DATA_CENTER,
-    keyspace: SCYLLA_KEYSPACE,
-    credentials: (SCYLLA_USERNAME && SCYLLA_PASSWORD) ? {
-        username: SCYLLA_USERNAME,
-        password: SCYLLA_PASSWORD
-    } : undefined
+app.use((req, res, next) => {
+  res.header('Access-Control-Allow-Headers', "*");
+    if (req.method === 'OPTIONS') {
+        res.status(200).send();
+    } else {
+        next();
+    }
 });
 
-// const captcha = new CaptchaGenerator(75, 300);
+// app.use(rateLimit({
+//     windowMs: 3 * 60 * 60 * 1000,
+//     limit: 100,
+//     standardHeaders: "draft-7",
+//     legacyHeaders: false
+// }));
 
 // Startup logic for equinox
 const startServer = async () => {
     const port = PORT ?? 443;
-
     const versions = fs.readdirSync("src/routes");
 
     for (const version of versions) {
@@ -81,35 +53,24 @@ const startServer = async () => {
         }
     }
 
+    // Redirect to newest info route
     app.get("/", (_req, res) => {
-        res.redirect("/v1");
+        res.redirect("/v1/gateway");
     });
 
-    app.get("/v1", async (_req, res) => {
-        res.status(200).json({ version: "1.0.0", release: "Early Alpha", ws: "wss://stargate.strafe.chat", file_system: "https://nebula.strafe.chat", web_application: "https://web.strafe.chat" });
+    // Send info about strafe
+    app.get("/v1/gateway", async (_req, res) => {
+        res.status(200).json({ version: "1.0.0", release: "Early Alpha", ws: STARGATE, file_system: NEBULA, web_application: FRONTEND });
     });
-
-    // TODO: Captcha
-    // app.get("/captcha", cors({ origin: process.env.FRONTEND_URL }), async (req, res) => {
-    //     res.status(200);
-    //     res.send({ image: await (req as any).generateCaptcha() });
-    // });
-
-    /*
-// verifying captchas looks like this:
-const captchaInput = req.body.captcha;
-const verified = (req as any).verifyCaptcha(capchtaInput);
-*/
 
     app.listen(port, () => {
-        console.log(`Equinox is listening on ${port}!`);
+        Logger.success(`Equinox is listening on ${port}!`);
     });
 };
 
 //  Start everything up
 (async () => {
-    await cassandra.connect();
+    Logger.start();
+    await database.init();
     await startServer();
 })();
-
-export { cassandra };
