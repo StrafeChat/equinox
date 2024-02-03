@@ -1,7 +1,6 @@
 import { Model, Schema } from "better-cassandra";
 import { ISpace } from "../../types";
 
-// TODO: Decide what else we want to add with team
 const schema = new Schema<ISpace>({
     id: {
         type: "text",
