@@ -1,4 +1,4 @@
-import { Schema } from "better-cassandra";
+import { Model, Schema } from "better-cassandra";
 import { ISpace } from "../../types";
 
 // TODO: Decide what else we want to add with team
@@ -26,10 +26,10 @@ const schema = new Schema<ISpace>({
         type: "int"
     },
     room_ids: {
-        type: "list<text>"
+        type: "set<text>"
     },
     role_ids: {
-        type: "list<text>"
+        type: "set<text>"
     },
     rules_room_id: {
         type: "text"
@@ -44,7 +44,7 @@ const schema = new Schema<ISpace>({
         type: "text"
     },
     sticker_ids: {
-        type: "list<text>"
+        type: "set<text>"
     },
     created_at: {
         type: "timestamp",
@@ -53,4 +53,6 @@ const schema = new Schema<ISpace>({
     edited_at: {
         type: "timestamp"
     }
-})
+});
+
+export default new Model("spaces", schema);
