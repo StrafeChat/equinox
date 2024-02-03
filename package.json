@@ -40,7 +40,7 @@
     "log-utils": "^1.0.0",
     "redis": "^4.6.12",
     "snowflake-generator": "^1.0.2",
-    "nodemailer": "^6.9.8",
+    "nodemailer": "^6.9.9",
     "resend": "^3.1.0",
     "uuid": "^9.0.1",
     "ws": "^8.16.0"
