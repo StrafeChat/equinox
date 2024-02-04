@@ -9,6 +9,9 @@ const schema = new Schema<ISpace>({
     name: {
         type: "text"
     },
+    nameAcronym: {
+        type: "text"
+    },
     icon: {
         type: "text"
     },
@@ -43,6 +46,9 @@ const schema = new Schema<ISpace>({
         type: "text"
     },
     sticker_ids: {
+        type: "set<text>"
+    },
+    emoji_ids: {
         type: "set<text>"
     },
     created_at: {

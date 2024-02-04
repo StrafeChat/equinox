@@ -28,6 +28,9 @@ const schema = new Schema<IUser>({
         type: "timestamp",
         cluseringKey: false
     },
+    created_spaces_count: {
+        type: "int"
+    },
     discriminator: {
         type: "int"
     },
@@ -69,6 +72,9 @@ const schema = new Schema<IUser>({
     },
     secret: {
         type: "text"
+    },
+    space_count: {
+        type: "int"
     },
     system: {
         type: "boolean"

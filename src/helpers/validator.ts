@@ -73,6 +73,7 @@ export const JoiEditData = (req: Request, res: Response, next: NextFunction) => 
         email: emailSchema.optional(),
         username: usernameSchema.optional(),
         discriminator: discriminatorSchema.optional(),
+        locale: joi.string().regex(/^[a-z]{2}-[A-Z]{2}$/).optional()
     }).custom((obj, helper) => {
         const keys = Object.keys(obj);
         if (keys.length < 1) return helper.error("any.required")

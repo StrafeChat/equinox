@@ -7,19 +7,19 @@ import { JoiEditData, verifyToken } from "../../helpers/validator";
 import { IUser, IUserByEmail, IUserByUsernameAndDiscriminator } from "../../types";
 const router = Router();
 
-router.patch<string, {}, {}, { email: string, username: string, discriminator: number }, {}, { user: IUser }>('/@me', verifyToken, JoiEditData, async (req, res) => {
-    
+router.patch<string, {}, {}, { email: string, username: string, discriminator: number, locale: string }, {}, { user: IUser }>('/@me', verifyToken, JoiEditData, async (req, res) => {
+
     if (req.body.email) {
         const users = await UserByEmail.select({ $where: [{ equals: ["email", req.body.email] }] });
         if (users.length > 1) return res.status(400).json({ message: "Email is already in use" });
     }
 
     const statements = [
-        BatchUpdate<IUser>({ name: "users", where: [{ equals: ["id", res.locals.user.id] }], set: { username: req.body.username || res.locals.user.username, email: req.body.email || res.locals.user.email, discriminator: req.body.discriminator || res.locals.user.discriminator, edited_at: Date.now() } }),
+        BatchUpdate<IUser>({ name: "users", where: [{ equals: ["id", res.locals.user.id] }], set: { username: req.body.username || res.locals.user.username, email: req.body.email || res.locals.user.email, discriminator: req.body.discriminator || res.locals.user.discriminator, edited_at: Date.now(), locale: req.body.locale || res.locals.user.locale } }),
     ];
 
     if ((req.body.username && req.body.username !== res.locals.user.username) || (req.body.discriminator && req.body.discriminator !== res.locals.user.discriminator)) {
-        
+
         const users = await UserByUsernameAndDiscriminator.select({ $where: [{ equals: ["username", req.body.username || res.locals.user.username] }, { equals: ["discriminator", req.body.discriminator || res.locals.user.discriminator] }], $prepare: true });
 
         if (users.length > 0) {
@@ -39,11 +39,15 @@ router.patch<string, {}, {}, { email: string, username: string, discriminator: n
         BatchInsert<IUserByEmail>({ name: "users_by_email", data: { email: req.body.email || res.locals.user.email, id: res.locals.user.id, created_at: res.locals.user.created_at } })
     )
 
+    if (req.body.locale && ["en-US", "fr-FR"].includes(req.body.locale)) res.locals.user.locale = req.body.locale;
+    else if (req.body.locale) return res.status(400).json({ message: "Invalid locale" });
+
     await cassandra.batch(statements, { prepare: true });
 
     res.locals.user.username = req.body.username || res.locals.user.username;
     res.locals.user.discriminator = req.body.discriminator || res.locals.user.discriminator;
     res.locals.user.email = req.body.email || res.locals.user.email;
+
 
     res.status(200).json({
         ...res.locals.user,

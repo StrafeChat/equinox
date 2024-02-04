@@ -6,7 +6,7 @@ import { Router } from "express";
 import rateLimit from "express-rate-limit";
 import session from "express-session";
 import { Resend } from "resend";
-import { ErrorCodes, NEBULA, PASSWORD_HASHING_SALT } from "../../config";
+import { ErrorCodes, NEBULA, PASSWORD_HASHING_SALT, USER_WORKER_ID } from "../../config";
 import { cassandra } from "../../database";
 import User from "../../database/models/User";
 import UserByEmail from "../../database/models/UserByEmail";
@@ -65,7 +65,7 @@ router.post<{}, {}, RegisterBody>("/register", JoiRegister, async (req, res) => 
 
         const hashedPass = await bcrypt.hash(password, PASSWORD_HASHING_SALT);
         const created_at = new Date();
-        const id = generateSnowflake(0);
+        const id = generateSnowflake(USER_WORKER_ID);
         const secret = generateRandomString(12);
         const verifyId = Buffer.from(id).toString("base64url");
         const verifyCode = `${crypto.randomInt(1, 999999)}`.padStart(6, '0');
@@ -198,7 +198,7 @@ router.post<string, {}, {}, { code: string }, {}, { user: IUser }>("/verify", ve
             })
         ], { prepare: true });
 
-        const _res = await fetch(`${NEBULA}/avatars`, {
+        await fetch(`${NEBULA}/avatars`, {
             method: "POST",
             headers: {
                 "Content-Type": "application/json",
@@ -207,11 +207,9 @@ router.post<string, {}, {}, { code: string }, {}, { user: IUser }>("/verify", ve
         }).catch((err) => {
             console.error(err);
             return res.status(500).json({ message: "Failed to create an avatar for the user. Expect some weirdness to occur with your avatar." });
+        }).then(async () => {
+            res.status(200).json({ message: "Verification successful. Your account has been verified." });
         });
-
-        const data = await _res.json();
-
-        res.status(200).json({ message: "Verification successful. Your account has been verified." });
     } catch (err) {
         console.error("Failed to verify user:", err);
         res.status(500).json({ message: ErrorCodes.INTERNAL_SERVER_ERROR.MESSAGE })

@@ -50,6 +50,7 @@ export interface IUser {
     banner: string;
     bot: boolean;
     created_at: Date | number;
+    created_spaces_count: number;
     discriminator: number;
     dob: Date | number;
     edited_at: Date | number;
@@ -64,6 +65,7 @@ export interface IUser {
     presence: UserPresence;
     public_flags: number;
     secret: string;
+    space_count: number;
     system: boolean;
     theme: string;
     username: string;
@@ -76,17 +78,40 @@ export interface IVerification {
     created_at: number;
 }
 
+export interface PermissionOverwrite {
+    id: string;
+    type: number;
+    allow_flags: number;
+    deny_flags: number;
+}
+
 export interface IRoom {
     id: string;
+    type: number;
+    space_id: string | null;
+    position: number;
+    owner_id: string | null;
+    permission_overwrites: PermissionOverwrite[],
+    name: string | null;
+    topic: string | null;
+    last_message_id: string | null;
+    bitrate: number | null;
+    user_limit: number | null;
+    rate_limit: number | null;
+    recipients: string[];
+    icon: string | null;
+    parent_id: string | null;
+    last_pin_timestamp: string | null;
+    rtc_region: number | null;
     created_at: number;
-    name: string;
-    permissions: string[];
+    edited_at: number;
 }
 
 export interface ISpace {
     id: string;
     name: string;
-    icon: string;
+    nameAcronym: string;
+    icon: string | null;
     owner_id: string;
     afk_room_id: string;
     afk_timeout: number;
@@ -98,6 +123,7 @@ export interface ISpace {
     banner: string;
     preferred_locale: string;
     sticker_ids: string[];
+    emoji_ids: string[];
     created_at: number;
     edited_at: number;
 }
