@@ -16,9 +16,7 @@ import { Logger } from "./helpers/logger";
 const app = express();
 
 app.use(bodyParser.json());
-app.use(cors({
-    methods: "*",
-}));
+app.use(cors());
 
 app.set('trust proxy', 1);
 app.disable('x-powered-by');
