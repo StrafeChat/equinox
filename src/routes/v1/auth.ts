@@ -51,7 +51,7 @@ router.post<{}, {}, RegisterBody>("/register", JoiRegister, async (req, res) => 
         const { email, global_name, username, discriminator, password, dob, locale, captcha } = req.body;
 
         const result = (req as unknown as { verifyCaptcha: (input: string) => boolean }).verifyCaptcha(captcha);
-        if (!result) return res.status(400).json({ message: "Invalid captcha" });
+        if (!result) return res.status(400).json({ message: "Invalid captcha" }); 
 
         req.session.destroy((err) => {
             if (err) console.error(err);

@@ -26,6 +26,7 @@
   "dependencies": {
     "@strafechat/captcha": "^1.0.41",
     "bcrypt": "^5.1.1",
+    "better-cassandra": "^1.0.8",
     "body-parser": "^1.20.2",
     "cassandra-driver": "^4.7.2",
     "connect-redis": "^7.1.1",

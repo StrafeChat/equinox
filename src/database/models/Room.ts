@@ -16,7 +16,7 @@ const schema = new Schema<IRoom>({
         type: "int"
     },
     permission_overwrites: {
-        type: new FrozenType("set<permission_overwrite>")
+        type: new FrozenType("permission_overwrite")
     },
     name: {
         type: "text"
