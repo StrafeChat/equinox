@@ -17,9 +17,7 @@ const app = express();
 
 app.use(bodyParser.json());
 app.use(cors({
-    origin: FRONTEND,
     methods: "*",
-    credentials: true,
 }));
 
 app.set('trust proxy', 1);
