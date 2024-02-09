@@ -7,7 +7,7 @@ const schema = new Schema<IRoom>({
         partitionKey: true
     },
     type: {
-        type: "text",
+        type: "int",
     },
     space_id: {
         type: "text"
@@ -56,10 +56,15 @@ const schema = new Schema<IRoom>({
     },
     created_at: {
         type: "timestamp",
-        cluseringKey: false
+        cluseringKey: true
     },
     edited_at: {
         type: "timestamp"
+    }
+}, {
+    sortBy: {
+        column: "created_at",
+        order: "ASC"
     }
 });
 

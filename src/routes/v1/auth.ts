@@ -96,13 +96,13 @@ router.post<{}, {}, RegisterBody>("/register", JoiRegister, async (req, res) => 
             BatchInsert<IUserByEmail>({
                 name: "users_by_email",
                 data: {
-                    created_at, email, id
+                    email, id
                 }
             }),
             BatchInsert<IUserByUsernameAndDiscriminator>({
                 name: "users_by_username_and_discriminator",
                 data: {
-                    created_at, discriminator, username, id
+                    discriminator, username, id
                 }
             }),
             BatchInsert<IVerification>({

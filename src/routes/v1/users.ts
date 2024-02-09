@@ -3,11 +3,11 @@ import { Router } from "express";
 import { cassandra } from "../../database";
 import UserByEmail from "../../database/models/UserByEmail";
 import UserByUsernameAndDiscriminator from "../../database/models/UserByUsernameAndDiscriminator";
-import { JoiEditData, verifyToken } from "../../helpers/validator";
+import { validateEditUserData, verifyToken } from "../../helpers/validator";
 import { IUser, IUserByEmail, IUserByUsernameAndDiscriminator } from "../../types";
 const router = Router();
 
-router.patch<string, {}, {}, { email: string, username: string, discriminator: number, locale: string }, {}, { user: IUser }>('/@me', verifyToken, JoiEditData, async (req, res) => {
+router.patch<string, {}, {}, { email: string, username: string, discriminator: number, locale: string }, {}, { user: IUser }>('/@me', verifyToken, validateEditUserData, async (req, res) => {
 
     if (req.body.email) {
         const users = await UserByEmail.select({ $where: [{ equals: ["email", req.body.email] }] });
@@ -30,13 +30,13 @@ router.patch<string, {}, {}, { email: string, username: string, discriminator: n
 
         statements.push(
             BatchDelete<IUserByUsernameAndDiscriminator>({ name: "users_by_username_and_discriminator", where: [{ equals: ["username", res.locals.user.username] }, { equals: ["discriminator", res.locals.user.discriminator] }] }),
-            BatchInsert<IUserByUsernameAndDiscriminator>({ name: "users_by_username_and_discriminator", data: { username: req.body.username || res.locals.user.username, discriminator: req.body.discriminator || res.locals.user.discriminator, id: res.locals.user.id || res.locals.user.discriminator, created_at: res.locals.user.created_at } })
+            BatchInsert<IUserByUsernameAndDiscriminator>({ name: "users_by_username_and_discriminator", data: { username: req.body.username || res.locals.user.username, discriminator: req.body.discriminator || res.locals.user.discriminator, id: res.locals.user.id || res.locals.user.discriminator } })
         )
     }
 
     if (req.body.email && req.body.email !== res.locals.user.email) statements.push(
         BatchDelete<IUserByEmail>({ name: "users_by_email", where: [{ equals: ["email", res.locals.user.email] }] }),
-        BatchInsert<IUserByEmail>({ name: "users_by_email", data: { email: req.body.email || res.locals.user.email, id: res.locals.user.id, created_at: res.locals.user.created_at } })
+        BatchInsert<IUserByEmail>({ name: "users_by_email", data: { email: req.body.email || res.locals.user.email, id: res.locals.user.id } })
     )
 
     if (req.body.locale && ["en-US", "fr-FR", "nl-NL", "af-ZA", "bn-BD"].includes(req.body.locale)) res.locals.user.locale = req.body.locale;

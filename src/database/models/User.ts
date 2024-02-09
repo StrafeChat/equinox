@@ -76,6 +76,9 @@ const schema = new Schema<IUser>({
     space_count: {
         type: "int"
     },
+    space_ids: {
+        type: "set<text>"
+    },
     system: {
         type: "boolean"
     },

@@ -9,7 +9,7 @@ const schema = new Schema<ISpace>({
     name: {
         type: "text"
     },
-    nameAcronym: {
+    name_acronym: {
         type: "text"
     },
     icon: {
@@ -57,6 +57,11 @@ const schema = new Schema<ISpace>({
     },
     edited_at: {
         type: "timestamp"
+    }
+}, {
+    sortBy: {
+        column: "created_at",
+        order: "DESC"
     }
 });
 

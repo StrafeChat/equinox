@@ -27,6 +27,13 @@ export const EQUINOX = process.env.EQUINOX ?? "https://equinox.strafe.chat";
 
 export const USER_WORKER_ID = process.env.USER_WORKER_ID ? parseInt(process.env.USER_WORKER_ID) : 0;
 export const SPACE_WORKER_ID = process.env.SPACE_WORKER_ID ? parseInt(process.env.SPACE_WORKER_ID) : 1;
+export const ROOM_WORKER_ID = process.env.ROOM_WORKER_ID ? parseInt(process.env.ROOM_WORKER_ID) : 2;
+
+export enum RoomTypes {
+    SECTION = 1,
+    SPACE_TEXT = 2,
+    SPACE_VOICE = 3
+}
 
 export const ErrorCodes = {
     INTERNAL_SERVER_ERROR: {

@@ -9,10 +9,6 @@ const schema = new Schema<IUserByEmail>({
     email: {
         type: "text",
         partitionKey: true
-    },
-    created_at: {
-        type: "timestamp",
-        cluseringKey: false
     }
 });
 

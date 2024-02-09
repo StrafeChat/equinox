@@ -8,6 +8,7 @@ import {
     SCYLLA_PASSWORD,
     SCYLLA_USERNAME
 } from '../config';
+
 import { Logger } from "../helpers/logger";
 
 const cassandra = new Client({

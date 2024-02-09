@@ -13,10 +13,6 @@ const schema = new Schema<IUserByUsernameAndDiscriminator>({
     discriminator: {
         type: "int",
         partitionKey: true
-    },
-    created_at: {
-        type: "timestamp",
-        cluseringKey: false
     }
 });
 

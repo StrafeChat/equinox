@@ -68,7 +68,7 @@ export const JoiRegister = (req: Request<{}, {}, Partial<RegisterBody>>, res: Re
     next();
 }
 
-export const JoiEditData = (req: Request, res: Response, next: NextFunction) => {
+export const validateEditUserData = (req: Request, res: Response, next: NextFunction) => {
     const schema = joi.object({
         email: emailSchema.optional(),
         username: usernameSchema.optional(),
@@ -78,6 +78,26 @@ export const JoiEditData = (req: Request, res: Response, next: NextFunction) => 
         const keys = Object.keys(obj);
         if (keys.length < 1) return helper.error("any.required")
         return obj;
+    });
+
+    const { error } = schema.validate(req.body);
+
+    if (error) return res.status(400).json({ message: error.details[0].message });
+
+    next();
+}
+
+export const validateSpaceCreationData = (req: Request, res: Response, next: NextFunction) => {
+    const schema = joi.object({
+        name: joi.string().min(1).max(32).required().messages({
+            "string.base": "The name should be a string.",
+            "string.empty": "The name cannot be empty.",
+        }),
+        icon: joi.string().regex(/^data:[a-z0-9]+\/[a-z0-9]+;base64,[a-zA-Z0-9+/=]+$/).optional().messages({
+            "string.base": "The icon should be a string.",
+            "string.empty": "The icon cannot be empty.",
+            "string.pattern.base": "The icon should be a base64 string.",
+        })
     });
 
     const { error } = schema.validate(req.body);

@@ -1,28 +1,24 @@
 import { BatchInsert } from "better-cassandra";
-import { Router } from "express";
+import { Request, Router } from "express";
 import rateLimit from "express-rate-limit";
-import { NEBULA, SPACE_WORKER_ID } from "../../config";
-import { cassandra, redis } from "../../database";
+import { NEBULA, ROOM_WORKER_ID, SPACE_WORKER_ID } from "../../config";
+import { cassandra } from "../../database";
 import Space from "../../database/models/Space";
 import { generateAcronym, generateSnowflake } from "../../helpers/generator";
-import { verifyToken } from "../../helpers/validator";
-import { IRoom, ISpace } from "../../types";
+import { validateSpaceCreationData, verifyToken } from "../../helpers/validator";
+import { IRoom, ISpace, ISpaceMember } from "../../types";
 
 const router = Router();
 
 const creationRateLimit = rateLimit({
     windowMs: 24 * 60 * 60 * 1000, // 24 hours
-    max: 5,
+    max: 5, // 5 spaces
+    keyGenerator: (req: Request) => {
+        return req.headers["authorization"]!;
+    }
 });
 
-const publishSpace = async (data: Partial<ISpace>) => {
-    await redis.publish("stargate", JSON.stringify({
-        event: "SPACE_CREATED",
-        data
-    }));
-}
-
-router.post('/', creationRateLimit, verifyToken, async (req, res) => {
+router.post('/', verifyToken, creationRateLimit, validateSpaceCreationData, async (req, res) => {
     if (res.locals.user.created_spaces_count >= 10) return res.status(403).json({ message: "You have reached the max amount of spaces you can create" });
     if (res.locals.user.space_count >= 10) return res.status(403).json({ message: "You have reached the max amount of spaces you can join" });
 
@@ -30,15 +26,14 @@ router.post('/', creationRateLimit, verifyToken, async (req, res) => {
     const room_ids: string[] = [];
 
     for (let i = 0; i < 4; i++) {
-        room_ids.push(generateSnowflake(SPACE_WORKER_ID));
+        room_ids.push(generateSnowflake(ROOM_WORKER_ID));
     }
 
     const space: Partial<ISpace> = {
         id, room_ids,
         icon: null,
         name: req.body.name,
-        // Can you make it take the 3 letters from the name and use that or use 1/2 letters depending on the amount of words
-        nameAcronym: generateAcronym(req.body.name, 3),
+        name_acronym: generateAcronym(req.body.name, 3),
         owner_id: res.locals.user.id,
         verifcation_level: 0,
         role_ids: [],
@@ -48,9 +43,23 @@ router.post('/', creationRateLimit, verifyToken, async (req, res) => {
         edited_at: Date.now()
     }
 
+    console.log(space)
+
     await cassandra.batch([
         BatchInsert<ISpace>({
             name: "spaces", data: space
+        }),
+        BatchInsert<ISpaceMember>({
+            name: "space_members", data: {
+                user_id: res.locals.user.id,
+                space_id: space.id,
+                roles: [],
+                joined_at: Date.now(),
+                deaf: false,
+                mute: false,
+                avatar: null,
+                edited_at: Date.now()
+            }
         }),
         BatchInsert<IRoom>({
             name: "rooms", data: {
@@ -78,6 +87,7 @@ router.post('/', creationRateLimit, verifyToken, async (req, res) => {
             name: "rooms", data: {
                 id: room_ids[2],
                 type: 1,
+                parent_id: room_ids[0],
                 space_id: id,
                 position: 0,
                 name: "General",
@@ -89,6 +99,7 @@ router.post('/', creationRateLimit, verifyToken, async (req, res) => {
             name: "rooms", data: {
                 id: room_ids[3],
                 type: 2,
+                parent_id: room_ids[1],
                 space_id: id,
                 position: 1,
                 name: "General",
@@ -96,26 +107,26 @@ router.post('/', creationRateLimit, verifyToken, async (req, res) => {
                 edited_at: Date.now()
             }
         })
-    ]);
+    ], { prepare: true });
 
-    await fetch(`${NEBULA}/spaces`, {
-        method: "POST",
-        headers: {
-            "Content-Type": "application/json",
-            "Authorization": req.headers["authorization"]!
-        },
-        body: req.body
-    }).catch(async (err) => {
-        console.error(err);
-        await publishSpace(space);
-        return res.status(500).json({ data: space, message: "Failed to upload icon for your space. The space will still be created but it will not have an icon." });
-    }).then(async (_req) => {
-        const { icon } = await _req.json();
-        await Space.update({ $set: { icon }, $where: [{ equals: ['id', id] }] })
-        space.icon = icon;
-        await publishSpace(space);
-        return res.status(200).json(space);
-    });
+    if (space.icon) {
+        await fetch(`${NEBULA}/spaces`, {
+            method: "PUT",
+            headers: {
+                "Content-Type": "application/json",
+                "Authorization": req.headers["authorization"]!
+            },
+            body: req.body
+        }).catch(async (err) => {
+            console.error(err);
+            return res.status(500).json({ data: space, message: "Failed to upload icon for your space. The space will still be created but it will not have an icon." });
+        }).then(async (_req) => {
+            const { icon } = await _req.json();
+            await Space.update({ $set: { icon }, $where: [{ equals: ['id', id] }] })
+            space.icon = icon;
+            return res.status(200).json({ space: space });
+        });
+    } else return res.status(200).json(space);
 });
 
 export default router;

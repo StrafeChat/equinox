@@ -23,13 +23,11 @@ export interface LoginBody {
 }
 
 export interface IUserByEmail {
-    created_at: Date | number;
     email: string;
     id: string;
 }
 
 export interface IUserByUsernameAndDiscriminator {
-    created_at: Date | number;
     discriminator: number;
     id: string;
     username: string;
@@ -66,6 +64,7 @@ export interface IUser {
     public_flags: number;
     secret: string;
     space_count: number;
+    space_ids: string[];
     system: boolean;
     theme: string;
     username: string;
@@ -75,7 +74,6 @@ export interface IUser {
 export interface IVerification {
     id: string;
     code: string;
-    created_at: number;
 }
 
 export interface PermissionOverwrite {
@@ -110,7 +108,7 @@ export interface IRoom {
 export interface ISpace {
     id: string;
     name: string;
-    nameAcronym: string;
+    name_acronym: string;
     icon: string | null;
     owner_id: string;
     afk_room_id: string;
@@ -125,5 +123,17 @@ export interface ISpace {
     sticker_ids: string[];
     emoji_ids: string[];
     created_at: number;
+    edited_at: number;
+}
+
+export interface ISpaceMember {
+    user_id: string;
+    space_id: string;
+    nick: string | null;
+    roles: string[];
+    joined_at: number;
+    deaf: boolean;
+    mute: boolean;
+    avatar: string | null;
     edited_at: number;
 }
