@@ -4,9 +4,11 @@ import rateLimit from "express-rate-limit";
 import { NEBULA, ROOM_WORKER_ID, SPACE_WORKER_ID } from "../../config";
 import { cassandra } from "../../database";
 import Space from "../../database/models/Space";
+import User from "../../database/models/User"
 import { generateAcronym, generateSnowflake } from "../../helpers/generator";
 import { validateSpaceCreationData, verifyToken } from "../../helpers/validator";
 import { IRoom, ISpace, ISpaceMember } from "../../types";
+import Room from "../../database/models/Room";
 
 const router = Router();
 
@@ -29,7 +31,7 @@ router.post('/', verifyToken, creationRateLimit, validateSpaceCreationData, asyn
         room_ids.push(generateSnowflake(ROOM_WORKER_ID));
     }
 
-    const space: Partial<ISpace> = {
+    const space = {
         id, room_ids,
         icon: null,
         name: req.body.name,
@@ -40,10 +42,7 @@ router.post('/', verifyToken, creationRateLimit, validateSpaceCreationData, asyn
         preferred_locale: res.locals.user.locale,
         sticker_ids: [],
         created_at: Date.now(),
-        edited_at: Date.now()
     }
-
-    console.log(space)
 
     await cassandra.batch([
         BatchInsert<ISpace>({
@@ -109,6 +108,15 @@ router.post('/', verifyToken, creationRateLimit, validateSpaceCreationData, asyn
         })
     ], { prepare: true });
 
+    let space_ids = res.locals.user.space_ids ?? [];
+    space_ids.push(`${space.id}`);
+    await User.update({ $set: { space_ids }, $where: [{ equals: ['id', res.locals.user.id] }] })
+
+    const roomIds = room_ids.map(id => id.toString());
+    const rooms = await Room.select({ 
+        $where: [{in: ["id", roomIds]}] 
+    });
+
     if (space.icon) {
         await fetch(`${NEBULA}/spaces`, {
             method: "PUT",
@@ -124,9 +132,9 @@ router.post('/', verifyToken, creationRateLimit, validateSpaceCreationData, asyn
             const { icon } = await _req.json();
             await Space.update({ $set: { icon }, $where: [{ equals: ['id', id] }] })
             space.icon = icon;
-            return res.status(200).json({ space: space });
+            return res.status(200).json({space, rooms});
         });
-    } else return res.status(200).json(space);
+    } else return res.status(200).json({space, rooms});
 });
 
 export default router;

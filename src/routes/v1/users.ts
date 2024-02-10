@@ -4,7 +4,9 @@ import { cassandra } from "../../database";
 import UserByEmail from "../../database/models/UserByEmail";
 import UserByUsernameAndDiscriminator from "../../database/models/UserByUsernameAndDiscriminator";
 import { validateEditUserData, verifyToken } from "../../helpers/validator";
-import { IUser, IUserByEmail, IUserByUsernameAndDiscriminator } from "../../types";
+import { ISpace, ISpaceMember, IUser, IUserByEmail, IUserByUsernameAndDiscriminator } from "../../types";
+import SpaceMember from "../../database/models/SpaceMember";
+import Space from "../../database/models/Space";
 const router = Router();
 
 router.patch<string, {}, {}, { email: string, username: string, discriminator: number, locale: string }, {}, { user: IUser }>('/@me', verifyToken, validateEditUserData, async (req, res) => {
@@ -55,6 +57,46 @@ router.patch<string, {}, {}, { email: string, username: string, discriminator: n
         secret: undefined,
         last_pass_reset: undefined
     });
+});
+
+router.put("/@me/spaces/:space_id", verifyToken, async (req, res) => {
+    if (res.locals.user.space_count >= 10) return res.status(403).json({ message: "You have reached the max amount of spaces you can join." });
+    if(isNaN(parseInt(req.params.space_id))) return res.status(400).json({message: "The space id you have provided is not correct."});
+
+    const members = await SpaceMember.select({
+        $where: [{equals: ["user_id", res.locals.user.id]}, {equals: ["space_id", req.params.space_id]}]
+    });
+
+    if (members) return res.status(409).json({message: "You are already in this space"});
+
+    const spaces = await Space.select({
+        $where: [{equals: ["id", req.params.space_id]}]
+    });
+
+    if(spaces.length < 1) return res.status(404).json({message: "The space was not found."})
+
+    await cassandra.batch([
+        BatchInsert<ISpaceMember>({
+            name: "space_members", data: {
+                user_id: res.locals.user.id,
+                space_id: req.params.space_id,
+                roles: [],
+                joined_at: Date.now(),
+                deaf: false,
+                mute: false,
+                avatar: null,
+            }
+        }),
+        BatchUpdate<IUser>({
+            name: "users",
+            set: {
+                space_ids: [...res.locals.user.space_ids, req.params.space_id]
+            },
+            where: [{equals: ["id", res.locals.user.id]}]
+        })
+    ]);
+
+    return res.status(200).json({space: spaces[0]});
 });
 
 export default router;
