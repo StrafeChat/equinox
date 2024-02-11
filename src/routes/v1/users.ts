@@ -67,7 +67,7 @@ router.put("/@me/spaces/:space_id", verifyToken, async (req, res) => {
         $where: [{equals: ["user_id", res.locals.user.id]}, {equals: ["space_id", req.params.space_id]}]
     });
 
-    if (members) return res.status(409).json({message: "You are already in this space"});
+    if (members.length > 0) return res.status(409).json({message: "You are already in this space"});
 
     const spaces = await Space.select({
         $where: [{equals: ["id", req.params.space_id]}]
@@ -90,7 +90,7 @@ router.put("/@me/spaces/:space_id", verifyToken, async (req, res) => {
         BatchUpdate<IUser>({
             name: "users",
             set: {
-                space_ids: [...res.locals.user.space_ids, req.params.space_id]
+                space_ids: [...(res.locals.user.space_ids || []), req.params.space_id]
             },
             where: [{equals: ["id", res.locals.user.id]}]
         })
