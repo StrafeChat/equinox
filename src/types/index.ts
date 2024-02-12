@@ -136,4 +136,72 @@ export interface ISpaceMember {
     mute: boolean;
     avatar: string | null;
     edited_at: number;
+} 
+
+export interface MessageEmbedFooter {
+    text: string;
+    icon_url: string | null;
+}
+
+export interface MessageEmbedAuthor {
+    name: string | null;
+    url: string | null;
+    icon_url: string | null;
+}
+
+export interface MessageEmbedMedia {
+    url: string;
+    height: number | null;
+    width: number | null;
+}
+
+export interface MessageEmbedField {
+    name: string;
+    value: string;
+    inline: boolean;
+}
+
+export interface MessageEmbed {
+    title: string | null;
+    description: string | null;
+    url: string | null;
+    timestamp: number | null;
+    color: number | null;
+    footer: MessageEmbedFooter | null;
+    image: MessageEmbedMedia | null;
+    thumbnail: MessageEmbedMedia | null;
+    video: MessageEmbedMedia | null;
+    author: MessageEmbedAuthor | null;
+    fields: MessageEmbedField[] | null;
+}
+
+export interface MessageReaction {
+    user_ids: string[];
+    emoji: string; 
+}
+
+export interface IMessage {
+    id: string;
+    room_id: string;
+    author_id: string;
+    space_id: string | null;
+    content: string | null;
+    created_at: number;
+    edited_at: number | null;
+    tts: boolean;
+    mention_everyone: boolean;
+    mentions: string[] | null;
+    mention_roles: string[] | null;
+    mention_rooms: string[] | null;
+    attachments: string[] | null;
+    embeds: MessageEmbed[] | null;
+    reactions: MessageReaction[] | null;
+    pinned: boolean;
+    webhook_id: string | null;
+    system: boolean;
+    message_reference_id: string | null;
+    flags: number | null;
+    thread_id: string | null;
+    stickers: string[] | null;
+    nonce?: number;
 }
