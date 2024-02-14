@@ -4,7 +4,6 @@ import { IMessage } from "../../types";
 const schema = new Schema<IMessage>({
     id: {
         type: "text",
-        cluseringKey: true
     },
     room_id: {
         type: "text",
@@ -68,7 +67,8 @@ const schema = new Schema<IMessage>({
         type: "timestamp"
     },
     created_at: {
-        type: "timestamp"
+        type: "timestamp",
+        cluseringKey: true
     },
 });
 
