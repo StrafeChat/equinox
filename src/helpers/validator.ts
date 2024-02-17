@@ -108,7 +108,7 @@ export const validateSpaceCreationData = (req: Request, res: Response, next: Nex
 }
 
 export const verifyToken = async (req: Request, res: Response & { locals: { user: IUser } }, next: NextFunction) => {
-    const token = req.headers["authorization"];
+    const token = req.headers["authorization"] || req.headers["Authorization"];
     if (typeof token != "string") return res.status(401).json({ message: "Unauthorized" });
     const splitToken = token.split('.');
     if (splitToken.length < 3) return res.status(401).json({ message: "Unauthorized" });

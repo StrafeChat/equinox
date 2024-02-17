@@ -57,11 +57,11 @@ router.post<{}, {}, RegisterBody>("/register", JoiRegister, async (req, res) => 
             if (err) console.error(err);
         });
 
-        const existsEmail = await UserByEmail.select({ $where: [{ equals: ["email", email] }] });
-        if (existsEmail.length > 0) return res.status(409).json({ message: "A user already exists with this email." }); //Yeah not sure what happened
+        const existsEmail = await UserByEmail.count({ $where: [{ equals: ["email", email] }] });
+        if (existsEmail! > 0) return res.status(409).json({ message: "A user already exists with this email." });
 
-        const existsUD = await UserByUsernameAndDiscriminator.select({ $where: [{ equals: ["username", username] }, { equals: ["discriminator", discriminator] }], $prepare: true });
-        if (existsUD.length > 0) return res.status(409).json({ message: "A user already exists with this username and discriminator." });
+        const existsUD = await UserByUsernameAndDiscriminator.count({ $where: [{ equals: ["username", username] }, { equals: ["discriminator", discriminator] }], $prepare: true });
+        if (existsUD! > 0) return res.status(409).json({ message: "A user already exists with this username and discriminator." });
 
         const hashedPass = await bcrypt.hash(password, PASSWORD_HASHING_SALT);
         const created_at = new Date();

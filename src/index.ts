@@ -3,12 +3,7 @@ import cors from "cors";
 import express from "express";
 import rateLimit from "express-rate-limit";
 import fs from "fs";
-import {
-    FRONTEND,
-    NEBULA,
-    PORT,
-    STARGATE,
-} from './config';
+import { FRONTEND, NEBULA, PORT, STARGATE } from './config';
 import database from "./database";
 import { Logger } from "./helpers/logger";
 
@@ -16,30 +11,22 @@ import { Logger } from "./helpers/logger";
 const app = express();
 
 app.use(bodyParser.json());
+
 app.use(cors({
     origin: FRONTEND,
-    methods: "*",
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'], 
     credentials: true,
 }));
-
 app.set('trust proxy', 1);
 app.disable('x-powered-by');
 
-app.use((req, res, next) => {
-  res.header('Access-Control-Allow-Headers', "*");
-    if (req.method === 'OPTIONS') {
-        res.status(200).send();
-    } else {
-        next();
-    }
-});
-
 app.use(rateLimit({
     windowMs: 3 * 60 * 60 * 1000,
-    limit: 500,
-    standardHeaders: "draft-7",
-    legacyHeaders: false
+    max: 100,
 }));
+
+// CORS preflight handling
+app.options('*', cors());
 
 // Startup logic for equinox
 const startServer = async () => {

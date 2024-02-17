@@ -19,9 +19,6 @@ const router = Router();
 const creationRateLimit = rateLimit({
   windowMs: 24 * 60 * 60 * 1000, // 24 hours
   max: 5, // 5 spaces
-  keyGenerator: (req: Request) => {
-    return req.headers["authorization"]!;
-  },
 });
 
 router.post(
