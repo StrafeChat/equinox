@@ -1,7 +1,7 @@
 import { BatchInsert } from "better-cassandra";
 import { Request, Router } from "express";
 import rateLimit from "express-rate-limit";
-import { NEBULA, ROOM_WORKER_ID, SPACE_WORKER_ID } from "../../config";
+import { ErrorCodes, NEBULA, ROOM_WORKER_ID, SPACE_WORKER_ID } from "../../config";
 import { cassandra } from "../../database";
 import Space from "../../database/models/Space";
 import User from "../../database/models/User";
@@ -17,7 +17,7 @@ import SpaceMember from "../../database/models/SpaceMember";
 const router = Router();
 
 const creationRateLimit = rateLimit({
-  windowMs: 24 * 60 * 60 * 1000, // 24 hours
+  windowMs: 24 * 60 * 60 * 10000, // 24 hours
   max: 5, // 5 spaces
 });
 
@@ -27,11 +27,13 @@ router.post(
   creationRateLimit,
   validateSpaceCreationData,
   async (req, res) => {
-    if (res.locals.user.created_spaces_count >= 10)
+
+    try {
+    if (res.locals.user.created_spaces_count! >= 10)
       return res.status(403).json({
         message: "You have reached the max amount of spaces you can create",
       });
-    if (res.locals.user.space_count >= 10)
+    if (res.locals.user.space_count! >= 10)
       return res.status(403).json({
         message: "You have reached the max amount of spaces you can join",
       });
@@ -169,6 +171,11 @@ router.post(
           return res.status(200).json({ space, rooms });
         });
     } else return res.status(200).json({ space, rooms });
+    
+  } catch (err) {
+    console.error("Space creation failed:", err);
+    res.status(ErrorCodes.INTERNAL_SERVER_ERROR.CODE).json({ message: ErrorCodes.INTERNAL_SERVER_ERROR.MESSAGE })
+}
   }
 );
 

@@ -6,6 +6,7 @@ import fs from "fs";
 import { FRONTEND, NEBULA, PORT, STARGATE } from './config';
 import database from "./database";
 import { Logger } from "./helpers/logger";
+import path from "path";
 
 //-Initialize express-//
 const app = express();
@@ -17,6 +18,7 @@ app.use(cors({
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'], 
     credentials: true,
 }));
+
 app.set('trust proxy', 1);
 app.disable('x-powered-by');
 
@@ -39,6 +41,10 @@ const startServer = async () => {
             app.use(`/${version}/${route.replace(".ts", '')}`, require(`./routes/${version}/${route}`).default);
         }
     }
+
+    app.get("/worker.js", (_req, res) => res.sendFile(path.join(__dirname, "/static/worker.js")));
+
+    app.use(express.static(path.join(__dirname, "/static")));
 
     // Redirect to newest info route
     app.get("/", (_req, res) => {

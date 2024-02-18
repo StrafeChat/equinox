@@ -7,6 +7,7 @@ import { validateEditUserData, verifyToken } from "../../helpers/validator";
 import { ISpace, ISpaceMember, IUser, IUserByEmail, IUserByUsernameAndDiscriminator } from "../../types";
 import SpaceMember from "../../database/models/SpaceMember";
 import Space from "../../database/models/Space";
+import Room from "../../database/models/Room";
 const router = Router();
 
 router.patch<string, {}, {}, { email: string, username: string, discriminator: number, locale: string }, {}, { user: IUser }>('/@me', verifyToken, validateEditUserData, async (req, res) => {
@@ -41,7 +42,7 @@ router.patch<string, {}, {}, { email: string, username: string, discriminator: n
         BatchInsert<IUserByEmail>({ name: "users_by_email", data: { email: req.body.email || res.locals.user.email, id: res.locals.user.id } })
     )
 
-    if (req.body.locale && ["en-US", "fr-FR", "nl-NL", "af-ZA", "bn-BD"].includes(req.body.locale)) res.locals.user.locale = req.body.locale;
+    if (req.body.locale && ['af-ZA', 'sq-AL', 'ar-SA', 'az-AZ', 'bg-BG', 'cs-CZ', 'da-DK', 'de-DE', 'el-GR', 'en-GB', 'en-US', 'en-SFN', 'fr-FR', 'nl-NL', 'bn-BD'].includes(req.body.locale)) res.locals.user.locale = req.body.locale;
     else if (req.body.locale) return res.status(400).json({ message: "Invalid locale" });
 
     await cassandra.batch(statements, { prepare: true });
@@ -96,7 +97,13 @@ router.put("/@me/spaces/:space_id", verifyToken, async (req, res) => {
         })
     ]);
 
-    return res.status(200).json({space: spaces[0]});
+    let space = spaces[0];
+
+    const rooms = await Room.select({
+        $where: [{ in: ["id", space.room_ids!] }],
+      });
+
+    return res.status(200).json({ space, rooms });
 });
 
 export default router;

@@ -126,6 +126,15 @@ export interface ISpace {
     edited_at: number;
 }
 
+export interface IInvite {
+    id: string;
+    code: string;
+    inviter_id: string;
+    space_id: string;
+    created_at: number;
+    expires_at: number;
+}
+
 export interface ISpaceMember {
     user_id: string;
     space_id: string;
