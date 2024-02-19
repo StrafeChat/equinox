@@ -42,7 +42,7 @@ router.patch<string, {}, {}, { email: string, username: string, discriminator: n
         BatchInsert<IUserByEmail>({ name: "users_by_email", data: { email: req.body.email || res.locals.user.email, id: res.locals.user.id } })
     )
 
-    if (req.body.locale && ['af-ZA', 'sq-AL', 'ar-SA', 'az-AZ', 'bg-BG', 'cs-CZ', 'da-DK', 'de-DE', 'el-GR', 'en-GB', 'en-US', 'en-SFN', 'fr-FR', 'nl-NL', 'bn-BD'].includes(req.body.locale)) res.locals.user.locale = req.body.locale;
+    if (req.body.locale && ['af-ZA', 'sq-AL', 'ar-SA', 'az-AZ', 'bg-BG', 'cs-CZ', 'da-DK', 'de-DE', 'el-GR', 'en-GB', 'en-US', 'en-SF', 'fr-FR', 'nl-NL', 'bn-BD'].includes(req.body.locale)) res.locals.user.locale = req.body.locale;
     else if (req.body.locale) return res.status(400).json({ message: "Invalid locale" });
 
     await cassandra.batch(statements, { prepare: true });

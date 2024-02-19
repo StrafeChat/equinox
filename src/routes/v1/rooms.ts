@@ -117,4 +117,43 @@ router.post(
   }
 );
 
+router.post(
+  "/:room_id/typing",
+  verifyToken,
+  async (req, res) => {
+    const { room_id } = req.params;
+
+    const rooms = await Room.select({
+      $where: [{ equals: ["id", room_id] }],
+      $limit: 1,
+    });
+
+    const room = rooms[0];
+
+    if (!room)
+      return res
+        .status(404)
+        .json({ message: "The room you were looking for does not exist." });
+
+    await redis.publish(
+      "stargate",
+      JSON.stringify({
+        event: "typing_start",
+        data: {
+          room_id: room.id,
+          space_id: room.space_id,
+          user: {
+            id: res.locals.user.id,
+            username: res.locals.user.username,
+            discriminator: res.locals.user.discriminator,
+            global_name: res.locals.user.global_name,
+            avatar: res.locals.user.avatar,
+            bot: res.locals.user.bot,
+          }
+        },
+      })
+    );
+  }
+)
+
 export default router;
