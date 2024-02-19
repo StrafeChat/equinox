@@ -153,6 +153,8 @@ router.post(
         },
       })
     );
+
+   return res.status(200).json({ message: "Typing in room."});
   }
 )
 

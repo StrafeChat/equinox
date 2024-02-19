@@ -24,7 +24,7 @@ app.disable('x-powered-by');
 
 app.use(rateLimit({
     windowMs: 3 * 60 * 60 * 1000,
-    max: 100,
+    max: 500,
 }));
 
 // CORS preflight handling
