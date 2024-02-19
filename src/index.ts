@@ -22,10 +22,10 @@ app.use(cors({
 app.set('trust proxy', 1);
 app.disable('x-powered-by');
 
-app.use(rateLimit({
-    windowMs: 3 * 60 * 60 * 1000,
-    max: 500,
-}));
+const limiter = rateLimit({
+    windowMs: 10 * 1000,
+    max: 75,
+  });
 
 // CORS preflight handling
 app.options('*', cors());
