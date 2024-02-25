@@ -4,10 +4,10 @@ import { IMessage } from "../../types";
 const schema = new Schema<IMessage>({
     id: {
         type: "text",
+        partitionKey: true
     },
     room_id: {
         type: "text",
-        partitionKey: true
     },
     space_id: {
         type: "text"

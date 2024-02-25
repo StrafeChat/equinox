@@ -27,6 +27,11 @@ export interface IUserByEmail {
     id: string;
 }
 
+export interface IMessageByRoom {
+    room_id: string;
+    id: string;
+}
+
 export interface IUserByUsernameAndDiscriminator {
     discriminator: number;
     id: string;
