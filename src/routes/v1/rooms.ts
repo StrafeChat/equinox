@@ -10,7 +10,6 @@ import { MESSAGE_WORKER_ID } from "../../config";
 import { IMessage, IRoom } from "../../types";
 import Message from "../../database/models/Message";
 import { BatchDelete } from "better-cassandra";
-import MessageByRoom from "../../database/models/MessageByRoom";
 
 const router = Router();
 
@@ -87,7 +86,6 @@ router.post(
         };
 
         await Message.insert(message, { prepare: true });
-        await MessageByRoom.insert({ id: message.id, room_id: message.room_id}, { prepare: true });
 
         res.status(200).json({ ...message, nonce: 0 });
 
@@ -158,15 +156,13 @@ router.delete(
     
         const message = messages[0];
 
-        console.log(message)
-    
         if (!message)
           return res
             .status(404)
             .json({ message: "The message you were looking for does not exist." });
 
         await Message.delete({
-          $where: [{ equals: ["id", message.id] }, { equals: ["created_at", message.created_at] }],
+          $where: [{ equals: ["id", message.id] }, { equals: ["created_at", message.created_at] }, { equals: ["room_id", message.room_id] }],
           $prepare: true,
         })
 
@@ -178,6 +174,7 @@ router.delete(
               id: message.id,
               room_id: room.id,
               space_id: room.space_id,
+              content: message.content,
               author: {
                 id: res.locals.user.id,
                 username: res.locals.user.username,

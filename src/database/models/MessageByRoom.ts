@@ -4,7 +4,7 @@ import { IMessageByRoom } from "../../types";
 const schema = new Schema<IMessageByRoom>({
     id: {
         type: "text",
-        partitionKey: false
+        cluseringKey: true,
     },
     room_id: {
         type: "text",
@@ -12,4 +12,4 @@ const schema = new Schema<IMessageByRoom>({
     }
 });
 
-export default new Model("message_by_room", schema);
+export default new Model("messages_by_room", schema);

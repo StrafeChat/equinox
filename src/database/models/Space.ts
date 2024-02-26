@@ -16,11 +16,11 @@ const schema = new Schema<ISpace>({
         type: "text"
     },
     owner_id: {
-        type: "text"// just say string!
+        type: "text"
     },
     afk_room_id: {
         type: "text"
-    },// if sky can read this heyyyyyy join alpha.strafechat.transgender
+    },
     afk_timeout: {
         type: "int"
     },

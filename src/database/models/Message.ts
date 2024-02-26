@@ -8,6 +8,7 @@ const schema = new Schema<IMessage>({
     },
     room_id: {
         type: "text",
+        cluseringKey: true,
     },
     space_id: {
         type: "text"
@@ -70,6 +71,12 @@ const schema = new Schema<IMessage>({
         type: "timestamp",
         cluseringKey: true
     },
+
+}, {
+    sortBy: {
+        column: "created_at",
+        order: "DESC"
+    }
 });
 
 export default new Model("messages", schema);

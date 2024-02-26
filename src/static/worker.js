@@ -204,11 +204,14 @@ var WebsocketWorkerClient = /** @class */ (function () {
             this.gateway = data.ws;
             _a.label = 6;
           case 6:
+            console.log("starting");
             this.ws = new WebSocket(this.gateway);
             this.ws.addEventListener("open", function () {
+              console.log("connected");
               _this.identify();
             });
             this.ws.addEventListener("message", function (message) {
+              console.log("message", message);
               var _a = JSON.parse(message.data.toString()),
                 op = _a.op,
                 data = _a.data;
@@ -220,6 +223,7 @@ var WebsocketWorkerClient = /** @class */ (function () {
               _this.emit("message", message.data.toString());
             });
             this.ws.addEventListener("close", function (event) {
+              console.log(event);
               _this.emit("error", {
                 code: 1006,
                 message:
@@ -238,6 +242,7 @@ var WebsocketWorkerClient = /** @class */ (function () {
   };
   WebsocketWorkerClient.prototype.send = function (message) {
     var _a;
+    console.log("send", message);
     (_a = this.ws) === null || _a === void 0
       ? void 0
       : _a.send(JSON.stringify(message));
@@ -269,10 +274,11 @@ var WebsocketWorkerClient = /** @class */ (function () {
     var _a;
     var paylod = {
       op: OpCodes.IDENTIFY,
-      d: {
+      data: {
         token: this.token,
       },
     };
+    console.log("identify", paylod);
     (_a = this.ws) === null || _a === void 0
       ? void 0
       : _a.send(JSON.stringify(paylod));
@@ -282,15 +288,13 @@ var WebsocketWorkerClient = /** @class */ (function () {
 var client = null;
 onconnect = function (e) {
   var port = e.ports[0];
-  console.log("connect");
   if (!client) client = new WebsocketWorkerClient();
   client.ports.push(port);
   port.addEventListener("message", function (e) {
     var data = e.data;
-    console.log(e.data);
     switch (data.type) {
       case "connect":
-        if (client.initiated) return;
+        if (client.initiated) return client.identify();
         client.connect(data.url, data.token);
         break;
       case "send":
