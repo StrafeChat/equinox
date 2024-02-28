@@ -3,19 +3,25 @@ import { verifyToken } from "../../helpers/validator";
 import rateLimit from "express-rate-limit";
 import { Request } from "express";
 import Room from "../../database/models/Room";
-import SpaceMember from "../../database/models/SpaceMember";
-import { cassandra, redis } from "../../database";
+import { redis } from "../../database";
 import { generateSnowflake } from "../../helpers/generator";
 import { MESSAGE_WORKER_ID } from "../../config";
 import { IMessage, IRoom } from "../../types";
 import Message from "../../database/models/Message";
-import { BatchDelete } from "better-cassandra";
 
 const router = Router();
 
 const messageCreateLimit = rateLimit({
   windowMs: 1 * 100,
   max: 50,
+  keyGenerator: (req: Request) => {
+    return req.headers["authorization"]!;
+  },
+});
+
+const messageEditLimit = rateLimit({
+  windowMs: 1 * 100,
+  max: 75,
   keyGenerator: (req: Request) => {
     return req.headers["authorization"]!;
   },
@@ -123,6 +129,88 @@ router.post(
   }
 );
 
+router.patch(
+  "/:room_id/messages/:message_id",
+  verifyToken,
+  messageEditLimit,
+  async (req, res) => { 
+    const { room_id, message_id } = req.params;
+
+    try {
+
+      if (isNaN(parseInt(room_id)))
+      return res.status(400).json({ message: "Invalid room ID." });
+    if (isNaN(parseInt(message_id)))
+      return res.status(400).json({ message: "Invalid message ID." });
+
+      const { content } = req.body;
+      
+      if (!content) return res.status(400).json({ message: "You must provide content for your message."})
+      
+    const rooms = await Room.select({
+      $where: [{ equals: ["id", room_id] }],
+      $limit: 1,
+    });
+
+    const room = rooms[0];
+
+    if (!room)
+      return res
+        .status(404)
+        .json({ message: "The room you were looking for does not exist." });
+    
+        const messages = await Message.select({
+          $where: [{ equals: ["id", message_id] }],
+          $limit: 1,
+      });      
+    
+        const message = messages[0];
+
+        if (!message)
+          return res
+            .status(404)
+            .json({ message: "The message you were looking for does not exist." });
+
+            Message.update({
+              $where: [{ equals: ["id", message.id] }, { equals: ["created_at", message.created_at] }, { equals: ["room_id", message.room_id] }],
+              $prepare: true,
+              $set: { content, edited_at: Date.now() },
+            })
+
+            await redis.publish(
+              "stargate",
+              JSON.stringify({
+                event: "message_update",
+                data: {
+                  id: message.id,
+                  room_id: room.id,
+                  space_id: room.space_id,
+                  content,
+                  created_at: Number(message.created_at!),
+                  edited_at: Date.now(),
+                  author: {
+                    id: res.locals.user.id,
+                    username: res.locals.user.username,
+                    display_name: res.locals.user.global_name ?? res.locals.user.username,
+                    discriminator: res.locals.user.discriminator,
+                    global_name: res.locals.user.global_name,
+                    avatar: res.locals.user.avatar,
+                    bot: res.locals.user.bot,
+                    presence: res.locals.user.presence,
+                  }
+                },
+              })
+            );
+    
+            return res.status(200).json({
+              message: { ...message, content},
+          })
+    } catch(err) {
+      console.error(err);
+      res.status(500).json({ message: "Interal Server Error" });
+    }
+});
+
 router.delete(
   "/:room_id/messages/:message_id",
   verifyToken,
@@ -152,6 +240,7 @@ router.delete(
         const messages = await Message.select({
           $where: [{ equals: ["id", message_id] }],
           $limit: 1,
+
       });      
     
         const message = messages[0];
