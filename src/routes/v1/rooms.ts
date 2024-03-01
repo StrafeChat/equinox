@@ -5,9 +5,10 @@ import { Request } from "express";
 import Room from "../../database/models/Room";
 import { redis } from "../../database";
 import { generateSnowflake } from "../../helpers/generator";
-import { MESSAGE_WORKER_ID } from "../../config";
+import { MESSAGE_WORKER_ID, ROOM_WORKER_ID } from "../../config";
 import { IMessage, IRoom } from "../../types";
 import Message from "../../database/models/Message";
+import Space from "../../database/models/Space";
 
 const router = Router();
 
@@ -27,6 +28,87 @@ const messageEditLimit = rateLimit({
   },
 });
 
+const roomCreateLimit = rateLimit({
+  windowMs: 1 * 100,
+  max: 25,
+  keyGenerator: (req: Request) => {
+    return req.headers["authorization"]!;
+  },
+});
+
+router.post(
+  "/",
+  verifyToken,
+  roomCreateLimit,
+  async (req, res) => {
+    const { space_id, name, type } = req.body;
+
+    try {
+
+      if (!name || !type) 
+      return res.status(400).json({ message: "You need to provide a vaild name and type for the room. If you want it to be in a space then you must provide a vaild space_id." });
+
+     if (space_id) {
+      const spaces = await Space.select({
+        $where: [{ equals: ["id", space_id] }],
+        $limit: 1,
+      });
+  
+      const space = spaces[0];
+
+      const id = generateSnowflake(ROOM_WORKER_ID);
+      const roomIds = new Set(space.room_ids || []);
+      roomIds.add(id);
+
+      if (!space)
+      return res
+        .status(404)
+        .json({ message: "The space you were looking for does not exist." });
+
+        switch (type) {
+          case 1:
+            const room: IRoom = {
+              id,
+              type,
+              space_id,
+              position: 0,
+              name,
+              created_at: Date.now(),
+              edited_at: Date.now(),
+              owner_id: null,
+              permission_overwrites: [],
+              topic: null,
+              last_message_id: null,
+              bitrate: null,
+              user_limit: null,
+              rate_limit: null,
+              recipients: [],
+              icon: null,
+              parent_id: null,
+              last_pin_timestamp: null,
+              rtc_region: null
+            };
+    
+            await Room.insert(room, { prepare: true });
+            await Space.update({
+              $where: [{ equals: ["id", space.id] }, { equals: ["created_at", space.created_at] }],
+              $set: { room_ids: Array.from(roomIds) },
+            })
+
+            res.status(200).json(room);
+            break;
+            default:
+              return res
+                .status(400)
+                .json({ message: "This room does not support message sending." });
+        }
+      }
+    } catch(err) {
+      console.error(err);
+      return res.status(500).json({ message: "Internal Server Error."})
+    }
+  })
+
 router.post(
   "/:room_id/messages",
   verifyToken,
@@ -35,7 +117,7 @@ router.post(
     const { room_id } = req.params;
 
     if (isNaN(parseInt(room_id)))
-      return res.status(400).json({ message: "Invalid room id" });
+      return res.status(400).json({ message: "Invalid room ID." });
 
     const { content, message_reference_id } = req.body;
 
@@ -203,7 +285,16 @@ router.patch(
             );
     
             return res.status(200).json({
-              message: { ...message, content},
+              message: { ...message, content, author: {
+                id: res.locals.user.id,
+                username: res.locals.user.username,
+                display_name: res.locals.user.global_name ?? res.locals.user.username,
+                discriminator: res.locals.user.discriminator,
+                global_name: res.locals.user.global_name,
+                avatar: res.locals.user.avatar,
+                bot: res.locals.user.bot,
+                presence: res.locals.user.presence,
+              }},
           })
     } catch(err) {
       console.error(err);

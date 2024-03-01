@@ -134,6 +134,7 @@ export interface ISpace {
 export interface IInvite {
     id: string;
     code: string;
+    vanity: boolean;
     inviter_id: string;
     space_id: string;
     created_at: number;

@@ -13,11 +13,15 @@ const schema = new Schema<IInvite>(
     code: {
       type: "text",
     },
+    vanity: {
+      type: "boolean"
+    },
     inviter_id: {
       type: "text",
     },
     created_at: {
-      type: "int",
+      type: "timestamp",
+      cluseringKey: true
     },
     expires_at: {
       type: "int",
