@@ -181,7 +181,7 @@ export interface MessageEmbed {
     description: string | null;
     url: string | null;
     timestamp: number | null;
-    color: number | null;
+    color: string | null;
     footer: MessageEmbedFooter | null;
     image: MessageEmbedMedia | null;
     thumbnail: MessageEmbedMedia | null;

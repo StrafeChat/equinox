@@ -9,10 +9,10 @@ const schema = new UDTSchema<MessageEmbed>({
         type: "text"
     },
     color: {
-        type: "int"
+        type: "text"
     },
     url: {
-        type: "int"
+        type: "text"
     },
     timestamp: {
         type: "timestamp"
@@ -33,7 +33,7 @@ const schema = new UDTSchema<MessageEmbed>({
         type: new FrozenType("message_embed_media")
     },
     fields: {
-        type: new FrozenType("set<message_embed_field>")
+        type: new FrozenType("list<message_embed_field>")
     }
 });
 

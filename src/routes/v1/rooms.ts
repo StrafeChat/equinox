@@ -65,9 +65,14 @@ router.post(
         .status(404)
         .json({ message: "The space you were looking for does not exist." });
 
+        if (res.locals.user.id !== space.owner_id)
+        return res
+          .status(403)
+          .json({ message: "You do not have permission to create rooms on this space." });
+
         switch (type) {
           case 1:
-            const room: IRoom = {
+            const TextRoom: IRoom = {
               id,
               type,
               space_id,
@@ -89,14 +94,45 @@ router.post(
               rtc_region: null
             };
     
-            await Room.insert(room, { prepare: true });
+            await Room.insert(TextRoom, { prepare: true });
             await Space.update({
               $where: [{ equals: ["id", space.id] }, { equals: ["created_at", space.created_at] }],
               $set: { room_ids: Array.from(roomIds) },
             })
 
-            res.status(200).json(room);
+            res.status(200).json(TextRoom);
             break;
+            case 2:
+              const VoiceRoom: IRoom = {
+                id,
+                type,
+                space_id,
+                position: 0,
+                name,
+                created_at: Date.now(),
+                edited_at: Date.now(),
+                owner_id: null,
+                permission_overwrites: [],
+                topic: null,
+                last_message_id: null,
+                bitrate: null,
+                user_limit: null,
+                rate_limit: null,
+                recipients: [],
+                icon: null,
+                parent_id: null,
+                last_pin_timestamp: null,
+                rtc_region: null
+              };
+      
+              await Room.insert(VoiceRoom, { prepare: true });
+              await Space.update({
+                $where: [{ equals: ["id", space.id] }, { equals: ["created_at", space.created_at] }],
+                $set: { room_ids: Array.from(roomIds) },
+              })
+  
+              res.status(200).json(VoiceRoom);
+              break;
             default:
               return res
                 .status(400)
@@ -109,107 +145,109 @@ router.post(
     }
   })
 
-router.post(
-  "/:room_id/messages",
-  verifyToken,
-  messageCreateLimit,
-  async (req, res) => {
-    const { room_id } = req.params;
-
-    if (isNaN(parseInt(room_id)))
-      return res.status(400).json({ message: "Invalid room ID." });
-
-    const { content, message_reference_id } = req.body;
-
-    if (!content) return res.status(400).json({ message: "You must provide content for your message."})
-
-    if (typeof content !== "string")
-      return res
-        .status(400)
-        .json({ message: "Message content must be a string." });
-    if (content.length > 1024)
-      return res.status(400).json({
-        message: "Message content must be less than 1,024 characters long.",
-      });
-
-    const rooms = await Room.select({
-      $where: [{ equals: ["id", room_id] }],
-      $limit: 1,
-    });
-
-    const room = rooms[0];
-
-    if (!room)
-      return res
-        .status(404)
-        .json({ message: "The room you were looking for does not exist." });
-
-    const message_id = generateSnowflake(MESSAGE_WORKER_ID);
-
-    switch (room.type) {
-      case 1:
-        const message: IMessage = {
-          room_id,
-          content,
-          id: message_id,
-          author_id: res.locals.user.id,
-          space_id: room.space_id!,
-          system: res.locals.user.system,
-          tts: false,
-          attachments: [],
-          embeds: [],
-          flags: 0,
-          mention_everyone: false,
-          mention_roles: [],
-          mention_rooms: [],
-          mentions: [],
-          message_reference_id: message_reference_id ?? null,
-          pinned: false,
-          reactions: [],
-          stickers: [],
-          thread_id: null,
-          webhook_id: null,
-          edited_at: null,
-          created_at: Date.now(),
-        };
-
-        await Message.insert(message, { prepare: true });
-
-        res.status(200).json({ ...message, nonce: 0 });
-
-        await redis.publish(
-          "stargate",
-          JSON.stringify({
-            event: "message_create",
-            data: {
-              room_type: room.type,
-              space_id: room.space_id,
-              room_id: room.id,
-              content,
-              message_reference_id: message_reference_id ?? null,
-              id: message_id,
-              created_at: message.created_at,
-              author: {
-                id: res.locals.user.id,
-                username: res.locals.user.username,
-                discriminator: res.locals.user.discriminator,
-                global_name: res.locals.user.global_name,
-                display_name: res.locals.user.global_name ?? res.locals.user.username,
-                avatar: res.locals.user.avatar,
-                bot: res.locals.user.bot,
-                presence: res.locals.user.presence,
-              }
-            },
-          })
-        );
-        break;
-      default:
+  router.post(
+    "/:room_id/messages",
+    verifyToken,
+    messageCreateLimit,
+    async (req, res) => {
+      const { room_id } = req.params;
+  
+      if (isNaN(parseInt(room_id)))
+        return res.status(400).json({ message: "Invalid room ID." });
+  
+      const { content, message_reference_id, embeds } = req.body;
+  
+      if (!content && !embeds) return res.status(400).json({ message: "You must provide content for your message."});
+  
+      if (content && typeof content !== "string")
         return res
           .status(400)
-          .json({ message: "This room does not support message sending." });
+          .json({ message: "Message content must be a string." });
+      if (content && content.length > 1024)
+        return res.status(400).json({
+          message: "Message content must be less than 1,024 characters long.",
+        });
+  
+      const rooms = await Room.select({
+        $where: [{ equals: ["id", room_id] }],
+        $limit: 1,
+      });
+  
+      const room = rooms[0];
+  
+      if (!room)
+        return res
+          .status(404)
+          .json({ message: "The room you were looking for does not exist." });
+  
+      const message_id = generateSnowflake(MESSAGE_WORKER_ID);
+  
+      switch (room.type) {
+        case 1:
+          const message: IMessage = {
+            room_id,
+            content,
+            id: message_id,
+            author_id: res.locals.user.id,
+            space_id: room.space_id!,
+            system: res.locals.user.system,
+            tts: false,
+            attachments: [],
+            embeds: embeds || [],
+            flags: 0,
+            mention_everyone: false,
+            mention_roles: [],
+            mention_rooms: [],
+            mentions: [],
+            message_reference_id: message_reference_id ?? null,
+            pinned: false,
+            reactions: [],
+            stickers: [],
+            thread_id: null,
+            webhook_id: null,
+            edited_at: null,
+            created_at: Date.now(),
+          };
+  
+          await Message.insert(message, { prepare: true });
+  
+          res.status(200).json({ ...message, nonce: 0 });
+  
+          await redis.publish(
+            "stargate",
+            JSON.stringify({
+              event: "message_create",
+              data: {
+                room_type: room.type,
+                space_id: room.space_id,
+                room_id: room.id,
+                content: content ?? null,
+                embeds: embeds ?? [],
+                message_reference_id: message_reference_id ?? null,
+                id: message_id,
+                created_at: message.created_at,
+                author: {
+                  id: res.locals.user.id,
+                  username: res.locals.user.username,
+                  discriminator: res.locals.user.discriminator,
+                  global_name: res.locals.user.global_name,
+                  display_name: res.locals.user.global_name ?? res.locals.user.username,
+                  avatar: res.locals.user.avatar,
+                  bot: res.locals.user.bot,
+                  presence: res.locals.user.presence,
+                  created_at: res.locals.user.created_at,
+                }
+              },
+            })
+          );
+          break;
+        default:
+          return res
+            .status(400)
+            .json({ message: "This room does not support message sending." });
+      }
     }
-  }
-);
+  );  
 
 router.patch(
   "/:room_id/messages/:message_id",
@@ -225,9 +263,18 @@ router.patch(
     if (isNaN(parseInt(message_id)))
       return res.status(400).json({ message: "Invalid message ID." });
 
-      const { content } = req.body;
+      const { content, embeds } = req.body;
       
-      if (!content) return res.status(400).json({ message: "You must provide content for your message."})
+      if (!content && !embeds) return res.status(400).json({ message: "You must provide content for your message."});
+  
+      if (content && typeof content !== "string")
+        return res
+          .status(400)
+          .json({ message: "Message content must be a string." });
+      if (content && content.length > 1024)
+        return res.status(400).json({
+          message: "Message content must be less than 1,024 characters long.",
+      });
       
     const rooms = await Room.select({
       $where: [{ equals: ["id", room_id] }],
@@ -256,7 +303,7 @@ router.patch(
             Message.update({
               $where: [{ equals: ["id", message.id] }, { equals: ["created_at", message.created_at] }, { equals: ["room_id", message.room_id] }],
               $prepare: true,
-              $set: { content, edited_at: Date.now() },
+              $set: { content: content ?? null, embeds: embeds ?? [], edited_at: Date.now() },
             })
 
             await redis.publish(
@@ -267,7 +314,8 @@ router.patch(
                   id: message.id,
                   room_id: room.id,
                   space_id: room.space_id,
-                  content,
+                  content: content ?? null,
+                  embeds: embeds ?? [],
                   created_at: Number(message.created_at!),
                   edited_at: Date.now(),
                   author: {
@@ -279,6 +327,7 @@ router.patch(
                     avatar: res.locals.user.avatar,
                     bot: res.locals.user.bot,
                     presence: res.locals.user.presence,
+                    created_at: res.locals.user.created_at,
                   }
                 },
               })
