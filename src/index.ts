@@ -11,7 +11,7 @@ import path from "path";
 //-Initialize express-//
 const app = express();
 
-app.use(bodyParser.json());
+app.use(bodyParser.json({ limit: "25mb" }));
 
 app.use(cors({
     origin: FRONTEND,

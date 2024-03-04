@@ -73,7 +73,8 @@ export const validateEditUserData = (req: Request, res: Response, next: NextFunc
         email: emailSchema.optional(),
         username: usernameSchema.optional(),
         discriminator: discriminatorSchema.optional(),
-        locale: joi.string().regex(/^[a-z]{2}-[A-Z]{2}$/).optional()
+        locale: joi.string().regex(/^[a-z]{2}-[A-Z]{2}$/).optional(),
+        avatar: joi.string().optional(),
     }).custom((obj, helper) => {
         const keys = Object.keys(obj);
         if (keys.length < 1) return helper.error("any.required")

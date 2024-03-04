@@ -4,17 +4,42 @@ import { cassandra } from "../../database";
 import UserByEmail from "../../database/models/UserByEmail";
 import UserByUsernameAndDiscriminator from "../../database/models/UserByUsernameAndDiscriminator";
 import { validateEditUserData, verifyToken } from "../../helpers/validator";
+import { NEBULA } from '../../config'
 import { ISpace, ISpaceMember, IUser, IUserByEmail, IUserByUsernameAndDiscriminator } from "../../types";
 import SpaceMember from "../../database/models/SpaceMember";
+import { generateToken } from "../../helpers/generator"
 import Space from "../../database/models/Space";
 import Room from "../../database/models/Room";
 const router = Router();
 
-router.patch<string, {}, {}, { email: string, username: string, discriminator: number, locale: string }, {}, { user: IUser }>('/@me', verifyToken, validateEditUserData, async (req, res) => {
+router.patch<string, {}, {}, { email: string, username: string, discriminator: number, locale: string, avatar: string }, {}, { user: IUser }>('/@me', verifyToken, validateEditUserData, async (req, res) => {
 
     if (req.body.email) {
         const users = await UserByEmail.select({ $where: [{ equals: ["email", req.body.email] }] });
         if (users.length > 1) return res.status(400).json({ message: "Email is already in use" });
+    }
+
+    if (req.body.avatar) {
+        const token = generateToken(res.locals.user.id, Number(res.locals!.user.created_at), res.locals.user!.secret);
+        const response = await fetch(`${NEBULA}/avatars`, {
+            method: "PATCH",
+            headers: {
+                "Content-Type": "application/json",
+                "Authorization": token
+            },
+            body: JSON.stringify({
+                data: req.body.avatar.replace(/^data:image\/(png|jpeg|jpg|gif|webp);base64,/, '')
+            })
+        });
+
+        if (!response.ok) {
+            console.log(await response.json())
+            return res.status(400).json({ message: "Something went wrong." });
+        }
+
+        const data = await response.json();
+
+        res.locals.user!.avatar = data.hash;
     }
 
     const statements = [

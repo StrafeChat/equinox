@@ -144,6 +144,26 @@ router.post(
       $where: [{ in: ["id", roomIds] }],
     });
 
+      let members = await SpaceMember.select({
+        $where: [{ equals: ["space_id", space.id] }],
+      });
+
+      await Promise.all(members.map(async (member) => {
+        let user = await User.select({
+          $limit: 1,
+          $include: ["username", "global_name", "avatar", "flags", "presence", "discriminator", "created_at", "id"],
+          $where: [{ equals: ["id", member.user_id] }],
+        });
+           (member as any).user = user[0];
+           (member as any).user.display_name = user[0].global_name ?? user[0].username;
+       }));
+
+       (space as any).members = members;
+
+    for (const room of rooms) {
+      (room as any).messages = [];
+    }
+
     if (space.icon) {
       await fetch(`${NEBULA}/spaces`, {
         method: "PUT",
