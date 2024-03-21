@@ -55,6 +55,9 @@ const schema = new Schema<IMessage>({
     reactions: {
         type: new FrozenType("set<message_reaction>")
     },
+    sudo: {
+        type: new FrozenType("message_sudo")
+    },
     stickers: {
         type: "set<text>"
     },

@@ -6,7 +6,7 @@ import Room from "../../database/models/Room";
 import { redis } from "../../database";
 import { generateSnowflake } from "../../helpers/generator";
 import { MESSAGE_WORKER_ID, ROOM_WORKER_ID } from "../../config";
-import { IMessage, IRoom } from "../../types";
+import { IMessage, IRoom, MessageSudo } from "../../types";
 import Message from "../../database/models/Message";
 import Space from "../../database/models/Space";
 
@@ -155,7 +155,7 @@ router.post(
       if (isNaN(parseInt(room_id)))
         return res.status(400).json({ message: "Invalid room ID." });
   
-      const { content, message_reference_id, embeds } = req.body;
+      const { content, message_reference_id, embeds, sudo } = req.body;
   
       if (!content && !embeds) return res.status(400).json({ message: "You must provide content for your message."});
   
@@ -201,6 +201,7 @@ router.post(
             mentions: [],
             message_reference_id: message_reference_id ?? null,
             pinned: false,
+            sudo: sudo || null,
             reactions: [],
             stickers: [],
             thread_id: null,
@@ -223,6 +224,7 @@ router.post(
                 room_id: room.id,
                 content: content ?? null,
                 embeds: embeds ?? [],
+                sudo: sudo ?? null,
                 message_reference_id: message_reference_id ?? null,
                 id: message_id,
                 created_at: message.created_at,

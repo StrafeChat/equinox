@@ -15,6 +15,9 @@ const schema = new Schema<IUser>({
     avatar_decoration: {
         type: "text"
     },
+    about_me: {
+        type: "text"
+    },
     banned: {
         type: "boolean"
     },

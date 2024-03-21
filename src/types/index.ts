@@ -49,6 +49,7 @@ export interface IUser {
     accent_color: number;
     avatar: string;
     avatar_decoration: string;
+    about_me: string;
     banned: boolean;
     banner: string;
     bot: boolean;
@@ -195,6 +196,13 @@ export interface MessageReaction {
     emoji: string; 
 }
 
+export interface MessageSudo {
+    name: string | null;
+    avatar_url: string | null;
+    color: string | null;
+}
+
+
 export interface IMessage {
     id: string;
     room_id: string;
@@ -211,6 +219,7 @@ export interface IMessage {
     attachments: string[] | null;
     embeds: MessageEmbed[] | null;
     reactions: MessageReaction[] | null;
+    sudo: MessageSudo | null;
     pinned: boolean;
     webhook_id: string | null;
     system: boolean;
