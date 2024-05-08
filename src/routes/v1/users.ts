@@ -10,6 +10,7 @@ import SpaceMember from "../../database/models/SpaceMember";
 import { generateToken } from "../../helpers/generator"
 import Space from "../../database/models/Space";
 import Room from "../../database/models/Room";
+import User from "../../database/models/User";
 const router = Router();
 
 router.patch<string, {}, {}, { email: string, username: string, discriminator: number, locale: string, avatar: string }, {}, { user: IUser }>('/@me', verifyToken, validateEditUserData, async (req, res) => {
@@ -86,7 +87,7 @@ router.patch<string, {}, {}, { email: string, username: string, discriminator: n
 });
 
 router.put("/@me/spaces/:space_id", verifyToken, async (req, res) => {
-    if (res.locals.user.space_count >= 10) return res.status(403).json({ message: "You have reached the max amount of spaces you can join." });
+    if (res.locals.user.space_count >= 50) return res.status(403).json({ message: "You have reached the max amount of spaces you can join." });
     if(isNaN(parseInt(req.params.space_id))) return res.status(400).json({message: "The space id you have provided is not correct."});
 
     const members = await SpaceMember.select({
@@ -129,6 +130,82 @@ router.put("/@me/spaces/:space_id", verifyToken, async (req, res) => {
       });
 
     return res.status(200).json({ space, rooms });
+});
+
+router.delete("/@me/spaces/:space_id", verifyToken, async (req, res) => {
+    if(isNaN(parseInt(req.params.space_id))) return res.status(400).json({message: "The space id you have provided is not correct."});
+
+    const members = await SpaceMember.select({
+        $where: [{equals: ["user_id", res.locals.user.id]}, {equals: ["space_id", req.params.space_id]}]
+    });
+
+    if (members.length < 0) return res.status(400).json({message: "You are not even in this space."})
+
+    const spaces = await Space.select({
+        $where: [{equals: ["id", req.params.space_id]}]
+    });
+
+    if(spaces.length < 1) return res.status(404).json({message: "The space was not found."});
+
+    let space = spaces[0];
+
+    if (space.owner_id == res.locals.user.id) return res.status(403).json({message: "You cannot leave your own space, you must delete it instead."})
+
+    await cassandra.batch([
+        BatchUpdate<IUser>({
+            name: "users",
+            set: {
+                space_ids: (res.locals.user.space_ids || []).filter(id => id !== req.params.space_id)
+            },
+            where: [{equals: ["id", res.locals.user.id]}]
+        }),
+        BatchDelete<ISpaceMember>({
+            name: "space_members",
+            where: [{equals: ["user_id", res.locals.user.id]}, {equals: ["space_id", req.params.space_id]}]
+        })
+    ]);
+
+    const rooms = await Room.select({
+        $where: [{ in: ["id", space.room_ids!] }],
+      });
+
+    return res.status(200).json({ space, rooms });
+});
+
+router.get("/:id", verifyToken, async (req, res) => {
+   const user_id = req.params.id;
+
+ try {
+   const usersData = await User.select({
+     $where: [{ equals: ["id", user_id] }],
+     $limit: 1,
+   });
+
+   const user = usersData[0];
+
+   if (!user)
+    return res
+      .status(404)
+      .json({ message: "The user you were looking for does not exist." });
+
+    res.status(200).json({
+        id: user.id,
+        username: user.username,
+        display_name: user.global_name ?? user.username,
+        avatar: user.avatar,
+        banner: user.banner,
+        about_me: user.about_me,
+        accent_color: user.accent_color,
+        discriminator: user.discriminator,
+        global_name: user.global_name,
+        flags: user.flags,
+        public_plags: user.public_flags,
+    });
+
+ } catch (err) {
+    console.log("ERROR: "+ err);
+    return res.status(500).json({ message: "Interal Server Error."})
+  }
 });
 
 export default router;

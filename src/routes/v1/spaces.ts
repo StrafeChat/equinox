@@ -31,11 +31,11 @@ router.post(
     try {
     if (res.locals.user.created_spaces_count! >= 10)
       return res.status(403).json({
-        message: "You have reached the max amount of spaces you can create",
+        message: "You have reached the max amount of spaces you can create.",
       });
-    if (res.locals.user.space_count! >= 10)
+    if (res.locals.user.space_count! >= 50)
       return res.status(403).json({
-        message: "You have reached the max amount of spaces you can join",
+        message: "You have reached the max amount of spaces you can join.",
       });
 
     const id = generateSnowflake(SPACE_WORKER_ID);

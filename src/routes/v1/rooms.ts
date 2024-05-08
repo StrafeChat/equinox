@@ -4,11 +4,13 @@ import rateLimit from "express-rate-limit";
 import { Request } from "express";
 import Room from "../../database/models/Room";
 import { redis } from "../../database";
-import { generateSnowflake } from "../../helpers/generator";
+import { generateInviteCode, generateSnowflake } from "../../helpers/generator";
 import { MESSAGE_WORKER_ID, ROOM_WORKER_ID } from "../../config";
-import { IMessage, IRoom, MessageSudo } from "../../types";
+import { IInvite, IMessage, IRoom, MessageSudo } from "../../types";
 import Message from "../../database/models/Message";
 import Space from "../../database/models/Space";
+import SpaceMember from "../../database/models/SpaceMember";
+import Invite from "../../database/models/Invite";
 
 const router = Router();
 
@@ -45,7 +47,7 @@ router.post(
 
     try {
 
-      if (!name || !type) 
+      if (!name || typeof type !== 'number' || type < 0) 
       return res.status(400).json({ message: "You need to provide a vaild name and type for the room. If you want it to be in a space then you must provide a vaild space_id." });
 
      if (space_id) {
@@ -71,6 +73,37 @@ router.post(
           .json({ message: "You do not have permission to create rooms on this space." });
 
         switch (type) {
+          case 0:
+            const Section: IRoom = {
+              id,
+              type,
+              space_id,
+              position: 0,
+              name,
+              created_at: Date.now(),
+              edited_at: Date.now(),
+              owner_id: null,
+              permission_overwrites: [],
+              topic: null,
+              last_message_id: null,
+              bitrate: null,
+              user_limit: null,
+              rate_limit: null,
+              recipients: [],
+              icon: null,
+              parent_id: null,
+              last_pin_timestamp: null,
+              rtc_region: null
+            };
+    
+            await Room.insert(Section, { prepare: true });
+            await Space.update({
+              $where: [{ equals: ["id", space.id] }, { equals: ["created_at", space.created_at] }],
+              $set: { room_ids: Array.from(roomIds) },
+            })
+
+            res.status(200).json(Section);
+            break;
           case 1:
             const TextRoom: IRoom = {
               id,
@@ -273,9 +306,9 @@ router.patch(
         return res
           .status(400)
           .json({ message: "Message content must be a string." });
-      if (content && content.length > 1024)
+      if (content && content.length > 2024)
         return res.status(400).json({
-          message: "Message content must be less than 1,024 characters long.",
+          message: "Message content must be less than 2,024 characters long.",
       });
       
     const rooms = await Room.select({
@@ -476,5 +509,220 @@ router.post(
     }
   }
 )
+
+router.post(
+  "/:room_id/invites",
+   verifyToken,
+   async (req, res) => {
+    const { room_id } = req.params;
+    
+    try {
+      const rooms = await Room.select({
+        $where: [{ equals: ["id", room_id] }],
+        $limit: 1,
+      });
+  
+      const room = rooms[0];
+  
+      if (!room)
+        return res
+          .status(404)
+          .json({ message: "The room you were looking for does not exist." });
+
+          if (!room.space_id) 
+             return res
+              .status(400)
+              .json({ message: "You can only create invites for space rooms at the moment. You cannot generate invites for PMs or group PMs."});
+             
+               const members = await SpaceMember.select({
+                $where: [
+                { equals: ["user_id", res.locals.user.id]}, 
+                { equals: ["space_id", room.space_id]}],
+                $limit: 1,
+               })
+
+               const member = members[0];
+
+               if (!member) 
+                 return res
+                   .status(403)
+                   .json({ message: "You must be in this space to create an invite for it." });
+
+              // TODO: if(member.permissions == [insert create invite permission here] || or the space owner) //
+
+              const code = generateInviteCode();
+
+                  const invite: IInvite = {
+                    code,
+                    inviter_id: res.locals.user.id,
+                    space_id: room.space_id,
+                    room_id: room_id,
+                    uses: 0,
+                    max_uses: null,
+                    vanity: false,
+                    expires_at: null,
+                    created_at: Date.now(),
+                  }
+          
+                  await Invite.insert(invite, { prepare: true });
+
+                  // await redis.publish(
+                  //   "stargate",
+                  //   JSON.stringify({
+                  //     event: "invite_create",
+                  //     data: {
+                  //       room_id: room.id,
+                  //       space_id: room.space_id,
+                  //       inviter: {
+                  //         id: res.locals.user.id,
+                  //         username: res.locals.user.username,
+                  //         display_name: res.locals.user.global_name ?? res.locals.user.username,
+                  //         discriminator: res.locals.user.discriminator,
+                  //         global_name: res.locals.user.global_name,
+                  //         avatar: res.locals.user.avatar,
+                  //         bot: res.locals.user.bot,
+                  //       }
+                  //     },
+                  //   })
+                  // );
+
+                  return res.status(200).json({ invite });
+
+    } catch (err) {
+      console.log("Error: "+ err);
+      res.status(500).json({ message: "Internal Server Error."})
+    }
+  }
+)
+
+router.get(
+  "/:room_id/invites/:invite_code",
+   verifyToken,
+    async (req, res) => {
+     const { room_id, invite_code } = req.params;
+      
+     try {
+      const rooms = await Room.select({
+        $where: [{ equals: ["id", room_id] }],
+        $limit: 1,
+      });
+  
+      const room = rooms[0];
+  
+      if (!room)
+        return res
+          .status(404)
+          .json({ message: "The room you were looking for does not exist." });
+
+          const invites = await Invite.select({
+            $where: [{ equals: ["code", invite_code] }],
+            $limit: 1,
+          });
+      
+          const invite = invites[0];
+      
+          if (!invite)
+            return res
+              .status(404)
+              .json({ message: "The invite you were looking for does not exist." });
+
+              const spaces = await Space.select({
+                $where: [{ equals: ["id", invite.space_id] }],
+                $limit: 1,
+              });
+          
+              const space = spaces[0];
+                        
+              const member_count = await SpaceMember.select({
+                $where: [{ equals: ["space_id", space.id] }]
+              });
+
+          return res.status(200).json({ invite: { ...invite, created_at: Number(invite.created_at) }, space: { 
+            id: invite.space_id,
+            name: space.name,
+            icon: space.icon,
+            name_acronym: space.name_acronym,
+            banner: space.banner,
+            description: space.description,
+            member_count: member_count.length
+          }
+        });
+
+     } catch (err) {
+        console.log("ERROR: "+ err);
+        return res.status(500).json({ message: "Interal Server Error."})
+      }
+   }
+)
+
+router.delete(
+  "/",
+  verifyToken,
+  async (req, res) => {
+
+    try {
+      const { room_id } = req.params;
+
+       const rooms = await Room.select({
+         $where: [{ equals: ["id", room_id] }],
+         $limit: 1,
+       });
+   
+       const room = rooms[0];
+   
+       if (!room)
+         return res
+           .status(404)
+           .json({ message: "The room you were looking for does not exist." });
+
+              const spaces = await Space.select({
+                $where: [{ equals: ["id", room.space_id!] }],
+                $limit: 1,
+              });
+           
+               const space = spaces[0];
+
+               if (!space)
+                return res
+                  .status(404)
+                  .json({ message: "The space you were looking for does not exist." });
+          
+                  if (res.locals.user.id !== space.owner_id)
+                  return res
+                    .status(403)
+                    .json({ message: "You do not have permission to delete this room on this space." });
+
+               const roomIds = new Set(space.room_ids);
+               roomIds.delete(room.id!)
+
+               await Room.delete({ 
+                 $where: [{ equals: ["id", room.id] }, { equals: ["created_at", room.created_at] }],
+               });
+               await Space.update({
+                 $where: [{ equals: ["id", space.id] }, { equals: ["created_at", space.created_at] }],
+                 $set: { room_ids: Array.from(roomIds) },
+               });
+
+                  await redis.publish(
+                    "stargate",
+                    JSON.stringify({
+                      event: "room_delete",
+                      data: {
+                        room_id: room.id,
+                        space_id: room.space_id,
+                        space: {
+                          id: space.id,
+                          name: space.name,
+                        }
+                      },
+                    })
+                  );
+
+                  return res.status(200).json({ room });
+    } catch(err) {
+      console.error(err);
+      return res.status(500).json({ message: "Internal Server Error."})
+    }
+  })
 
 export default router;

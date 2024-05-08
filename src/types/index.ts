@@ -133,13 +133,22 @@ export interface ISpace {
 }
 
 export interface IInvite {
-    id: string;
     code: string;
     vanity: boolean;
     inviter_id: string;
+    uses: number;
+    max_uses: number | null;
     space_id: string;
+    room_id: string;
     created_at: number;
-    expires_at: number;
+    expires_at: number | null;
+}
+
+export interface IBannedSpaceMember {
+    user_id: string;
+    space_id: string;
+    user_ip: string | null;
+    
 }
 
 export interface ISpaceMember {
