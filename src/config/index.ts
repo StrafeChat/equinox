@@ -30,6 +30,8 @@ export const SPACE_WORKER_ID = process.env.SPACE_WORKER_ID ? parseInt(process.en
 export const ROOM_WORKER_ID = process.env.ROOM_WORKER_ID ? parseInt(process.env.ROOM_WORKER_ID) : 2;
 export const MESSAGE_WORKER_ID = process.env.MESSAGE_WORKER_ID ? parseInt(process.env.MESSAGE_WORKER_ID) : 3;
 
+export const STAFF_IDS = ["6411384778888578048"];
+
 export enum RoomTypes {
     SECTION = 1,
     SPACE_TEXT = 2,

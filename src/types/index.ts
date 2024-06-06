@@ -97,6 +97,7 @@ export interface IRoom {
     owner_id: string | null;
     permission_overwrites: PermissionOverwrite[],
     name: string | null;
+    // icon_url: string |
     topic: string | null;
     last_message_id: string | null;
     bitrate: number | null;
@@ -160,8 +161,18 @@ export interface ISpaceMember {
     deaf: boolean;
     mute: boolean;
     avatar: string | null;
-    edited_at: number;
+    edited_at: number | null;
 } 
+
+export interface ISpaceRole {
+    id: string;
+    space_id: string;
+    rank: number;
+    hoist: boolean;
+    permissions: number;
+    created_at: number;
+    edited_at: number | null;
+}
 
 export interface MessageEmbedFooter {
     text: string;
@@ -203,6 +214,12 @@ export interface MessageEmbed {
 export interface MessageReaction {
     user_ids: string[];
     emoji: string; 
+}
+
+export interface MessageAttachment {
+    url: string;
+    height: number;
+    width: number; 
 }
 
 export interface MessageSudo {

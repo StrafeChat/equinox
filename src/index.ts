@@ -14,7 +14,7 @@ const app = express();
 app.use(bodyParser.json({ limit: "25mb" }));
 
 app.use(cors({
-    origin: FRONTEND,
+    origin: [FRONTEND, "http://localhost:3001"],
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'], 
     credentials: true,
 }));
@@ -22,10 +22,10 @@ app.use(cors({
 app.set('trust proxy', 1);
 app.disable('x-powered-by');
 
-const limiter = rateLimit({
-    windowMs: 10 * 1000,
-    max: 75,
-  });
+// const limiter = rateLimit({
+//     windowMs: 10 * 1000,
+//     max: 75,
+//   });
 
 // CORS preflight handling
 app.options('*', cors());

@@ -4,11 +4,16 @@ import { IMessageByRoom } from "../../types";
 const schema = new Schema<IMessageByRoom>({
     id: {
         type: "text",
-        cluseringKey: true,
+        cluseringKey: true
     },
     room_id: {
         type: "text",
         partitionKey: true
+    },
+}, {
+    sortBy: {
+        column: "id",
+        order: "DESC"
     }
 });
 
