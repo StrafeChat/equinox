@@ -3,7 +3,7 @@ import cors from "cors";
 import express from "express";
 import rateLimit from "express-rate-limit";
 import fs from "fs";
-import { FRONTEND, NEBULA, PORT, STARGATE } from './config';
+import { FRONTEND, NEBULA, PORT, STARGATE, PANEL } from './config';
 import database from "./database";
 import { Logger } from "./helpers/logger";
 import path from "path";
@@ -14,7 +14,7 @@ const app = express();
 app.use(bodyParser.json({ limit: "25mb" }));
 
 app.use(cors({
-    origin: [FRONTEND, "http://localhost:3001"],
+    origin: [FRONTEND, PANEL],
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'], 
     credentials: true,
 }));
