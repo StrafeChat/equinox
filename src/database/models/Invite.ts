@@ -26,17 +26,10 @@ const schema = new Schema<IInvite>({
       type: "int"
     },
     created_at: {
-      type: "timestamp",
-      cluseringKey: true
+      type: "timestamp"
     },
     expires_at: {
       type: "int",
-    },
-  },
-  {
-    sortBy: {
-      column: "created_at",
-      order: "DESC",
     },
   }
 );
