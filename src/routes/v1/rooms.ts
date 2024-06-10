@@ -819,7 +819,7 @@ router.get("/:room_id/messages", verifyToken, async (req, res) => {
     if (after) operators.push({ greaterThan: ["id", after] });
 
     let messageIds = await MessageByRoom.select({
-      $limit: limit ? parseInt(limit as string, 10) : 50,
+      $limit: limit ? parseInt(limit as string, 10) : 100,
       $where: operators,
     });
 
