@@ -300,6 +300,7 @@ router.post(
                 username: res.locals.user.username,
                 discriminator: res.locals.user.discriminator,
                 global_name: res.locals.user.global_name,
+                flags: res.locals.user.flags,
                 display_name:
                   res.locals.user.global_name ?? res.locals.user.username,
                 avatar: res.locals.user.avatar,
@@ -376,7 +377,6 @@ router.patch(
         $where: [
           { equals: ["id", message.id] },
           { equals: ["created_at", message.created_at] },
-          { equals: ["room_id", message.room_id] },
         ],
         $prepare: true,
         $set: {
