@@ -255,3 +255,9 @@ export interface IMessage {
     stickers: string[] | null;
     nonce?: number;
 }
+
+export interface IRoomUnreads {
+    room_id: string,
+    user_id: string,
+    mention: boolean,
+}

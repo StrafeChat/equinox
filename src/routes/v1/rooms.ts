@@ -11,6 +11,7 @@ import {
   IMessage,
   IMessageByRoom,
   IRoom,
+  IRoomUnreads,
   MessageSudo,
 } from "../../types";
 import Message from "../../database/models/Message";
@@ -786,7 +787,7 @@ router.delete("/:room_id", verifyToken, async (req, res) => {
 router.get("/:room_id/messages", verifyToken, async (req, res) => {
   try {
     const { room_id } = req.params;
-    const { around, before, after, limit } = req.query; // Extract query parameters
+    const { around, before, after, limit } = req.query;
 
     const rooms = await Room.select({
       $where: [{ equals: ["id", room_id] }],
@@ -808,7 +809,7 @@ router.get("/:room_id/messages", verifyToken, async (req, res) => {
       ],
     });
 
-    if (!member)
+    if (!member[0])
       return res
         .status(401)
         .json({ message: "You do not have permission to view this content." });
@@ -841,11 +842,18 @@ router.get("/:room_id/messages", verifyToken, async (req, res) => {
           $where: [{ equals: ["id", message.author_id] }],
         });
 
+        let memberResult: any = await SpaceMember.select({
+          $limit: 1,
+          $where: [{ equals: ["space_id", room.space_id!] }, { equals: ["user_id", message.author_id!] }],
+        });
+
         if (message.embeds && message.embeds[0]) {
           message.embeds.forEach((embed: any) => {
             if (embed.timestamp) embed.timestamp = embed.timestamp.getTime();
           });
         }
+
+        let member = memberResult[0];
 
         message.author = authorResult[0];
         message.created_at = message.created_at.getTime();
@@ -853,6 +861,9 @@ router.get("/:room_id/messages", verifyToken, async (req, res) => {
         message.author.discriminator = authorResult[0].discriminator ?? 0;
         message.author.display_name =
           authorResult[0].global_name ?? message.author.username;
+
+        member.user = message.author;
+        message.member = member;
 
         messagesArray.push(message);
       })
