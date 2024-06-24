@@ -11,7 +11,7 @@ import path from "path";
 //-Initialize express-//
 const app = express();
 
-app.use(bodyParser.json({ limit: "25mb" }));
+app.use(bodyParser.urlencoded({limit: "25mb", extended: true, parameterLimit: 25000}));
 
 app.use(cors({
     origin: [FRONTEND, PANEL],

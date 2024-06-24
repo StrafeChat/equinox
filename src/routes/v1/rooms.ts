@@ -4,7 +4,6 @@ import rateLimit from "express-rate-limit";
 import { Request } from "express";
 import Room from "../../database/models/Room";
 import { cassandra, redis } from "../../database";
-import multer from "multer";
 import { generateInviteCode, generateSnowflake, generateToken } from "../../helpers/generator";
 import { MESSAGE_WORKER_ID, ROOM_WORKER_ID, NEBULA } from "../../config";
 import {
@@ -12,9 +11,6 @@ import {
   IMessage,
   IMessageByRoom,
   IRoom,
-  IRoomUnreads,
-  MessageAttachment,
-  MessageSudo,
 } from "../../types";
 import Message from "../../database/models/Message";
 import Space from "../../database/models/Space";
@@ -23,9 +19,10 @@ import Invite from "../../database/models/Invite";
 import { BatchDelete, BatchInsert } from "better-cassandra";
 import MessageByRoom from "../../database/models/MessageByRoom";
 import User from "../../database/models/User";
+import bodyParser from "body-parser";
 
 const router = Router();
-const upload = multer();
+router.use(bodyParser.urlencoded({limit: "25mb", extended: true, parameterLimit:25000}));
 
 const messageCreateLimit = rateLimit({
   windowMs: 1 * 100,
@@ -202,7 +199,6 @@ router.post(
   "/:room_id/messages",
   verifyToken,
   messageCreateLimit,
-  upload.array("attachments"),
   async (req, res) => {
     const { room_id } = req.params;
 
