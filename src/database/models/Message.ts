@@ -25,7 +25,7 @@ const schema = new Schema<IMessage>({
         type: "boolean"
     },
     attachments: {
-        type: "set<text>"
+        type: new FrozenType("set<message_attachment>")
     },
     embeds: {
         type: new FrozenType("set<message_embed>")

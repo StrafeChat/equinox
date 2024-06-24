@@ -217,9 +217,11 @@ export interface MessageReaction {
 }
 
 export interface MessageAttachment {
+    name: string;
     url: string;
-    height: number;
-    width: number; 
+    type: string,
+    height: number | null;
+    width: number | null; 
 }
 
 export interface MessageSudo {
