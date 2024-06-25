@@ -41,7 +41,8 @@ const mw = middleware(captcha);
 router.use("/", (req, res, next) => mw(req, res, next));
 
 router.get("/captcha", async (req, res) => {
-    res.status(200).json({ image: await (req as any).generateCaptcha() });
+  res.status(200).json({ image: await (req as any).generateCaptcha() });
+  console.log((req.session as any))
 })
 
 // Route for handling register requests
