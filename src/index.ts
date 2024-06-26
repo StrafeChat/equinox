@@ -3,10 +3,19 @@ import cors from "cors";
 import express from "express";
 import rateLimit from "express-rate-limit";
 import fs from "fs";
-import { FRONTEND, NEBULA, PORT, STARGATE, PANEL } from './config';
+import { FRONTEND, NEBULA, PORT, STARGATE, PANEL, LIVEKIT } from './config';
 import database from "./database";
 import { Logger } from "./helpers/logger";
 import path from "path";
+import { redis } from "./database"
+
+import { WebSocketServer } from "ws";
+import { SignalingRelay, RoomManager } from "./portal";
+
+const {
+  LIVEKIT_API_KEY: key,
+  LIVEKIT_API_SECRET: secret
+} = process.env;
 
 //-Initialize express-//
 const app = express();
@@ -36,6 +45,14 @@ const startServer = async () => {
     const port = PORT ?? 443;
     const versions = fs.readdirSync("src/routes");
 
+    const mgr = new RoomManager({ key: key!, secret: secret! });
+    app.use((req, _res, next) => {
+      (req as any).portal = {
+        manager: mgr
+      } // TODO: add typings
+      next();
+    });
+
     for (const version of versions) {
         const routes = fs.readdirSync(`src/routes/${version}`);
         for (const route of routes) {
@@ -46,7 +63,7 @@ const startServer = async () => {
     app.get("/worker.js", (_req, res) => res.sendFile(path.join(__dirname, "/static/worker.js")));
 
     app.use(express.static(path.join(__dirname, "/static")));
-
+    
     // Redirect to newest info route
     app.get("/", (_req, res) => {
         res.redirect("/v1/gateway");
@@ -57,8 +74,35 @@ const startServer = async () => {
         res.status(200).json({ version: "1.0.0", release: "Early Alpha", ws: STARGATE, file_system: NEBULA, web_application: FRONTEND });
     });
 
-    app.listen(port, () => {
+    const server = app.listen(port, () => {
         Logger.success(`Equinox is listening on ${port}!`);
+    });
+    const ws = new WebSocketServer({ server, path: "/portal/signaling/rtc" });
+
+    ws.on("connection", (socket, req) => {
+      const relay = new SignalingRelay(socket, req.url!, `ws://${LIVEKIT}`);
+      const user = mgr.getUserByToken(relay.token!);
+      if (!user) return;
+      relay.on("close", () => {
+        console.log("closed")
+        // TODO: register users leaving
+        redis.publish("stargate", JSON.stringify({
+          event: "voice_leave",
+          data: {
+            ...user,
+            space_id: user.space
+          }
+        }));
+      });
+
+      // TODO: publish user to stargate
+      redis.publish("stargate", JSON.stringify({
+        event: "voice_join",
+        data: {
+          ...user,
+          space_id: user.space
+        }
+      }));
     });
 };
 

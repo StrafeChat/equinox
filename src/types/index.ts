@@ -22,6 +22,10 @@ export interface LoginBody {
     captcha: string;
 }
 
+export interface JoinBody {
+  roomId: string
+}
+
 export interface IUserByEmail {
     email: string;
     id: string;
