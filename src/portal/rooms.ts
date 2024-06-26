@@ -45,6 +45,8 @@ export class RoomManager {
 
   // TODO: IMPORTANT: Gargabe collection of unused tokens
   addToken(token: string, user: string, room: string, space: string): void {
+    // TODO: fix double calls from react frontend
+    if (!!this.tokens.find(e => e.token === token && e.user === user && e.room === room && e.space === space)) return;
     this.tokens.push({
       token,
       user: user,
