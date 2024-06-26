@@ -13,7 +13,7 @@ interface UserInfo {
 }
 
 export class RoomManager {
-  host: string = "http://localhost:7880";
+  host: string = process.env.LIVEKIT_URL!;
   svc: RoomServiceClient | null = null;
 
   tokens: (UserInfo & {

@@ -3,14 +3,14 @@ import { EventEmitter } from "events";
 
 export class SignalingRelay extends EventEmitter {
   socket: WebSocket | null = null;
-  host: string = "ws://localhost:7880";
+  host: string = process.env.LIVEKIT_URL!;
   token: string = "";
 
   hostSocket: WebSocket | null = null;
 
   messageQueue: (RawData)[] = [];
 
-  constructor(socket: WebSocket, url: string, livekitHost: string = "ws://localhost:7880") {
+  constructor(socket: WebSocket, url: string, livekitHost: string = process.env.LIVEKIT_URL!) {
     super();
 
     this.socket = socket;
