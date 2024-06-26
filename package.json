@@ -38,7 +38,7 @@
     "express-rate-limit": "^7.1.5",
     "express-session": "^1.18.0",
     "helmet": "^7.1.0",
-    "joi": "^17.12.1",
+    "joi": "^17.13.3",
     "livekit-server-sdk": "^1.2.7",
     "log-utils": "^1.0.0",
     "multer": "^1.4.5-lts.1",
