@@ -1,7 +1,6 @@
 import { BatchDelete, BatchInsert, BatchUpdate } from "better-cassandra";
 import { Router } from "express";
 import { cassandra } from "../../database";
-import User from "../../database/models/User";
 import UserByEmail from "../../database/models/UserByEmail";
 import UserByUsernameAndDiscriminator from "../../database/models/UserByUsernameAndDiscriminator";
 import { validateEditUserData, verifyToken } from "../../helpers/validator";
@@ -197,15 +196,6 @@ router.patch<
   });
 });
 
-router.get("/:user_id", verifyToken, async (req, res) => {
-  User.select({
-    $where: [{ equals: ["id", req.params.user_id] }]
-  }).then((users) => {
-    if (users.length < 1) return res.status(404).json({ message: "User not found" });
-    res.status(200).json(users[0]);
-  });
-});
-
 router.put("/@me/spaces/:space_id", verifyToken, async (req, res) => {
   if (res.locals.user.space_count >= 50)
     return res
@@ -339,7 +329,6 @@ router.get("/:id", verifyToken, async (req, res) => {
       return res
         .status(404)
         .json({ message: "The user you were looking for does not exist." });
-
     res.status(200).json({
       id: user.id,
       username: user.username,
@@ -352,6 +341,8 @@ router.get("/:id", verifyToken, async (req, res) => {
       global_name: user.global_name,
       flags: user.flags,
       public_plags: user.public_flags,
+      presence: user.presence,
+      created_at: user.created_at,
     });
   } catch (err) {
     console.log("ERROR: " + err);
