@@ -101,6 +101,7 @@ export interface IRoom {
     owner_id: string | null;
     permission_overwrites: PermissionOverwrite[],
     name: string | null;
+    // icon_url: string |
     topic: string | null;
     last_message_id: string | null;
     bitrate: number | null;
@@ -137,13 +138,22 @@ export interface ISpace {
 }
 
 export interface IInvite {
-    id: string;
     code: string;
     vanity: boolean;
     inviter_id: string;
+    uses: number;
+    max_uses: number | null;
     space_id: string;
+    room_id: string;
     created_at: number;
-    expires_at: number;
+    expires_at: number | null;
+}
+
+export interface IBannedSpaceMember {
+    user_id: string;
+    space_id: string;
+    user_ip: string | null;
+    
 }
 
 export interface ISpaceMember {
@@ -155,8 +165,18 @@ export interface ISpaceMember {
     deaf: boolean;
     mute: boolean;
     avatar: string | null;
-    edited_at: number;
+    edited_at: number | null;
 } 
+
+export interface ISpaceRole {
+    id: string;
+    space_id: string;
+    rank: number;
+    hoist: boolean;
+    permissions: number;
+    created_at: number;
+    edited_at: number | null;
+}
 
 export interface MessageEmbedFooter {
     text: string;
@@ -200,6 +220,14 @@ export interface MessageReaction {
     emoji: string; 
 }
 
+export interface MessageAttachment {
+    name: string;
+    url: string;
+    type: string,
+    height: number | null;
+    width: number | null; 
+}
+
 export interface MessageSudo {
     name: string | null;
     avatar_url: string | null;
@@ -232,4 +260,10 @@ export interface IMessage {
     thread_id: string | null;
     stickers: string[] | null;
     nonce?: number;
+}
+
+export interface IRoomUnreads {
+    room_id: string,
+    user_id: string,
+    mention: boolean,
 }

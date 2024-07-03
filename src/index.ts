@@ -3,7 +3,7 @@ import cors from "cors";
 import express from "express";
 import rateLimit from "express-rate-limit";
 import fs from "fs";
-import { FRONTEND, NEBULA, PORT, STARGATE, LIVEKIT } from './config';
+import { FRONTEND, NEBULA, PORT, STARGATE, PANEL, LIVEKIT } from './config';
 import database from "./database";
 import { Logger } from "./helpers/logger";
 import path from "path";
@@ -20,10 +20,11 @@ const {
 //-Initialize express-//
 const app = express();
 
-app.use(bodyParser.json({ limit: "25mb" }));
+app.use(bodyParser.json({ limit: '25mb' }));
+app.use(bodyParser.urlencoded({ extended: true, limit: '25mb' }));
 
 app.use(cors({
-    origin: FRONTEND,
+    origin: [FRONTEND, PANEL],
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'], 
     credentials: true,
 }));
@@ -31,10 +32,10 @@ app.use(cors({
 app.set('trust proxy', 1);
 app.disable('x-powered-by');
 
-const limiter = rateLimit({
-    windowMs: 10 * 1000,
-    max: 75,
-  });
+// const limiter = rateLimit({
+//     windowMs: 10 * 1000,
+//     max: 75,
+//   });
 
 // CORS preflight handling
 app.options('*', cors());
