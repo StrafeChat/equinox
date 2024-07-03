@@ -1,6 +1,7 @@
 import { BatchDelete, BatchInsert, BatchUpdate } from "better-cassandra";
 import { Router } from "express";
 import { cassandra } from "../../database";
+import User from "../../database/models/User";
 import UserByEmail from "../../database/models/UserByEmail";
 import UserByUsernameAndDiscriminator from "../../database/models/UserByUsernameAndDiscriminator";
 import { validateEditUserData, verifyToken } from "../../helpers/validator";
@@ -83,6 +84,15 @@ router.patch<string, {}, {}, { email: string, username: string, discriminator: n
         secret: undefined,
         last_pass_reset: undefined
     });
+});
+
+router.get("/:user_id", verifyToken, async (req, res) => {
+  User.select({
+    $where: [{ equals: ["id", req.params.user_id] }]
+  }).then((users) => {
+    if (users.length < 1) return res.status(404).json({ message: "User not found" });
+    res.status(200).json(users[0]);
+  });
 });
 
 router.put("/@me/spaces/:space_id", verifyToken, async (req, res) => {
