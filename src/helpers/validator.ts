@@ -20,6 +20,13 @@ const usernameSchema = joi.string().alphanum().min(2).max(32).invalid("everyone"
     "string.required": "The username field is required.",
 });
 
+const globalnameSchema = joi.string().alphanum().min(2).max(32).invalid("everyone", "here").required().messages({
+    "string.base": "The global_name should be a string.",
+    "string.empty": "The global_name cannot be empty.",
+    "string.min": "The global_name cannot be less than 2 character long.",
+    "string.max": "The global_name cannot be more than 32 characters long.",
+});
+
 const discriminatorSchema = joi.number().integer().min(1).max(9999).required().messages({
     "number.base": "The discriminator should be an integer.",
     "number.infinity": "The discriminator cannot be infinite",
@@ -73,6 +80,7 @@ export const validateEditUserData = (req: Request, res: Response, next: NextFunc
         email: emailSchema.optional(),
         username: usernameSchema.optional(),
         discriminator: discriminatorSchema.optional(),
+        global_name: globalnameSchema.optional(),
         locale: joi.string().regex(/^[a-z]{2}-[A-Z]{2}$/).optional(),
         avatar: joi.string().optional(),
     }).custom((obj, helper) => {

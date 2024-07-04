@@ -1,16 +1,16 @@
 import { Model, Schema } from "better-cassandra";
 import { IInvite } from "../../types";
 
-const schema = new Schema<IInvite>(
-  {
-    id: {
+const schema = new Schema<IInvite>({
+    code: {
       type: "text",
       partitionKey: true
     },
     space_id: {
       type: "text",
+      cluseringKey: true
     },
-    code: {
+    room_id: {
       type: "text",
     },
     vanity: {
@@ -19,18 +19,17 @@ const schema = new Schema<IInvite>(
     inviter_id: {
       type: "text",
     },
+    uses: {
+      type: "int"
+    },
+    max_uses: {
+      type: "int"
+    },
     created_at: {
-      type: "timestamp",
-      cluseringKey: true
+      type: "timestamp"
     },
     expires_at: {
       type: "int",
-    },
-  },
-  {
-    sortBy: {
-      column: "created_at",
-      order: "DESC",
     },
   }
 );

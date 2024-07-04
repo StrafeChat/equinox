@@ -40,3 +40,14 @@ export const generateAcronym = (text: string, maxLength: number) => {
 
     return acronym;
 }
+
+export const generateInviteCode = (length: number = 6): string => {
+    const characters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+    let inviteCode = '';
+
+    for (let i = 0; i < length; i++) {
+        inviteCode += characters.charAt(Math.floor(Math.random() * characters.length));
+    }
+
+    return inviteCode;
+}
