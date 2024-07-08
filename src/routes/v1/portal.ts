@@ -22,8 +22,6 @@ router.post<{}, {}, JoinBody>("/join", async (req, res) => {
   const room = req.body.roomId;
   const user = res.locals.user;
 
-  console.log("join");
-
   const mgr = ((req as any).portal.manager as RoomManager); // TODO: add typings
   
   const rooms = await Room.select({
