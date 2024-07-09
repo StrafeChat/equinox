@@ -4,19 +4,24 @@ import { cassandra } from "../../database";
 import UserByEmail from "../../database/models/UserByEmail";
 import UserByUsernameAndDiscriminator from "../../database/models/UserByUsernameAndDiscriminator";
 import { validateEditUserData, verifyToken } from "../../helpers/validator";
-import { NEBULA } from "../../config";
+import { NEBULA , USER_WORKER_ID} from "../../config";
 import {
   ISpace,
   ISpaceMember,
   IUser,
   IUserByEmail,
   IUserByUsernameAndDiscriminator,
+  IFriendRequest,
+  IFriendRequestByUser
 } from "../../types";
 import SpaceMember from "../../database/models/SpaceMember";
-import { generateToken } from "../../helpers/generator";
+import { generateToken, generateSnowflake } from "../../helpers/generator";
 import Space from "../../database/models/Space";
 import Room from "../../database/models/Room";
 import User from "../../database/models/User";
+import FriendRequestsByRecipient from "../../database/models/FriendRequestsByRecipient";
+import FriendRequestsBySender from "../../database/models/FriendRequestsBySender";
+
 const router = Router();
 
 router.patch<
@@ -194,6 +199,118 @@ router.patch<
     secret: undefined,
     last_pass_reset: undefined,
   });
+});
+
+router.post("/friends/:id", verifyToken, async (req, res) => {
+  const user_id = req.params.id;
+  const localUser = res.locals.user.id;
+
+  const users = await User.select({
+    $where: [{ equals: ["id", user_id] }],
+    $limit: 1,
+  });
+  
+  if (users.length < 1)
+    return res.status(404).json({ message: "The user you were looking for does not exist." });
+
+  const user = users[0];
+  if (user.friends?.includes(user_id)) {
+    return res.status(422).json({ message: "You are firends with that user already." });
+  }
+
+  const created = Date.now();
+  const id = generateSnowflake(USER_WORKER_ID);
+  await cassandra.batch([
+    BatchInsert<IFriendRequestByUser>({
+      name: "friend_requests_by_recipient",
+      data: {
+        sender_id: localUser,
+        recipient_id: req.params.id,
+        id: id,
+      }
+    }),
+    BatchInsert<IFriendRequestByUser>({
+      name: "friend_requests_by_sender",
+      data: {
+        sender_id: localUser,
+        recipient_id: req.params.id,
+        id: id,
+      }
+    }),
+    BatchInsert<IFriendRequest>({
+      name: "friend_requests",
+      data: {
+        id: id,
+        sender_id: localUser,
+        recipient_id: req.params.id,
+        created_at: created,
+      }
+    })
+  ]);
+
+  return res.status(200).json({ message: "Friend request sent." });
+});
+router.post("/friends/:id/accept", verifyToken, async (req, res) => {
+  const user_id = req.params.id;
+  const localUser = res.locals.user.id;
+
+  const users = await User.select({
+    $where: [{ equals: ["id", user_id] }],
+    $limit: 1,
+  });
+
+  if (users.length < 1)
+    return res.status(404).json({ message: "The user you were looking for does not exist." });
+
+  const user = users[0];
+
+  const requests = await FriendRequestsByRecipient.select({
+    $where: [
+      { equals: ["recipient_id", localUser] },
+    ],
+  });
+
+  if (requests.length < 1 || !requests.find((r) => r.sender_id === user_id))
+    return res.status(404).json({ message: "You do not have a friend request from that user." });
+
+  const request = requests.find((r) => r.sender_id === user_id)!;
+
+  await cassandra.batch([
+    BatchUpdate<IUser>({
+      name: "users",
+      where: [{ equals: ["id", user_id] }],
+      set: {
+        friends: [...(user.friends || []), localUser],
+      },
+    }),
+    BatchUpdate<IUser>({
+      name: "users",
+      where: [{ equals: ["id", localUser] }],
+      set: {
+        friends: [...(user.friends || []), user_id],
+      },
+    }),
+    BatchDelete<IFriendRequestByUser>({
+      name: "friend_requests_by_recipient",
+      where: [
+        { equals: ["id", request.id] },
+      ],
+    }),
+    BatchDelete<IFriendRequestByUser>({
+      name: "friend_requests_by_sender",
+      where: [
+        { equals: ["id", request.id] },
+      ],
+    }),
+    BatchDelete<IFriendRequest>({
+      name: "friend_requests",
+      where: [
+        { equals: ["id", request.id] },
+      ],
+    }),
+  ]);
+
+  return res.status(200).json({ message: "Friend request accepted." });
 });
 
 router.put("/@me/spaces/:space_id", verifyToken, async (req, res) => {

@@ -93,6 +93,9 @@ const schema = new Schema<IUser>({
     },
     verified: {
         type: "boolean"
+    },
+    friends: {
+      type: "list<text>",
     }
 });
 

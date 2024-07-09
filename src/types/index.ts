@@ -79,6 +79,19 @@ export interface IUser {
     theme: string;
     username: string;
     verified: boolean;
+    friends: string[];
+}
+
+export interface IFriendRequestByUser {
+  sender_id: string;
+  recipient_id: string;
+  id: string;
+}
+export interface IFriendRequest {
+  id: string;
+  sender_id: string;
+  recipient_id: string;
+  created_at: Date | number;
 }
 
 export interface IVerification {

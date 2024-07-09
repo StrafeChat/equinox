@@ -25,7 +25,7 @@ export const NEBULA = process.env.NEBULA ?? "https://nebula.strafe.chat";
 export const FRONTEND = process.env.FRONTEND ?? "https://web.strafe.chat";
 export const EQUINOX = process.env.EQUINOX ?? "https://equinox.strafe.chat";
 export const PANEL = process.env.PANEL ?? "https://panel.strafe.chat";
-export const LIVEKIT = process.env.LIVEKIT_SERVER ?? "localhost:7880"
+export const LIVEKIT = process.env.LIVEKIT_SERVER ?? "localhost:7880";
 
 export const USER_WORKER_ID = process.env.USER_WORKER_ID ? parseInt(process.env.USER_WORKER_ID) : 0;
 export const SPACE_WORKER_ID = process.env.SPACE_WORKER_ID ? parseInt(process.env.SPACE_WORKER_ID) : 1;
