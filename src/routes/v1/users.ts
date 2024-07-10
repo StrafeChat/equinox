@@ -224,8 +224,9 @@ router.post("/friends/", verifyToken, async (req, res) => {
     $where: [{ equals: ["id", user_id] }],
     $limit: 1,
   }))[0];
-  if (user.friends?.includes(user_id)) {
-    return res.status(422).json({ message: "You are firends with that user already." });
+
+  if (user.friends?.includes(localUser)) {
+    return res.status(422).json({ message: "You are friends with that user already." });
   }
 
   const created = Date.now();
@@ -286,6 +287,9 @@ router.post("/friends/:id/accept", verifyToken, async (req, res) => {
     return res.status(404).json({ message: "The user you were looking for does not exist." });
 
   const user = users[0];
+
+  if (user.friends?.includes(localUser))
+    return res.status(409).json({ message: "You are already friends with that user." });  
 
   const requests = await FriendRequestsByRecipient.select({
     $where: [
