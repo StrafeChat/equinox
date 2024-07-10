@@ -219,6 +219,16 @@ router.post("/friends/", verifyToken, async (req, res) => {
     return res.status(404).json({ message: "The user you were looking for does not exist." });
 
   const user_id = users[0].id!;
+
+  const requests = await FriendRequestsBySender.select({
+    $where: [
+      { equals: ["sender_id", localUser] },
+    ],
+    $limit: 1,
+  });
+
+  if (requests.length > 0 && requests.find((r) => r.recipient_id === user_id))
+    return res.status(409).json({ message: "You have already sent a friend request to that user." });
   
   const user = (await User.select({
     $where: [{ equals: ["id", user_id] }],
