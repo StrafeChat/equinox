@@ -31,6 +31,7 @@ export const USER_WORKER_ID = process.env.USER_WORKER_ID ? parseInt(process.env.
 export const SPACE_WORKER_ID = process.env.SPACE_WORKER_ID ? parseInt(process.env.SPACE_WORKER_ID) : 1;
 export const ROOM_WORKER_ID = process.env.ROOM_WORKER_ID ? parseInt(process.env.ROOM_WORKER_ID) : 2;
 export const MESSAGE_WORKER_ID = process.env.MESSAGE_WORKER_ID ? parseInt(process.env.MESSAGE_WORKER_ID) : 3;
+export const ROLE_WORKER_ID = process.env.ROLE_WORKER_ID ? parseInt(process.env.ROLE_WORKER_ID) : 4;
 
 export const STAFF_IDS = ["6411384778888578048"];
 

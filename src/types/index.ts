@@ -171,9 +171,13 @@ export interface ISpaceMember {
 export interface ISpaceRole {
     id: string;
     space_id: string;
+    name: string;
+    icon: string | null;
+    color: number | null;
     rank: number;
     hoist: boolean;
-    permissions: number;
+    allowed_permissions: bigint;
+    denied_permissions: bigint;
     created_at: number;
     edited_at: number | null;
 }

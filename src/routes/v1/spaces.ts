@@ -4,6 +4,7 @@ import rateLimit from "express-rate-limit";
 import {
   ErrorCodes,
   NEBULA,
+  ROLE_WORKER_ID,
   ROOM_WORKER_ID,
   SPACE_WORKER_ID,
 } from "../../config";
@@ -12,24 +13,31 @@ import Space from "../../database/models/Space";
 import User from "../../database/models/User";
 import { generateAcronym, generateSnowflake } from "../../helpers/generator";
 import {
+  validateRoleCreationData,
   validateSpaceCreationData,
   verifyToken,
 } from "../../helpers/validator";
-import { IRoom, ISpace, ISpaceMember } from "../../types";
+import { IRoom, ISpace, ISpaceMember, ISpaceRole } from "../../types";
 import Room from "../../database/models/Room";
 import SpaceMember from "../../database/models/SpaceMember";
+import SpaceRole from "../../database/models/SpaceRole";
 
 const router = Router();
 
-const creationRateLimit = rateLimit({
+const creationSpaceimit = rateLimit({
   windowMs: 24 * 60 * 60 * 10000, // 24 hours
   max: 5, // 5 spaces
+});
+
+const creationRoleLimit = rateLimit({
+  windowMs: 24 * 60 * 60 * 10000, // 24 hours
+  max: 5, // 50 roles
 });
 
 router.post(
   "/",
   verifyToken,
-  creationRateLimit,
+  creationSpaceimit,
   validateSpaceCreationData,
   async (req, res) => {
     try {
@@ -216,50 +224,71 @@ router.post(
   }
 );
 
-// router.post(
-//   "/:space_id/rooms/:room_id/messages",
-//   verifyToken,
-//   messageCreateLimit,
-//   async (req, res) => {
-//     const { space_id, room_id } = req.params;
+router.post(
+  "/:space_id/roles",
+  verifyToken,
+  creationRoleLimit,
+  validateRoleCreationData,
+  async (req, res) => {
+    const { space_id } = req.params;
+    const {
+      name,
+      color,
+      hoist,
+      rank,
+      allowed_permissions,
+      denied_permissions,
+    } = req.body;
 
-//     if (isNaN(parseInt(space_id)))
-//       return res.status(400).json({ message: "Invalid space id" });
-//     if (isNaN(parseInt(room_id)))
-//       return res.status(400).json({ message: "Invalid room id" });
+    const spaces = await Space.select({
+      $where: [{ equals: ["id", space_id] }],
+      $limit: 1,
+    });
 
-//     const { content } = req.body;
+    const space = spaces[0];
 
-//     if (typeof content !== "string")
-//       return res
-//         .status(400)
-//         .json({ message: "Message content must be a string." });
-//     if (content.length > 1024)
-//       return res.status(400).json({
-//         message: "Message content must be less than 1,024 characters long.",
-//       });
-//     const rooms = await Room.select({
-//       $where: [{ equals: ["id", room_id] }],
-//       $limit: 1,
-//     });
-//     if (!rooms[0])
-//       return res.status(404).json("A room was not found with the provided id.");
+    if (!space)
+      return res
+        .status(404)
+        .json({ message: "The space you were looking for does not exist." });
 
-//     if (rooms[0].space_id !== space_id)
-//       return res
-//         .status(400)
-//         .json({ message: "This room is not in this space." });
+    if (space.owner_id !== res.locals.user.id)
+      // TOD: Add Manage Roles perm or space owner
+      return res.status(403).json({
+        message: "You do not have permission to create roles on this space.",
+      });
 
-//     const members = await SpaceMember.selectAll({
-//       $where: [{ equals: ["space_id", space_id] }],
-//     });
+    try {
+      let id = generateSnowflake(ROLE_WORKER_ID);
 
-//     res.status(201).json({message: })
+      const role: ISpaceRole = {
+        id,
+        name,
+        hoist,
+        color,
+        rank,
+        allowed_permissions,
+        denied_permissions,
+        icon: null,
+        space_id: space.id!,
+        edited_at: null,
+        created_at: Date.now(),
+      };
 
-//     for (const member of members) {
+      await SpaceRole.insert(role, {
+        prepare: true,
+      });
 
-//     }
-//   }
-// );
+      res.status(200).json({
+        role,
+      });
+    } catch (error) {
+      console.error(error);
+      res
+        .status(ErrorCodes.INTERNAL_SERVER_ERROR.CODE)
+        .json({ message: ErrorCodes.INTERNAL_SERVER_ERROR.MESSAGE });
+    }
+  }
+);
 
 export default router;

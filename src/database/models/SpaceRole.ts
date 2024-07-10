@@ -10,13 +10,25 @@ const schema = new Schema<ISpaceRole>({
         type: "text",
         cluseringKey: true
     },
+    name: {
+        type: "text"
+    },
+    icon: {
+        type: "text"
+    },
+    color: {
+        type: "text"
+    },
     rank: {
         type: "int"
     },
     hoist: {
         type: "boolean"
     },
-    permissions: {
+    allowed_permissions: {
+        type: "int"
+    },
+    denied_permissions: {
         type: "int"
     },
     edited_at: {
