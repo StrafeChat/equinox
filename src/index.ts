@@ -80,11 +80,11 @@ const startServer = async () => {
     const ws = new WebSocketServer({ server, path: "/portal/signaling/rtc" });
 
     ws.on("connection", (socket, req) => {
-      const relay = new SignalingRelay(socket, req.url!, `ws://${LIVEKIT}`);
+      const relay = new SignalingRelay(socket, req.url!);
       const user = mgr.getUserByToken(relay.token!);
+      
       if (!user) return;
       relay.on("close", () => {
-        console.log("closed")
         // TODO: register users leaving
         redis.publish("stargate", JSON.stringify({
           event: "voice_leave",

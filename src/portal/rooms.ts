@@ -1,4 +1,4 @@
-import { Room, RoomServiceClient } from 'livekit-server-sdk';
+import { RoomServiceClient } from 'livekit-server-sdk';
 
 interface RoomManagerOptions {
   key: string;

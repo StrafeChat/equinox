@@ -10,6 +10,8 @@ export class SignalingRelay extends EventEmitter {
 
   messageQueue: (RawData)[] = [];
 
+  closing: boolean = false;
+
   constructor(socket: WebSocket, url: string, livekitHost: string = process.env.LIVEKIT_URL!) {
     super();
 
@@ -41,13 +43,19 @@ export class SignalingRelay extends EventEmitter {
     });
 
     socket.on("close", () => {
-      this.emit("close");
-      host.close();
+      this.close();
     });
     host.on("close", () => {
-      this.emit("close");
-      socket.close();
+      this.close();
     });
+  }
+
+  private close() {
+    if (this.closing) return;
+    this.closing = true;
+    if (this.socket?.readyState === WebSocket.OPEN || WebSocket.CONNECTING) this.socket!.close();
+    if (this.hostSocket?.readyState === WebSocket.OPEN || WebSocket.CONNECTING) this.hostSocket!.close();
+    this.emit("close");
   }
 
   sendServerMessage(data: RawData): void {
