@@ -5,7 +5,11 @@ import { Request } from "express";
 import Room from "../../database/models/Room";
 import { cassandra, redis } from "../../database";
 import multer from "multer";
-import { generateInviteCode, generateSnowflake, generateToken } from "../../helpers/generator";
+import {
+  generateInviteCode,
+  generateSnowflake,
+  generateToken,
+} from "../../helpers/generator";
 import { MESSAGE_WORKER_ID, ROOM_WORKER_ID, NEBULA } from "../../config";
 import {
   IInvite,
@@ -209,15 +213,23 @@ router.post(
     if (isNaN(parseInt(room_id)))
       return res.status(400).json({ message: "Invalid room ID." });
 
-    const { content, message_reference_id, embeds, sudo, attachments } = req.body;
+    const { content, message_reference_id, embeds, sudo, attachments } =
+      req.body;
 
     if (!content && !embeds && !attachments)
-      return res.status(400).json({ message: "Message content or attachment is required." });
+      return res
+        .status(400)
+        .json({ message: "Message content or attachment is required." });
 
     if (content && typeof content !== "string")
-      return res.status(400).json({ message: "Message content must be a string." });
+      return res
+        .status(400)
+        .json({ message: "Message content must be a string." });
 
-    const rooms = await Room.select({ $where: [{ equals: ["id", room_id] }], $limit: 1 });
+    const rooms = await Room.select({
+      $where: [{ equals: ["id", room_id] }],
+      $limit: 1,
+    });
     const room = rooms[0];
 
     if (!room)
@@ -226,43 +238,43 @@ router.post(
     const message_id = generateSnowflake(MESSAGE_WORKER_ID);
 
     try {
-        let attachmentList: any = [];
-  
-        if (attachments) {
-          for (const attachment of attachments) {
-            const { file, name, type } = attachment;
+      let attachmentList: any = [];
 
-            const token = generateToken(
-              res.locals.user.id,
-              Number(res.locals!.user.created_at),
-              res.locals.user!.secret
-            );
-  
-            const response = await fetch(`${NEBULA}/attachments`, {
-              method: "POST",
-              headers: {
-                "Authorization": token,
-                "Content-Type": "application/json",
-              },
-              body: JSON.stringify({ file, name, type })
-            });
-  
-            if (!response.ok) {
-              console.error(await response.json());
-              continue;
-            }
+      if (attachments) {
+        for (const attachment of attachments) {
+          const { file, name, type } = attachment;
 
-            const { url, metadata } = await response.json();
+          const token = generateToken(
+            res.locals.user.id,
+            Number(res.locals!.user.created_at),
+            res.locals.user!.secret
+          );
 
-            attachmentList.push({
-              name,
-              url,
-              type,
-              width: metadata.width,
-              height: metadata.height
-            });
+          const response = await fetch(`${NEBULA}/attachments`, {
+            method: "POST",
+            headers: {
+              Authorization: token,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({ file, name, type }),
+          });
+
+          if (!response.ok) {
+            console.error(await response.json());
+            continue;
           }
+
+          const { url, metadata } = await response.json();
+
+          attachmentList.push({
+            name,
+            url,
+            type,
+            width: metadata.width,
+            height: metadata.height,
+          });
         }
+      }
 
       const messageData = {
         room_id,
@@ -290,42 +302,67 @@ router.post(
         created_at: Date.now(),
       };
 
-      await cassandra.batch([
-        BatchInsert<IMessage>({ name: "messages", data: messageData }),
-        BatchInsert<IMessageByRoom>({ name: "messages_by_room", data: { id: message_id, room_id } }),
-      ], { prepare: true });
+      await cassandra.batch(
+        [
+          BatchInsert<IMessage>({ name: "messages", data: messageData }),
+          BatchInsert<IMessageByRoom>({
+            name: "messages_by_room",
+            data: { id: message_id, room_id },
+          }),
+        ],
+        { prepare: true }
+      );
 
-      await redis.publish("stargate", JSON.stringify({
-        event: "message_create",
-        data: {
-          room_type: room.type,
-          space_id: room.space_id,
-          room_id: room.id,
-          content: content || null,
-          attachments: attachmentList,
-          embeds: embeds || [],
-          sudo: sudo || null,
-          message_reference_id: message_reference_id || null,
-          id: message_id,
-          created_at: messageData.created_at,
-          author: {
-            id: res.locals.user.id,
-            username: res.locals.user.username,
-            discriminator: res.locals.user.discriminator,
-            global_name: res.locals.user.global_name,
-            flags: res.locals.user.flags,
-            display_name: res.locals.user.global_name || res.locals.user.username,
-            avatar: res.locals.user.avatar,
-            bot: res.locals.user.bot,
-            presence: res.locals.user.presence,
-            created_at: res.locals.user.created_at,
+      await redis.publish(
+        "stargate",
+        JSON.stringify({
+          event: "message_create",
+          data: {
+            room_type: room.type,
+            space_id: room.space_id,
+            room_id: room.id,
+            content: content || null,
+            attachments: attachmentList,
+            embeds: embeds || [],
+            sudo: sudo || null,
+            message_reference_id: message_reference_id || null,
+            id: message_id,
+            created_at: messageData.created_at,
+            nonce: 1,
+            member: {
+              user: {
+                id: res.locals.user.id,
+                username: res.locals.user.username,
+                discriminator: res.locals.user.discriminator,
+                global_name: res.locals.user.global_name,
+                flags: res.locals.user.flags,
+                display_name:
+                  res.locals.user.global_name || res.locals.user.username,
+                avatar: res.locals.user.avatar,
+                bot: res.locals.user.bot,
+                presence: res.locals.user.presence,
+                created_at: res.locals.user.created_at,
+              },
+            },
+            author: {
+              id: res.locals.user.id,
+              username: res.locals.user.username,
+              discriminator: res.locals.user.discriminator,
+              global_name: res.locals.user.global_name,
+              flags: res.locals.user.flags,
+              display_name:
+                res.locals.user.global_name || res.locals.user.username,
+              avatar: res.locals.user.avatar,
+              bot: res.locals.user.bot,
+              presence: res.locals.user.presence,
+              created_at: res.locals.user.created_at,
+            },
           },
-        },
-      }));
+        })
+      );
 
       // Return the created message data
       res.status(200).json({ ...messageData, nonce: 0 });
-
     } catch (error) {
       console.error("Error creating message:", error);
       res.status(500).json({ message: "Failed to create message." });
@@ -856,7 +893,10 @@ router.get("/:room_id/messages", verifyToken, async (req, res) => {
 
         let memberResult: any = await SpaceMember.select({
           $limit: 1,
-          $where: [{ equals: ["space_id", room.space_id!] }, { equals: ["user_id", message.author_id!] }],
+          $where: [
+            { equals: ["space_id", room.space_id!] },
+            { equals: ["user_id", message.author_id!] },
+          ],
         });
 
         if (message.embeds && message.embeds[0]) {

@@ -220,6 +220,9 @@ router.post("/friends/", verifyToken, async (req, res) => {
 
   const user_id = users[0].id!;
 
+  if (user_id == localUser) 
+    return res.status(400).json({ message: "You cannot friend yourself. :/" });
+
   const requests = await FriendRequestsBySender.select({
     $where: [
       { equals: ["sender_id", localUser] },
@@ -234,6 +237,10 @@ router.post("/friends/", verifyToken, async (req, res) => {
     $where: [{ equals: ["id", user_id] }],
     $limit: 1,
   }))[0];
+
+  if (user.bot) {
+    
+  }
 
   if (user.friends?.includes(localUser)) {
     return res.status(422).json({ message: "You are friends with that user already." });

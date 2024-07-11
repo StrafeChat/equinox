@@ -61,11 +61,6 @@ const schema = new Schema<IRoom>({
     edited_at: {
         type: "timestamp"
     }
-}, {
-    sortBy: {
-        column: "created_at",
-        order: "ASC"
-    }
 });
 
 export default new Model("rooms", schema);

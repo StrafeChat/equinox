@@ -58,11 +58,6 @@ const schema = new Schema<ISpace>({
     edited_at: {
         type: "timestamp"
     }
-}, {
-    sortBy: {
-        column: "created_at",
-        order: "DESC"
-    }
 });
 
 export default new Model("spaces", schema);
