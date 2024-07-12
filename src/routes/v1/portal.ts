@@ -2,9 +2,11 @@ import { Router } from "express";
 import { verifyToken } from "../../helpers/validator";
 import { JoinBody } from "../../types/";
 import Room from "../../database/models/Room";
+import User from "../../database/models/User";
 
 import { AccessToken } from 'livekit-server-sdk';
-import { RoomManager } from "../../portal";
+import { RoomManager, SignalingServer } from "../../portal";
+import { generateToken } from "../../helpers/generator";
 
 const {
   LIVEKIT_API_KEY: key,
@@ -54,6 +56,32 @@ router.post<{}, {}, JoinBody>("/join", async (req, res) => {
 
   const token = at.toJwt();
   mgr.addToken(token, user.id, room, rooms[0].space_id!);
+
+  return res.status(200).json({ token: token });
+});
+
+function extractIds(roomId: string) {
+  return roomId.split(":");
+}
+
+router.post<{}, {}, JoinBody>("/personal/join", async (req, res) => {
+  const roomId = req.body.roomId;
+  const user = res.locals.user;
+
+  const util = ((req as any).portal as { manager: RoomManager, signaling: SignalingServer });
+
+  const users = extractIds(roomId);
+
+  const checkUser = (await User.select({
+    $where: [{ equals: ["id", users[0]] }],
+    $limit: 1
+  }))[0];
+
+  if (!checkUser) return res.status(404).send({ message: "Unkown user. (" + users[0] + ")" });
+
+  if (!checkUser.friends?.includes(users[1])) return res.status(403).send({ message: "You need to be friends with " + users[1] + " to initiate a call." })
+
+  const token = util.signaling.tokens.grantToken(user.id, roomId);
 
   return res.status(200).json({ token: token });
 });
