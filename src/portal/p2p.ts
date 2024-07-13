@@ -7,6 +7,8 @@ class P2PCall extends EventEmitter {
   caller: P2PUser;
   recipient: P2PUser | null = null;
 
+  closing: boolean = false;
+
   constructor(caller: P2PUser) {
     super();
 
@@ -22,7 +24,6 @@ class P2PCall extends EventEmitter {
       this.caller.setImpolite(),
       this.recipient.setPolite(),
     ]);
-
   }
 
   private setupEvents() {
@@ -39,10 +40,15 @@ class P2PCall extends EventEmitter {
 
     // TODO: handle closing better
     this.caller.on("close", (reason: WSErrorReason) => {
+      if (this.closing) return;
+      console.log("closing call");
+      this.closing = true;
       this.recipient!.terminate(reason);
       this.emit("close");
     });
     this.recipient!.on("close", (reason: WSErrorReason) => {
+      if (this.closing) return;
+      this.closing = true;
       this.caller.terminate(reason);
       this.emit("close");
     });
@@ -114,6 +120,8 @@ class P2PUser extends EventEmitter {
   private jobQueue = new Map<number, (data: any) => void>();
   private currJobId = 0;
 
+  private closing: boolean = false;
+
   constructor(ws: WebSocket, server: SignalingServer) {
     super();
 
@@ -136,6 +144,9 @@ class P2PUser extends EventEmitter {
       if (!parsed.op && parsed.op !== 0) return this.terminate(WSError.INVALID_DATA);
 
       this.parseMessage(parsed as { op: number, data?: any });
+    });
+    ws.on("close", (code, reason) => {
+      this.close(reason.toString(), code);
     });
   }
 
@@ -203,8 +214,13 @@ class P2PUser extends EventEmitter {
   }
 
   terminate(reason: WSErrorReason) {
+    if (this.closing) return;
+    this.closing = true;
     this.ws.close(reason.code, reason.message);
-    this.emit("close", reason);
+    this.close(reason.message);
+  }
+  close(reason: string, code?: number) {
+    this.emit("close", { message: reason, code });
   }
 }
 
@@ -283,7 +299,9 @@ export class SignalingServer {
       this.callUser(user.friend!, user.id!);
       const call = new P2PCall(user);
       call.on("close", () => {
+        console.log(this.calls);
         this.calls.delete(roomId!);
+        console.log(this.calls);
       });
       this.calls.set(roomId!, call);
       return;

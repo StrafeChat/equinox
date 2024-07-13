@@ -6,7 +6,6 @@ import User from "../../database/models/User";
 
 import { AccessToken } from 'livekit-server-sdk';
 import { RoomManager, SignalingServer } from "../../portal";
-import { generateToken } from "../../helpers/generator";
 
 const {
   LIVEKIT_API_KEY: key,
