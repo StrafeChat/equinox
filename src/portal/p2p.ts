@@ -26,7 +26,26 @@ class P2PCall extends EventEmitter {
   }
 
   private setupEvents() {
+    if (!this.recipient) throw new Error("Recipient not set yet.");
 
+    this.caller.on("negotiation", (data: any) => {
+      console.log("sending negotiation to recipient");
+      this.recipient!.send(OP.NEGOTIATION, data);
+    });
+    this.recipient!.on("negotiation", (data: any) => {
+      console.log("sending negotiation to caller");
+      this.caller!.send(OP.NEGOTIATION, data);
+    });
+
+    // TODO: handle closing better
+    this.caller.on("close", (reason: WSErrorReason) => {
+      this.recipient!.terminate(reason);
+      this.emit("close");
+    });
+    this.recipient!.on("close", (reason: WSErrorReason) => {
+      this.caller.terminate(reason);
+      this.emit("close");
+    });
   }
 
   public setCaller(user: P2PUser) {
@@ -59,6 +78,7 @@ enum OP {
   IDENTIFY = 0,
   ACK = 1, // confirmation of a message
   SETTINGS = 2,
+  NEGOTIATION = 3,
 
   ERROR = 20,
 }
@@ -148,6 +168,9 @@ class P2PUser extends EventEmitter {
         const jobId = data.data.id;
         if (!this.jobQueue.has(jobId)) return;
         this.jobQueue.get(jobId)!(data.data); // call callback function
+      break;
+      case OP.NEGOTIATION:
+        this.emit("negotiation", data.data);
       break;
       default:
         this.send(OP.ERROR, { message: "Invalid OP code." });
@@ -258,7 +281,11 @@ export class SignalingServer {
     if (!this.calls.has(roomId!)) {
       console.log("creating call");
       this.callUser(user.friend!, user.id!);
-      this.calls.set(roomId!, new P2PCall(user));
+      const call = new P2PCall(user);
+      call.on("close", () => {
+        this.calls.delete(roomId!);
+      });
+      this.calls.set(roomId!, call);
       return;
     }
     const call = this.calls.get(roomId!)!;
