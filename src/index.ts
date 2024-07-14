@@ -89,14 +89,15 @@ const startServer = async () => {
       const { pathname } = new URL(req.url!, `wss://${req.headers.host}`);
 
       console.log(pathname);
-
-      if (pathname === "/portal/signaling/rtc") {
-        ws.handleUpgrade(req, socket, head, function done(w) {
-          ws.emit("connection", w, req);
-        });
-      } else if (pathname === "/portal/signaling/p2p") {
+      
+      if (pathname === "/portal/signaling/p2p") {
         p2pSignaling.handleUpgrade(req, socket, head, function done(w) {
           p2pSignaling.emit("connection", w, req);
+        });
+      } else if (pathname.startsWith("/portal/signaling/")) {
+        // (pathname === "/portal/signaling/rtc")
+        ws.handleUpgrade(req, socket, head, function done(w) {
+          ws.emit("connection", w, req);
         });
       }
     });

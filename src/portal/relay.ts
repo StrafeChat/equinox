@@ -31,10 +31,8 @@ export class SignalingRelay extends EventEmitter {
 
   setupEvents(): void {
     const socket = this.socket!;
-    console.log("socket");
     const host = this.hostSocket!;
     socket.on("message", (data) => {
-      console.log("message", data.toString())
       this.sendServerMessage(data);
     });
     host.on("message", (data) => {
