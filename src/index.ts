@@ -10,7 +10,7 @@ import path from "path";
 import { redis } from "./database"
 
 import { WebSocketServer } from "ws";
-import { SignalingRelay, RoomManager } from "./portal";
+import { SignalingRelay, RoomManager, SignalingServer } from "./portal";
 
 const {
   LIVEKIT_API_KEY: key,
@@ -42,13 +42,20 @@ app.options('*', cors());
 
 // Startup logic for equinox
 const startServer = async () => {
-    const port = PORT ?? 443;
+    const port = +PORT ?? 443;
     const versions = fs.readdirSync("src/routes");
-
+    
+    //yconst ws = new WebSocketServer({ server, path: "/portal / signaling / rtc" });
+    const ws = new WebSocketServer({ noServer: true });
+    
+    const p2pSignaling = new WebSocketServer({ noServer: true });
+    const signaling = new SignalingServer(p2pSignaling);
+    
     const mgr = new RoomManager({ key: key!, secret: secret! });
     app.use((req, _res, next) => {
       (req as any).portal = {
-        manager: mgr
+        manager: mgr,
+        signaling
       } // TODO: add typings
       next();
     });
@@ -74,15 +81,31 @@ const startServer = async () => {
         res.status(200).json({ version: "1.0.0", release: "Early Alpha", ws: STARGATE, file_system: NEBULA, web_application: FRONTEND });
     });
 
-    const server = app.listen(port, () => {
+    const server = app.listen(port, "0.0.0.0", () => {
         Logger.success(`Equinox is listening on ${port}!`);
     });
-    const ws = new WebSocketServer({ server, path: "/portal/signaling/rtc" });
+
+    server.on("upgrade", (req, socket, head) => {
+      const { pathname } = new URL(req.url!, `wss://${req.headers.host}`);
+
+      console.log(pathname);
+      
+      if (pathname === "/portal/signaling/p2p") {
+        p2pSignaling.handleUpgrade(req, socket, head, function done(w) {
+          p2pSignaling.emit("connection", w, req);
+        });
+      } else if (pathname.startsWith("/portal/signaling/")) {
+        // (pathname === "/portal/signaling/rtc")
+        ws.handleUpgrade(req, socket, head, function done(w) {
+          ws.emit("connection", w, req);
+        });
+      }
+    });
 
     ws.on("connection", (socket, req) => {
       const relay = new SignalingRelay(socket, req.url!);
       const user = mgr.getUserByToken(relay.token!);
-      
+
       if (!user) return;
       relay.on("close", () => {
         // TODO: register users leaving

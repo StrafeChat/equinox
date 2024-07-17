@@ -21,6 +21,7 @@ export class SignalingRelay extends EventEmitter {
     const u = new URL(url, "ws://localhost");
     const params = u.searchParams;
     this.token = params.get("access_token")!;
+    console.log(this.token);
 
     const hostUrl = new URL(`/rtc?${params.toString()}`, this.host);
     this.hostSocket = new WebSocket(hostUrl.href);
@@ -43,14 +44,17 @@ export class SignalingRelay extends EventEmitter {
     });
 
     socket.on("close", () => {
+      console.log("socket closed");
       this.close();
     });
     host.on("close", () => {
+      console.log("host closed")
       this.close();
     });
   }
 
   private close() {
+    console.log("closing");
     if (this.closing) return;
     this.closing = true;
     if (this.socket?.readyState === WebSocket.OPEN || WebSocket.CONNECTING) this.socket!.close();
