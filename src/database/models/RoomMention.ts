@@ -1,7 +1,7 @@
 import { Model, Schema } from "better-cassandra";
-import { IRoomUnreads } from "../../types";
+import { IRoomMention } from "../../types";
 
-const schema = new Schema<IRoomUnreads>({
+const schema = new Schema<IRoomMention>({
     room_id: {
         type: "text",
         partitionKey: true
@@ -10,9 +10,9 @@ const schema = new Schema<IRoomUnreads>({
         type: "text",
         partitionKey: true
     },
-    message_id: {
-        type: "text",
+    message_ids: {
+        type: "set<text>",
     },
 });
 
-export default new Model("room_unreads", schema);
+export default new Model("room_mentions", schema);

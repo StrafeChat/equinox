@@ -262,7 +262,7 @@ export interface IMessage {
     edited_at: number | null;
     tts: boolean;
     mention_everyone: boolean;
-    mentions: string[] | null;
+    mentions: string[];
     mention_roles: string[] | null;
     mention_rooms: string[] | null;
     attachments: string[] | null;
@@ -271,7 +271,7 @@ export interface IMessage {
     sudo: MessageSudo | null;
     pinned: boolean;
     webhook_id: string | null;
-    system: boolean;
+    system: boolean;        
     message_reference_id: string | null;
     flags: number | null;
     thread_id: string | null;
@@ -282,5 +282,11 @@ export interface IMessage {
 export interface IRoomUnreads {
     room_id: string,
     user_id: string,
-    mention: boolean,
+    message_id: string,
+}
+
+export interface IRoomMention {
+    room_id: string,
+    user_id: string,
+    message_ids: string[],
 }

@@ -27,6 +27,8 @@ import Invite from "../../database/models/Invite";
 import { BatchDelete, BatchInsert } from "better-cassandra";
 import MessageByRoom from "../../database/models/MessageByRoom";
 import User from "../../database/models/User";
+import RoomUnread from "../../database/models/RoomUnread";
+import RoomMention from "../../database/models/RoomMention";
 
 const router = Router();
 const upload = multer();
@@ -237,6 +239,22 @@ router.post(
 
     const message_id = generateSnowflake(MESSAGE_WORKER_ID);
 
+    let userMentions: string[] = [];
+
+    const userMentionRegex = /<@!?(\d{17,19})>/g;
+    
+    const matches = content.matchAll(userMentionRegex);
+    
+    for (const match of matches) {
+      const userId = match[1];
+
+      const users = await User.select({
+        $where: [{equals: ["id", userId]}],
+        $limit: 1
+      })
+      if (users[0]) userMentions.push(userId);
+    } 
+
     try {
       let attachmentList: any = [];
 
@@ -290,7 +308,7 @@ router.post(
         mention_everyone: false,
         mention_roles: [],
         mention_rooms: [],
-        mentions: [],
+        mentions: userMentions,
         message_reference_id: message_reference_id ?? null,
         pinned: false,
         sudo: sudo || null,
@@ -328,6 +346,7 @@ router.post(
             message_reference_id: message_reference_id || null,
             id: message_id,
             created_at: messageData.created_at,
+            mentions: userMentions,
             nonce: 1,
             member: {
               user: {
@@ -360,6 +379,51 @@ router.post(
           },
         })
       );
+
+      if (messageData.space_id) {
+        const members = await SpaceMember.select({
+          $where: [{ equals: ["space_id", messageData.space_id] }],
+        });
+
+        members.forEach(async (member) => {
+          if (member.user_id == res.locals.user.id) return;
+
+          let mentioned = false;
+          if (messageData.mentions.includes(member.user_id!)) mentioned = true;
+          
+        if (mentioned) {
+          const roomMentions = await RoomMention.select({
+            $where: [{equals: ["room_id", messageData.room_id]}, {equals: ["user_id", member.user_id]}]
+          })
+
+          if (roomMentions[0]) {
+             RoomMention.update({
+              $where: [{equals: ["room_id", messageData.room_id]}, {equals: ["user_id", member.user_id]}],
+              $set: {message_ids: [...roomMentions[0].message_ids!, messageData.id]},
+              $prepare: true
+             })
+          } else {
+            RoomMention.insert({
+              user_id: member.user_id,
+              room_id: messageData.room_id,
+              message_ids: [messageData.id]
+            }, {
+              prepare: true
+            })
+          }
+        }
+
+          messageData.mentions
+          RoomUnread.insert(
+            {
+              room_id: messageData.room_id,
+              message_id: messageData.id,
+              user_id: member.user_id,
+            },
+            { prepare: true }
+          );
+        });
+      }
 
       // Return the created message data
       res.status(200).json({ ...messageData, nonce: 0 });
@@ -576,6 +640,36 @@ router.delete(
     }
   }
 );
+
+router.post("/:room_id/ack", verifyToken, async (req, res) => {
+  const { room_id } = req.params;
+  const user = res.locals.user;
+
+  const unreads = await RoomUnread.select({
+    $where: [
+      { equals: ["room_id", room_id] },
+      { equals: ["user_id", user.id] },
+    ], // this can't be right, what's the primary key here?
+    $limit: 1, // how about a table by user id, and we select the correct room manually
+  });
+
+  const unread = unreads[0];
+
+  if (!unread) {
+    return res.status(400).json({
+      message: "You have no unreads for this room.",
+    });
+  }
+
+  await RoomUnread.delete({
+    $where: [
+      { equals: ["room_id", room_id] },
+      { equals: ["user_id", user.id] },
+    ],
+  });
+
+  return res.sendStatus(200);
+});
 
 router.post("/:room_id/typing", verifyToken, async (req, res) => {
   const { room_id } = req.params;
