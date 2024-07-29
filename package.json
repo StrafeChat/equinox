@@ -23,7 +23,7 @@
     "@types/ws": "^8.5.10",
     "nodemon": "^3.1.0",
     "ts-node": "^10.9.2",
-    "typescript": "^5.5.2"
+    "typescript": "^5.5.4"
   },
   "dependencies": {
     "@strafechat/captcha": "^1.0.41",
