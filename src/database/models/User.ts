@@ -15,6 +15,9 @@ const schema = new Schema<IUser>({
     avatar_decoration: {
         type: "text"
     },
+    about_me: {
+        type: "text"
+    },
     banned: {
         type: "boolean"
     },
@@ -27,6 +30,9 @@ const schema = new Schema<IUser>({
     created_at: {
         type: "timestamp",
         cluseringKey: false
+    },
+    created_spaces_count: {
+        type: "int"
     },
     discriminator: {
         type: "int"
@@ -70,6 +76,12 @@ const schema = new Schema<IUser>({
     secret: {
         type: "text"
     },
+    space_count: {
+        type: "int"
+    },
+    space_ids: {
+        type: "set<text>"
+    },
     system: {
         type: "boolean"
     },
@@ -81,6 +93,9 @@ const schema = new Schema<IUser>({
     },
     verified: {
         type: "boolean"
+    },
+    friends: {
+      type: "list<text>",
     }
 });
 

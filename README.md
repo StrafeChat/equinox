@@ -25,18 +25,9 @@ Find .env.example
 Express webserver
 Currently the backend supports the following routes:
 
-- **POST** `/v1/auth/login` - Used for logging.
-- **POST** `/v1/auth/register` - User for creating an account.
-- **GET** `/v1/users/@me` - Used to send you your personal user data.
-- **GET** `/v1/users/@me/relationships` - Used to fetch your friends and friend requests.
-- **PATCH** `/v1/users/@me/relationships/:query` - Used to update friend requests, accept /reject.
-- **POST** `/v1/users/@me/relationships/:query` - Used to create a friend request.
-- **DELETE** `/v1/users/@me/relationships/:query` - Used to delete a friend request or remove a friend.
-- **POST** `/v1/users/@me/rooms` - Used to create a PM (Private Message) with another user.
+| Request Method 	| Url                                  	| Description *(Usage)*                                 	|
+|----------------	|--------------------------------------	|-------------------------------------------------------	|
+| **POST**       	| `/v1/auth/register`                  	| Creating an account                                   	|
 
-## Websocket
-This project holds our HTTP API as well as our events websocket.
+https://equinox.strafechat.dev
 
-You can connect to the websocket on this webserver with your domain, localhost:443 for exmaple. With the /events pathname.
-- Ex. ws://localhost:443/events
-- Production: wss://api.strafe.chat/events

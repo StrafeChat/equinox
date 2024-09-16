@@ -22,14 +22,21 @@ export interface LoginBody {
     captcha: string;
 }
 
+export interface JoinBody {
+  roomId: string
+}
+
 export interface IUserByEmail {
-    created_at: Date | number;
     email: string;
     id: string;
 }
 
+export interface IMessageByRoom {
+    room_id: string;
+    id: string;
+}
+
 export interface IUserByUsernameAndDiscriminator {
-    created_at: Date | number;
     discriminator: number;
     id: string;
     username: string;
@@ -46,10 +53,12 @@ export interface IUser {
     accent_color: number;
     avatar: string;
     avatar_decoration: string;
+    about_me: string;
     banned: boolean;
     banner: string;
     bot: boolean;
     created_at: Date | number;
+    created_spaces_count: number;
     discriminator: number;
     dob: Date | number;
     edited_at: Date | number;
@@ -64,29 +73,67 @@ export interface IUser {
     presence: UserPresence;
     public_flags: number;
     secret: string;
+    space_count: number;
+    space_ids: string[];
     system: boolean;
     theme: string;
     username: string;
     verified: boolean;
+    friends: string[];
+}
+
+export interface IFriendRequestByUser {
+  sender_id: string;
+  recipient_id: string;
+  id: string;
+}
+export interface IFriendRequest {
+  id: string;
+  sender_id: string;
+  recipient_id: string;
+  created_at: Date | number;
 }
 
 export interface IVerification {
     id: string;
     code: string;
-    created_at: number;
+}
+
+export interface PermissionOverwrite {
+    id: string;
+    type: number;
+    allow_flags: number;
+    deny_flags: number;
 }
 
 export interface IRoom {
     id: string;
+    type: number;
+    space_id: string | null;
+    position: number;
+    owner_id: string | null;
+    permission_overwrites: PermissionOverwrite[],
+    name: string | null;
+    // icon_url: string |
+    topic: string | null;
+    last_message_id: string | null;
+    bitrate: number | null;
+    user_limit: number | null;
+    rate_limit: number | null;
+    recipients: string[];
+    icon: string | null;
+    parent_id: string | null;
+    last_pin_timestamp: string | null;
+    rtc_region: number | null;
     created_at: number;
-    name: string;
-    permissions: string[];
+    edited_at: number;
 }
 
 export interface ISpace {
     id: string;
     name: string;
-    icon: string;
+    name_acronym: string;
+    icon: string | null;
     owner_id: string;
     afk_room_id: string;
     afk_timeout: number;
@@ -98,6 +145,148 @@ export interface ISpace {
     banner: string;
     preferred_locale: string;
     sticker_ids: string[];
+    emoji_ids: string[];
     created_at: number;
     edited_at: number;
+}
+
+export interface IInvite {
+    code: string;
+    vanity: boolean;
+    inviter_id: string;
+    uses: number;
+    max_uses: number | null;
+    space_id: string;
+    room_id: string;
+    created_at: number;
+    expires_at: number | null;
+}
+
+export interface IBannedSpaceMember {
+    user_id: string;
+    space_id: string;
+    user_ip: string | null;
+    
+}
+
+export interface ISpaceMember {
+    user_id: string;
+    space_id: string;
+    nick: string | null;
+    roles: string[];
+    joined_at: number;
+    deaf: boolean;
+    mute: boolean;
+    avatar: string | null;
+    edited_at: number | null;
+} 
+
+export interface ISpaceRole {
+    id: string;
+    space_id: string;
+    name: string;
+    icon: string | null;
+    color: number | null;
+    rank: number;
+    hoist: boolean;
+    allowed_permissions: bigint;
+    denied_permissions: bigint;
+    created_at: number;
+    edited_at: number | null;
+}
+
+export interface MessageEmbedFooter {
+    text: string;
+    icon_url: string | null;
+}
+
+export interface MessageEmbedAuthor {
+    name: string | null;
+    url: string | null;
+    icon_url: string | null;
+}
+
+export interface MessageEmbedMedia {
+    url: string;
+    height: number | null;
+    width: number | null;
+}
+
+export interface MessageEmbedField {
+    name: string;
+    value: string;
+    inline: boolean;
+}
+
+export interface MessageEmbed {
+    title: string | null;
+    description: string | null;
+    url: string | null;
+    timestamp: number | null;
+    color: string | null;
+    footer: MessageEmbedFooter | null;
+    image: MessageEmbedMedia | null;
+    thumbnail: MessageEmbedMedia | null;
+    video: MessageEmbedMedia | null;
+    author: MessageEmbedAuthor | null;
+    fields: MessageEmbedField[] | null;
+}
+
+export interface MessageReaction {
+    user_ids: string[];
+    emoji: string; 
+}
+
+export interface MessageAttachment {
+    name: string;
+    url: string;
+    type: string,
+    height: number | null;
+    width: number | null; 
+}
+
+export interface MessageSudo {
+    name: string | null;
+    avatar_url: string | null;
+    color: string | null;
+}
+
+
+export interface IMessage {
+    id: string;
+    room_id: string;
+    author_id: string;
+    space_id: string | null;
+    content: string | null;
+    created_at: number;
+    edited_at: number | null;
+    tts: boolean;
+    mention_everyone: boolean;
+    mentions: string[];
+    mention_roles: string[] | null;
+    mention_rooms: string[] | null;
+    attachments: string[] | null;
+    embeds: MessageEmbed[] | null;
+    reactions: MessageReaction[] | null;
+    sudo: MessageSudo | null;
+    pinned: boolean;
+    webhook_id: string | null;
+    system: boolean;        
+    message_reference_id: string | null;
+    flags: number | null;
+    thread_id: string | null;
+    stickers: string[] | null;
+    nonce?: number;
+}
+
+export interface IRoomUnreads {
+    room_id: string,
+    user_id: string,
+    message_id: string,
+}
+
+export interface IRoomMention {
+    room_id: string,
+    user_id: string,
+    message_ids: string[],
 }

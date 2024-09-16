@@ -20,6 +20,13 @@ const usernameSchema = joi.string().alphanum().min(2).max(32).invalid("everyone"
     "string.required": "The username field is required.",
 });
 
+const globalnameSchema = joi.string().alphanum().min(2).max(32).invalid("everyone", "here").required().messages({
+    "string.base": "The global_name should be a string.",
+    "string.empty": "The global_name cannot be empty.",
+    "string.min": "The global_name cannot be less than 2 character long.",
+    "string.max": "The global_name cannot be more than 32 characters long.",
+});
+
 const discriminatorSchema = joi.number().integer().min(1).max(9999).required().messages({
     "number.base": "The discriminator should be an integer.",
     "number.infinity": "The discriminator cannot be infinite",
@@ -68,11 +75,14 @@ export const JoiRegister = (req: Request<{}, {}, Partial<RegisterBody>>, res: Re
     next();
 }
 
-export const JoiEditData = (req: Request, res: Response, next: NextFunction) => {
+export const validateEditUserData = (req: Request, res: Response, next: NextFunction) => {
     const schema = joi.object({
         email: emailSchema.optional(),
         username: usernameSchema.optional(),
         discriminator: discriminatorSchema.optional(),
+        global_name: globalnameSchema.optional(),
+        locale: joi.string().regex(/^[a-z]{2}-[A-Z]{2}$/).optional(),
+        avatar: joi.string().optional(),
     }).custom((obj, helper) => {
         const keys = Object.keys(obj);
         if (keys.length < 1) return helper.error("any.required")
@@ -86,8 +96,51 @@ export const JoiEditData = (req: Request, res: Response, next: NextFunction) => 
     next();
 }
 
+export const validateSpaceCreationData = (req: Request, res: Response, next: NextFunction) => {
+    const schema = joi.object({
+        name: joi.string().min(1).max(32).required().messages({
+            "string.base": "The name should be a string.",
+            "string.empty": "The name cannot be empty.",
+        }),
+        icon: joi.string().regex(/^data:[a-z0-9]+\/[a-z0-9]+;base64,[a-zA-Z0-9+/=]+$/).optional().messages({
+            "string.base": "The icon should be a string.",
+            "string.empty": "The icon cannot be empty.",
+            "string.pattern.base": "The icon should be a base64 string.",
+        })
+    });
+
+    const { error } = schema.validate(req.body);
+
+    if (error) return res.status(400).json({ message: error.details[0].message });
+
+    next();
+}
+
+export const validateRoleCreationData = (req: Request, res: Response, next: NextFunction) => {
+    const schema = joi.object({
+        name: joi.string().min(1).max(32).required().messages({
+            "string.base": "The name should be a string.",
+            "string.empty": "The name cannot be empty.",
+        }),
+        color: joi.string().min(1).max(15).optional().messages({
+            "string.base": "The color should be a HEX code string.",
+            "string.empty": "The color cannot be empty.",
+        }),
+        hoist: joi.boolean().required(),
+        rank: joi.number().min(0).max(500).required(),
+        allowed_permissions: joi.number().required(),
+        denied_permissions: joi.number().required(),
+    });
+
+    const { error } = schema.validate(req.body);
+
+    if (error) return res.status(400).json({ message: error.details[0].message });
+
+    next();
+}
+
 export const verifyToken = async (req: Request, res: Response & { locals: { user: IUser } }, next: NextFunction) => {
-    const token = req.headers["authorization"];
+    const token = req.headers["authorization"] || req.headers["Authorization"];
     if (typeof token != "string") return res.status(401).json({ message: "Unauthorized" });
     const splitToken = token.split('.');
     if (splitToken.length < 3) return res.status(401).json({ message: "Unauthorized" });

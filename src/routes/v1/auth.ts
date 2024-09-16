@@ -6,7 +6,7 @@ import { Router } from "express";
 import rateLimit from "express-rate-limit";
 import session from "express-session";
 import { Resend } from "resend";
-import { ErrorCodes, NEBULA, PASSWORD_HASHING_SALT } from "../../config";
+import { ErrorCodes, NEBULA, PASSWORD_HASHING_SALT, USER_WORKER_ID } from "../../config";
 import { cassandra } from "../../database";
 import User from "../../database/models/User";
 import UserByEmail from "../../database/models/UserByEmail";
@@ -41,7 +41,8 @@ const mw = middleware(captcha);
 router.use("/", (req, res, next) => mw(req, res, next));
 
 router.get("/captcha", async (req, res) => {
-    res.status(200).json({ image: await (req as any).generateCaptcha() });
+  res.status(200).json({ image: await (req as any).generateCaptcha() });
+  console.log((req.session as any))
 })
 
 // Route for handling register requests
@@ -51,7 +52,7 @@ router.post<{}, {}, RegisterBody>("/register", JoiRegister, async (req, res) => 
         const { email, global_name, username, discriminator, password, dob, locale, captcha } = req.body;
 
         const result = (req as unknown as { verifyCaptcha: (input: string) => boolean }).verifyCaptcha(captcha);
-        if (!result) return res.status(400).json({ message: "Invalid captcha" });
+        if (!result) return res.status(400).json({ message: "Invalid captcha" }); 
 
         req.session.destroy((err) => {
             if (err) console.error(err);
@@ -65,7 +66,7 @@ router.post<{}, {}, RegisterBody>("/register", JoiRegister, async (req, res) => 
 
         const hashedPass = await bcrypt.hash(password, PASSWORD_HASHING_SALT);
         const created_at = new Date();
-        const id = generateSnowflake(0);
+        const id = generateSnowflake(USER_WORKER_ID);
         const secret = generateRandomString(12);
         const verifyId = Buffer.from(id).toString("base64url");
         const verifyCode = `${crypto.randomInt(1, 999999)}`.padStart(6, '0');
@@ -96,13 +97,13 @@ router.post<{}, {}, RegisterBody>("/register", JoiRegister, async (req, res) => 
             BatchInsert<IUserByEmail>({
                 name: "users_by_email",
                 data: {
-                    created_at, email, id
+                    email, id
                 }
             }),
             BatchInsert<IUserByUsernameAndDiscriminator>({
                 name: "users_by_username_and_discriminator",
                 data: {
-                    created_at, discriminator, username, id
+                    discriminator, username, id
                 }
             }),
             BatchInsert<IVerification>({
@@ -198,7 +199,7 @@ router.post<string, {}, {}, { code: string }, {}, { user: IUser }>("/verify", ve
             })
         ], { prepare: true });
 
-        const _res = await fetch(`${NEBULA}/avatars`, {
+        await fetch(`${NEBULA}/avatars`, {
             method: "POST",
             headers: {
                 "Content-Type": "application/json",
@@ -207,11 +208,9 @@ router.post<string, {}, {}, { code: string }, {}, { user: IUser }>("/verify", ve
         }).catch((err) => {
             console.error(err);
             return res.status(500).json({ message: "Failed to create an avatar for the user. Expect some weirdness to occur with your avatar." });
+        }).then(async () => {
+            res.status(200).json({ message: "Verification successful. Your account has been verified." });
         });
-
-        const data = await _res.json();
-
-        res.status(200).json({ message: "Verification successful. Your account has been verified." });
     } catch (err) {
         console.error("Failed to verify user:", err);
         res.status(500).json({ message: ErrorCodes.INTERNAL_SERVER_ERROR.MESSAGE })

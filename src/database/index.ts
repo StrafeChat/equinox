@@ -8,6 +8,7 @@ import {
     SCYLLA_PASSWORD,
     SCYLLA_USERNAME
 } from '../config';
+
 import { Logger } from "../helpers/logger";
 
 const cassandra = new Client({
@@ -18,8 +19,9 @@ const cassandra = new Client({
         username: SCYLLA_USERNAME,
         password: SCYLLA_PASSWORD
     } : undefined,
-    modelsPath: path.join(__dirname, "/models"),
+    
     typesPath: path.join(__dirname, "/types"),
+    modelsPath: path.join(__dirname, "/models"),
 
     logging: {
         success: Logger.success,

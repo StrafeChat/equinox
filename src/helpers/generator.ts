@@ -23,3 +23,31 @@ export const generateRandomString = (length = 12) => {
 export const generateToken = (id: string, timestamp: number, secret: string) => {
     return `${Buffer.from(id).toString("base64url")}.${Buffer.from(timestamp.toString()).toString("base64url")}.${Buffer.from(secret).toString("base64url")}`;
 }
+
+export const generateAcronym = (text: string, maxLength: number) => {
+    const words = text.split(" ");
+    let acronym = '';
+
+    if (maxLength <= 0) throw new Error('maxLength must be greater than 0 for generateAcronym');
+
+    if (words.length < maxLength)
+        for (const word of words) {
+            acronym += word.charAt(0).toUpperCase();
+        }
+    else for (let i = 0; i < maxLength; i++) {
+        acronym += words[i].charAt(0).toUpperCase();
+    }
+
+    return acronym;
+}
+
+export const generateInviteCode = (length: number = 6): string => {
+    const characters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+    let inviteCode = '';
+
+    for (let i = 0; i < length; i++) {
+        inviteCode += characters.charAt(Math.floor(Math.random() * characters.length));
+    }
+
+    return inviteCode;
+}
