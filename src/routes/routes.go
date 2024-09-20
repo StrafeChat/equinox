@@ -10,5 +10,5 @@ import (
 func SetupRoutes(app *fiber.App) {
 	fmt.Println("Setting up routes...")
 
-	routes_v1.SetupRoutes(app);
+	                     routes_v1.SetupRoutes(app);
 }

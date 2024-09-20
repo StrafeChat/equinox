@@ -22,7 +22,7 @@ func main() {
       log.Fatal(err)
     }
 
-   /*_ Initialize Databases _*/
+    /*_ Initialize Databases _*/
 	db.InitDB()
 	defer db.Session.Close()
 
