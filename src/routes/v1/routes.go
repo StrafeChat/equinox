@@ -1,7 +1,13 @@
 package routes_v1
 
-import "github.com/gofiber/fiber/v3"
+import (
+	"log"
+
+	"github.com/gofiber/fiber/v3"
+)
 
 func SetupRoutes(app *fiber.App) {
-   SetupAuthRoutes(app);
+	log.Println("Loading V1 routes.")
+
+	SetupAuthRoutes(app)
 }

@@ -1,9 +1,10 @@
-package db
+package database
 
 import (
 	"context"
 	"log"
 	"os"
+	"time"
 
 	"github.com/go-redis/redis"
 	"github.com/gocql/gocql"
@@ -15,9 +16,13 @@ var (
 	Ctx     = context.Background()
 )
 
-func InitDB() {
+func InitDB() error {
+	/*_ Connect to ScyllaDB _*/
 	cluster := gocql.NewCluster(os.Getenv("SCYLLA_HOST"))
 	cluster.Keyspace = os.Getenv("SCYLLA_KEYSPACE")
+	cluster.Consistency = gocql.Quorum
+	cluster.Timeout = time.Second * 5
+
 	var scyllaErr error
 	Session, scyllaErr = cluster.CreateSession()
 	if scyllaErr != nil {
@@ -26,27 +31,27 @@ func InitDB() {
 
 	log.Println("Connected to ScyllaDB.")
 
-	if err := createUsersTable(); err != nil {
-		log.Fatalf("Error creating users table: %v", err)
+	if err := CreateTables(); err != nil {
+		log.Fatalf("Failed to create tables:  %v", err)
+		return nil
+	}
+
+	if err := CreateTyes(); err != nil {
+		log.Fatalf("Failed to create types: %v", err)
+		return nil
 	}
 
 	Ctx = context.Background()
 
+	/*_ Connect to Redis _*/
 	Rdb = redis.NewClient(&redis.Options{
-		Addr:os.Getenv("REDIS_HOST"),
+		Addr: os.Getenv("REDIS_HOST"),
 	})
 
 	if err := Rdb.Ping().Err(); err != nil {
 		log.Fatalf("Error connecting to Redis: %v", err)
 	}
 	log.Println("Connected to Redis.")
-}
 
-func createUsersTable() error {
-	query := `CREATE TABLE IF NOT EXISTS users (
-        id UUID PRIMARY KEY,
-        name TEXT,
-        email TEXT
-    )`
-	return Session.Query(query).Exec()
+	return nil
 }

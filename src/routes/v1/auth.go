@@ -1,18 +1,14 @@
 package routes_v1
 
-import "github.com/gofiber/fiber/v3"
+import (
+	"github.com/gofiber/fiber/v3"
+
+	handlers_v1 "github.com/StrafeChat/equinox/src/handlers/v1/auth"
+)
 
 func SetupAuthRoutes(app *fiber.App) {
-   router := app.Group("/auth");
-   
-   router.Post("/login", loginPost)
-   router.Post("/register", registerPost)
-}
+	router := app.Group("/auth")
 
-func loginPost(c fiber.Ctx) error {
-    return c.SendString("Hello World");
-}
-
-func registerPost(c fiber.Ctx) error {
-   return c.SendString("h");
+	router.Post("/login", handlers_v1.LoginPost)
+	router.Post("/register", handlers_v1.RegisterPost)
 }
