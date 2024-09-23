@@ -2,6 +2,7 @@ package main
 
 import (
 	"log"
+	"os"
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/gofiber/fiber/v3/middleware/cors"
@@ -31,7 +32,7 @@ func main() {
 	app.Use(helmet.New())
 	app.Use(recover.New())
 	app.Use(cors.New(cors.Config{
-		AllowOrigins: []string{`https://*.strafe.chat`, `http://*.localhost`},
+		AllowOrigins: []string{os.Getenv("DOMAIN")},
 	}))
 
 	/*_ Log all incoming requests _*/
