@@ -8,7 +8,6 @@ import (
 	"github.com/StrafeChat/equinox/src/types"
 )
 
-/*_ Login Route Handler _*/
 func LoginPost(c fiber.Ctx) error {
 	body := new(types.LoginBody)
 

@@ -8,10 +8,13 @@ import (
 
 	"github.com/go-redis/redis"
 	"github.com/gocql/gocql"
+	"github.com/scylladb/gocqlx/v3"
+
+	"github.com/StrafeChat/equinox/src/database/models"
 )
 
 var (
-	Session *gocql.Session
+	Session *gocqlx.Session
 	Rdb     *redis.Client
 	Ctx     = context.Background()
 )
@@ -23,35 +26,48 @@ func InitDB() error {
 	cluster.Consistency = gocql.Quorum
 	cluster.Timeout = time.Second * 5
 
-	var scyllaErr error
-	Session, scyllaErr = cluster.CreateSession()
-	if scyllaErr != nil {
-		log.Fatal("Error connecting to ScyllaDB:", scyllaErr)
+	session, err := gocqlx.WrapSession(cluster.CreateSession())
+	if err != nil {
+		log.Fatal(err)
 	}
-
+	Session = &session
 	log.Println("Connected to ScyllaDB.")
 
-	if err := CreateTables(); err != nil {
-		log.Fatalf("Failed to create tables:  %v", err)
-		return nil
+	if err := CreateSchema(); err != nil {
+		log.Fatalf("Failed to create schema: %v", err)
+		return err
 	}
-
-	if err := CreateTyes(); err != nil {
-		log.Fatalf("Failed to create types: %v", err)
-		return nil
-	}
-
-	Ctx = context.Background()
 
 	/*_ Connect to Redis _*/
 	Rdb = redis.NewClient(&redis.Options{
 		Addr: os.Getenv("REDIS_HOST"),
 	})
-
 	if err := Rdb.Ping().Err(); err != nil {
 		log.Fatalf("Error connecting to Redis: %v", err)
 	}
 	log.Println("Connected to Redis.")
+
+	return nil
+}
+
+/*_ Create all Tables and types _*/
+func CreateSchema() error {
+	models := []interface{}{
+		&models.Bot{},
+		&models.User{},
+		&models.UserByEmail{},
+		&models.UserByUsernameAndDiscriminator{},
+	}
+
+	for _, model := range models {
+		if schemaModel, ok := model.(interface{ SchemaDefinition() []string }); ok {
+			for _, stmt := range schemaModel.SchemaDefinition() {
+				if err := Session.ExecStmt(stmt); err != nil {
+					return err
+				}
+			}
+		}
+	}
 
 	return nil
 }

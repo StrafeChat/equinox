@@ -1,8 +1,21 @@
 package handlers_v1
 
-import "github.com/gofiber/fiber/v3"
+import (
+	"log"
 
-/*_ Register Route Handler _*/
+	"github.com/gofiber/fiber/v3"
+
+	"github.com/StrafeChat/equinox/src/types"
+)
+
 func RegisterPost(c fiber.Ctx) error {
-	return c.SendString("Route in construction")
+	body := new(types.RegisterBody)
+
+	if err := c.Bind().Body(body); err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "Invalid JSON format."})
+	}
+
+	log.Println(body.Email)
+
+	return c.SendStatus(200)
 }

@@ -9,10 +9,13 @@ require (
 
 require (
 	github.com/gofiber/utils/v2 v2.0.0-beta.4 // indirect
-	github.com/golang/snappy v0.0.3 // indirect
+	github.com/golang/snappy v0.0.4 // indirect
 	github.com/hailocab/go-hostpool v0.0.0-20160125115350-e80d13ce29ed // indirect
 	github.com/onsi/ginkgo v1.16.5 // indirect
 	github.com/onsi/gomega v1.33.1 // indirect
+	github.com/scylladb/go-reflectx v1.0.1 // indirect
+	github.com/scylladb/gocqlx/v2 v2.8.0 // indirect
+	github.com/scylladb/gocqlx/v3 v3.0.1 // indirect
 	gopkg.in/inf.v0 v0.9.1 // indirect
 )
 
