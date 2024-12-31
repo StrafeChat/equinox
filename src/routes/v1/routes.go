@@ -10,4 +10,5 @@ func SetupRoutes(app *fiber.App) {
 	log.Println("Loading V1 routes.")
 
 	SetupAuthRoutes(app)
+	SetupUsersRoutes(app)
 }

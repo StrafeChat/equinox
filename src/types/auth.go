@@ -10,7 +10,7 @@ type LoginBody struct {
 type RegisterBody struct {
 	Email         string    `json:"email"`
 	Username      string    `json:"username"`
-	Discriminator string    `json:"discriminator"`
+	Discriminator int       `json:"discriminator"`
 	DisplayName   string    `json:"display_name"`
 	DateOfBirth   time.Time `json:"date_of_birth"`
 	Password      string    `json:"password"`

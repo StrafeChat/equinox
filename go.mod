@@ -3,8 +3,11 @@ module github.com/StrafeChat/equinox
 go 1.22.4
 
 require (
+	github.com/bwmarrin/snowflake v0.3.0
 	github.com/gofiber/fiber/v3 v3.0.0-beta.3
 	github.com/joho/godotenv v1.5.1
+	github.com/scylladb/gocqlx/v3 v3.0.1
+	golang.org/x/crypto v0.27.0
 )
 
 require (
@@ -13,9 +16,9 @@ require (
 	github.com/hailocab/go-hostpool v0.0.0-20160125115350-e80d13ce29ed // indirect
 	github.com/onsi/ginkgo v1.16.5 // indirect
 	github.com/onsi/gomega v1.33.1 // indirect
+	github.com/philhofer/fwd v1.1.2 // indirect
 	github.com/scylladb/go-reflectx v1.0.1 // indirect
-	github.com/scylladb/gocqlx/v2 v2.8.0 // indirect
-	github.com/scylladb/gocqlx/v3 v3.0.1 // indirect
+	github.com/tinylib/msgp v1.1.8 // indirect
 	gopkg.in/inf.v0 v0.9.1 // indirect
 )
 
@@ -30,5 +33,5 @@ require (
 	github.com/valyala/bytebufferpool v1.0.0 // indirect
 	github.com/valyala/fasthttp v1.55.0 // indirect
 	github.com/valyala/tcplisten v1.0.0 // indirect
-	golang.org/x/sys v0.21.0 // indirect
+	golang.org/x/sys v0.25.0 // indirect
 )

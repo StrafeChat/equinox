@@ -55,7 +55,13 @@ func CreateSchema() error {
 	models := []interface{}{
 		&models.Bot{},
 		&models.User{},
+		&models.Session{},
+		&models.BotByToken{},
 		&models.UserByEmail{},
+		&models.EmailVerifcation{},
+		&models.Relationship{},
+		&models.RelationshipBySender{},
+		&models.RelationshipByRecipient{},
 		&models.UserByUsernameAndDiscriminator{},
 	}
 

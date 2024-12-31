@@ -4,16 +4,19 @@ import (
 	"github.com/scylladb/gocqlx/v3/table"
 )
 
-var BotTable = table.Metadata{
+var botTableMeta = table.Metadata{
 	Name:    "bots",
-	Columns: []string{"user_id", "owner_id", "public", "description", "terms_of_service_url", "privacy_policy_url"},
+	Columns: []string{"user_id", "owner_id", "bot_token", "public", "description", "terms_of_service_url", "privacy_policy_url"},
 	PartKey: []string{"user_id"},
 	SortKey: []string{"owner_id"},
 }
 
+var BotTable = table.New(botTableMeta)
+
 type Bot struct {
 	UserID            string `json:"user_id" db:"user_id"`
 	OwnerID           string `json:"owner_id" db:"owner_id"`
+	Token             string `json:"token" db:"bot_token"`
 	Public            bool   `json:"public" db:"public"`
 	Description       string `json:"description" db:"description"`
 	TermsOfServiceURL string `json:"terms_of_service_url" db:"terms_of_service_url"`
@@ -23,8 +26,9 @@ type Bot struct {
 func (b *Bot) SchemaDefinition() []string {
 	return []string{
 		`CREATE TABLE IF NOT EXISTS bots (
-            user_id text PRIMARY KEY,
-            owner_id text,
+            user_id bigint PRIMARY KEY,
+			bot_token text,
+            owner_id bigint,
             public boolean,
             description text,
             terms_of_service_url text,

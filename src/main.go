@@ -3,10 +3,12 @@ package main
 import (
 	"log"
 	"os"
+	"time"
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/gofiber/fiber/v3/middleware/cors"
 	"github.com/gofiber/fiber/v3/middleware/helmet"
+	"github.com/gofiber/fiber/v3/middleware/limiter"
 	"github.com/gofiber/fiber/v3/middleware/logger"
 	"github.com/gofiber/fiber/v3/middleware/recover"
 	"github.com/joho/godotenv"
@@ -19,20 +21,47 @@ func main() {
 	/*_ Load env variables from file _*/
 	err := godotenv.Load(".env")
 	if err != nil {
-		log.Fatal("Error while loading enviroment variables: " + err.Error())
+		panic("Error while loading enviroment variables: " + err.Error())
 	}
 
 	/*_ Initialize Databases _*/
 	database.InitDB()
 	defer database.Session.Close()
 
-	app := fiber.New()
+	app := fiber.New(fiber.Config{
+		ErrorHandler: func(c fiber.Ctx, err error) error {
+			log.Printf("Error in request: %v", err)
+			code := fiber.StatusInternalServerError
+			if e, ok := err.(*fiber.Error); ok {
+				code = e.Code
+			}
+			return c.Status(code).JSON(fiber.Map{
+				"error": err.Error(),
+			})
+		},
+	})
 
 	/*_ Use protection _*/
 	app.Use(helmet.New())
-	app.Use(recover.New())
+	app.Use(recover.New(recover.Config{
+		EnableStackTrace: true,
+	}))
+
+	app.Use(limiter.New(limiter.Config{
+		Max:        10,
+		Expiration: 5 * time.Second,
+		KeyGenerator: func(c fiber.Ctx) string {
+			return c.IP()
+		},
+		LimitReached: func(c fiber.Ctx) error {
+			return c.SendStatus(fiber.StatusTooManyRequests)
+		},
+		SkipFailedRequests:     false,
+		SkipSuccessfulRequests: false,
+	}))
+
 	app.Use(cors.New(cors.Config{
-		AllowOrigins: []string{os.Getenv("DOMAIN")},
+		AllowOrigins: []string{"*"},
 	}))
 
 	/*_ Log all incoming requests _*/
@@ -43,5 +72,5 @@ func main() {
 	/*_ Setup all routes _*/
 	routes.SetupRoutes(app)
 
-	log.Fatal(app.Listen(":443"))
+	log.Fatal(app.Listen(":" + os.Getenv("PORT")))
 }
