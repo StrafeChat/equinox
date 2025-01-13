@@ -211,7 +211,7 @@ func checkUserExists(username string, discriminator int) (bool, error) {
 	if err == nil {
 		return true, nil
 	}
-	if errors.Is(gocql.ErrNotFound, err) {
+	if errors.Is(err, gocql.ErrNotFound) {
 		return false, nil
 	}
 	return false, err
