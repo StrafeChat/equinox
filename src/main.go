@@ -61,7 +61,11 @@ func main() {
 	}))
 
 	app.Use(cors.New(cors.Config{
-		AllowOrigins: []string{"*"},
+		AllowOrigins:     []string{os.Getenv("DOMAIN")},
+		AllowMethods:     []string{"GET", "POST", "PUT", "DELETE", "OPTIONS", "HEAD", "PATCH"},
+		AllowHeaders:     []string{"Origin", "Content-Type", "Accept", "Content-Length", "Accept-Language", "Accept-Encoding", "Connection", "Access-Control-Allow-Origin", "X-Session-Token"},
+		AllowCredentials: true,
+		MaxAge:           7200, // 2 hours
 	}))
 
 	/*_ Log all incoming requests _*/

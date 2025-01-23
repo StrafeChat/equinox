@@ -42,7 +42,7 @@ func LoginPost(c fiber.Ctx) error {
 	err := userByEmailQuery.GetRelease(&emailUser)
 	if err != nil {
 		if errors.Is(err, gocql.ErrNotFound) {
-			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Invaild email or password."})
+			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Invalid email or password."})
 		}
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "An error occurred while checking for the user."})
 	}
