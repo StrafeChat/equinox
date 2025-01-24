@@ -60,12 +60,18 @@ func main() {
 		SkipSuccessfulRequests: false,
 	}))
 
+	domain := os.Getenv("DOMAIN")
+	if domain == "" {
+		domain = "https://alpha.strafechat.dev"  // Default to production domain if env not set
+	}
+
 	app.Use(cors.New(cors.Config{
-		AllowOrigins:     []string{os.Getenv("DOMAIN")},
+		AllowOrigins:     []string{domain},
 		AllowMethods:     []string{"GET", "POST", "PUT", "DELETE", "OPTIONS", "HEAD", "PATCH"},
 		AllowHeaders:     []string{"Origin", "Content-Type", "Accept", "Content-Length", "Accept-Language", "Accept-Encoding", "Connection", "Access-Control-Allow-Origin", "X-Session-Token"},
 		AllowCredentials: true,
 		MaxAge:           7200, // 2 hours
+		ExposeHeaders:    []string{"X-Session-Token"},  // Expose the session token header
 	}))
 
 	/*_ Log all incoming requests _*/
