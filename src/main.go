@@ -86,6 +86,26 @@ func main() {
 		MaxAge:       7200, // 2 hours
 	}))
 
+	// Debug endpoint for mobile browser debugging
+	app.Post("/debug/log", func(c *fiber.Ctx) error {
+		var logData struct {
+			Message   string      `json:"message"`
+			Data      interface{} `json:"data"`
+			Timestamp string      `json:"timestamp"`
+			UserAgent string      `json:"userAgent"`
+		}
+		if err := c.BodyParser(&logData); err != nil {
+			return err
+		}
+		log.Printf("[MOBILE_DEBUG] %s - %s\nUser-Agent: %s\nData: %+v\n\n", 
+			logData.Timestamp, 
+			logData.Message,
+			logData.UserAgent,
+			logData.Data,
+		)
+		return c.SendStatus(fiber.StatusOK)
+	})
+
 	/*_ Log all incoming requests _*/
 	app.Use(logger.New(logger.Config{
 		Format: "[${time}] ${status} ${latency} ${remote_ip} ${method} ${path}\n",
