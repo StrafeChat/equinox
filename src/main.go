@@ -66,12 +66,10 @@ func main() {
 	}
 
 	app.Use(cors.New(cors.Config{
-		AllowOrigins:     []string{domain},
-		AllowMethods:     []string{"GET", "POST", "PUT", "DELETE", "OPTIONS", "HEAD", "PATCH"},
-		AllowHeaders:     []string{"Origin", "Content-Type", "Accept", "Content-Length", "Accept-Language", "Accept-Encoding", "Connection", "Access-Control-Allow-Origin", "X-Session-Token"},
-		AllowCredentials: true,
-		MaxAge:           7200, // 2 hours
-		ExposeHeaders:    []string{"X-Session-Token"},  // Expose the session token header
+		AllowOrigins: []string{domain},
+		AllowMethods: []string{"GET", "POST", "PUT", "DELETE", "OPTIONS", "HEAD", "PATCH"},
+		AllowHeaders: []string{"Origin", "Content-Type", "Accept", "Content-Length", "Accept-Language", "Accept-Encoding", "Connection", "Access-Control-Allow-Origin", "X-Session-Token"},
+		MaxAge:       7200, // 2 hours
 	}))
 
 	/*_ Log all incoming requests _*/
