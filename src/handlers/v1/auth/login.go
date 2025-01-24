@@ -110,5 +110,12 @@ func LoginPost(c fiber.Ctx) error {
 		})
 	}
 
-	return c.Status(fiber.StatusCreated).JSON(fiber.Map{"message": "Login successful.", "token": token})
+	// Set response headers
+	c.Set("Access-Control-Expose-Headers", "X-Session-Token")
+	c.Set("X-Session-Token", token)
+
+	return c.Status(fiber.StatusOK).JSON(fiber.Map{
+		"token": token,
+		"message": "Login successful.",
+	})
 }
