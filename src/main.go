@@ -87,14 +87,14 @@ func main() {
 	}))
 
 	// Debug endpoint for mobile browser debugging
-	app.Post("/debug/log", func(c *fiber.Ctx) error {
+	app.Post("/debug/log", func(c fiber.Ctx) error {
 		var logData struct {
 			Message   string      `json:"message"`
 			Data      interface{} `json:"data"`
 			Timestamp string      `json:"timestamp"`
 			UserAgent string      `json:"userAgent"`
 		}
-		if err := c.BodyParser(&logData); err != nil {
+		if err := c.Bind().Body(&logData); err != nil {
 			return err
 		}
 		log.Printf("[MOBILE_DEBUG] %s - %s\nUser-Agent: %s\nData: %+v\n\n", 
