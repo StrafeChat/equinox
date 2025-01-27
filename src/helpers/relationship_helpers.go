@@ -61,6 +61,52 @@ func GetUserByID(userId int64) (models.User, error) {
 
 // CheckExistingRelationship checks for an existing relationship between users
 func CheckExistingRelationship(userId, targetUserId string) (bool, error) {
+	// First check if the users are already friends by checking their relationships arrays
+	var user models.User
+	userQuery := models.UserTable.SelectBuilder().
+		Columns("relationships").
+		Where(qb.Eq("id")).
+		Limit(1).
+		Query(*database.Session).
+		BindMap(qb.M{
+			"id": userId,
+		})
+
+	err := userQuery.GetRelease(&user)
+	if err != nil && !errors.Is(err, gocql.ErrNotFound) {
+		return false, err
+	}
+
+	// Check if targetUserId is in the relationships array
+	for _, relationshipId := range user.Relationships {
+		if relationshipId == targetUserId {
+			return true, nil
+		}
+	}
+
+	// Also check if userId is in target user's relationships array
+	var targetUser models.User
+	targetUserQuery := models.UserTable.SelectBuilder().
+		Columns("relationships").
+		Where(qb.Eq("id")).
+		Limit(1).
+		Query(*database.Session).
+		BindMap(qb.M{
+			"id": targetUserId,
+		})
+
+	err = targetUserQuery.GetRelease(&targetUser)
+	if err != nil && !errors.Is(err, gocql.ErrNotFound) {
+		return false, err
+	}
+
+	// Check if userId is in target user's relationships array
+	for _, relationshipId := range targetUser.Relationships {
+		if relationshipId == userId {
+			return true, nil
+		}
+	}
+
 	// Check relationship by sender
 	relationshipBySenderQuery := models.RelationshipBySenderTable.SelectBuilder().
 		Columns("*").
@@ -72,7 +118,7 @@ func CheckExistingRelationship(userId, targetUserId string) (bool, error) {
 		})
 
 	var existingRelationshipBySender models.RelationshipBySender
-	err := relationshipBySenderQuery.GetRelease(&existingRelationshipBySender)
+	err = relationshipBySenderQuery.GetRelease(&existingRelationshipBySender)
 	if err != nil && !errors.Is(err, gocql.ErrNotFound) {
 		return false, err
 	}

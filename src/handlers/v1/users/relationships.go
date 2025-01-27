@@ -64,7 +64,7 @@ func RelationshipsPost(c fiber.Ctx) error {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "An error occurred while checking for the relationship."})
 	}
 	if exists {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "A relationship already exists with this user."})
+		return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": "A relationship already exists with this user."})
 	}
 
 	// Create new relationship
