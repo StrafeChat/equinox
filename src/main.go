@@ -14,6 +14,7 @@ import (
 	"github.com/joho/godotenv"
 
 	"github.com/StrafeChat/equinox/src/database"
+	"github.com/StrafeChat/equinox/src/helpers"
 	"github.com/StrafeChat/equinox/src/routes"
 )
 
@@ -39,7 +40,16 @@ func main() {
 				"error": err.Error(),
 			})
 		},
+		EnableTrustedProxyCheck: true,
+		TrustedProxies:         []string{"127.0.0.1", "::1", "172.24.0.1"}, // Get the real IP from the request and not nginx
 	})
+
+	encryptedKey := "vqCdLgKUmu1YAAax1jOi7nvce1jiiCgXMzcprITSgRZ6+3S/3AU="
+	decryptedKey, err := helpers.Decrypt(encryptedKey)
+	if err != nil {
+		log.Fatal(err)
+	}
+	log.Printf("Decrypted key: %s\n", string(decryptedKey))
 
 	/*_ Use protection _*/
 	app.Use(helmet.New())
@@ -83,7 +93,7 @@ func main() {
 			"X-Session-Token",
 		},
 		ExposeHeaders: []string{"X-Session-Token"},
-		MaxAge:       7200, // 2 hours
+		MaxAge:       7200,
 	}))
 
 	/*_ Log all incoming requests _*/
