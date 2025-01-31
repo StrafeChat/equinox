@@ -16,4 +16,5 @@ func SetupUsersRoutes(app *fiber.App) {
 	router.Post("/@me/relationships", handlers_v1.RelationshipsPost)
 	router.Put("/@me/relationships/:id", handlers_v1.RelationshipsPut)
 	router.Delete("/@me/relationships/:id", handlers_v1.RelationshipsDelete)
+	router.Patch("/@me/avatar", handlers_v1.UpdateAvatar)
 }
