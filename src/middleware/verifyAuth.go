@@ -117,7 +117,7 @@ func VerifyAuth() fiber.Handler {
 			}
 
 			userById := models.UserTable.SelectBuilder().
-				Columns("id", "username", "email", "discriminator", "display_name", "about_me", "bio", "bot", "created_at", "updated_at", "avatar", "banner", "accent_color", "locale", "presence", "bots").
+				Columns("id", "username", "email", "discriminator", "display_name", "about_me", "bio", "bot", "created_at", "updated_at", "avatar", "banner", "accent_color", "locale", "presence", "bots", "relationships").
 				Where(qb.Eq("id")).
 				Limit(1)
 

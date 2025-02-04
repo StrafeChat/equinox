@@ -3,6 +3,7 @@ package handlers_v1
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"strconv"
 	"sync"
@@ -14,6 +15,7 @@ import (
 	"github.com/StrafeChat/equinox/src/types"
 	"github.com/gocql/gocql"
 	"github.com/gofiber/fiber/v3"
+	"github.com/scylladb/gocqlx/v3/qb"
 )
 
 func RelationshipsPost(c fiber.Ctx) error {
@@ -252,6 +254,49 @@ func RelationshipsDelete(c fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Invalid relationship ID format."})
 	}
 
+	if containsString(c.Locals("user").(models.User).Relationships, strconv.FormatInt(relationshipId, 10)) {
+		user := c.Locals("user").(models.User)
+		otherUserById := models.UserTable.SelectBuilder().
+		Columns("id", "username", "email", "discriminator", "display_name", "about_me", "bio", "bot", "created_at", "updated_at", "avatar", "banner", "accent_color", "locale", "presence", "bots", "relationships").
+		Where(qb.Eq("id")).
+		Limit(1)
+
+	var otherUser models.User
+	userByIdQuery := otherUserById.Query(*database.Session).
+		BindStruct(models.User{
+			ID: strconv.FormatInt(relationshipId, 10),
+		})
+	if err := userByIdQuery.GetRelease(&otherUser); err != nil {
+		if errors.Is(err, gocql.ErrNotFound) {
+			return c.Status(401).SendString("Unauthorized")
+		}
+		return c.Status(500).SendString("Internal Server Error")
+	} 
+		err := helpers.RemoveRelationships(&user, &otherUser)
+		if err != nil {
+			return fiber.NewError(fiber.StatusInternalServerError, "Failed to remove friend")
+		}
+
+		event := types.RelationshipEvent{
+			Type:        types.RelationshipEventDelete,
+			ID:          strconv.FormatInt(relationshipId, 10),
+			SenderId:    c.Locals("user").(models.User).ID,
+			RecipientId: otherUser.ID,
+			CreatedAt:   time.Now().Unix(),
+		}
+	
+		eventJSON, err := json.Marshal(event)
+		if err != nil {
+			log.Printf("Error marshaling relationship event: %v", err)
+		} else {
+			if err := database.Rdb.Publish("RELATIONSHIP_EVENTS", string(eventJSON)).Err(); err != nil {
+				log.Printf("Error publishing relationship event: %v", err)
+			}
+		}
+	
+		return c.SendStatus(fiber.StatusNoContent)
+	}
+
 	// Get relationship concurrently
 	var relationship models.Relationship
 	var relationshipErr error
@@ -312,4 +357,14 @@ func RelationshipsDelete(c fiber.Ctx) error {
 	}
 
 	return c.SendStatus(fiber.StatusNoContent)
+}
+
+func containsString(slice []string, str string) bool {
+	fmt.Println(slice)
+	for _, v := range slice {
+		if v == str {
+			return true
+		}
+	}
+	return false
 }

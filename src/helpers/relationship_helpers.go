@@ -265,3 +265,54 @@ func DeleteRelationship(relationship models.Relationship, relationshipId string)
 
 	return nil
 }
+
+func RemoveRelationships(user1, user2 *models.User) error {
+    // Remove user2's ID from user1's relationships
+    if user1.Relationships != nil {
+        user2ID := user2.ID
+        newRelationships := make([]string, 0)
+        for _, id := range user1.Relationships {
+            if id != user2ID {
+                newRelationships = append(newRelationships, id)
+            }
+        }
+        user1.Relationships = newRelationships
+
+        if err := models.UserTable.UpdateBuilder().
+            Set("relationships").
+            Where(qb.Eq("id")).
+            Query(*database.Session).
+            BindMap(qb.M{
+                "relationships": user1.Relationships,
+                "id":           user1.ID,
+            }).
+            ExecRelease(); err != nil {
+            return err
+        }
+    }
+
+    if user2.Relationships != nil {
+        user1ID := user1.ID
+        newRelationships := make([]string, 0)
+        for _, id := range user2.Relationships {
+            if id != user1ID {
+                newRelationships = append(newRelationships, id)
+            }
+        }
+        user2.Relationships = newRelationships
+
+        if err := models.UserTable.UpdateBuilder().
+            Set("relationships").
+            Where(qb.Eq("id")).
+            Query(*database.Session).
+            BindMap(qb.M{
+                "relationships": user2.Relationships,
+                "id":           user2.ID,
+            }).
+            ExecRelease(); err != nil {
+            return err
+        }
+    }
+
+    return nil
+}
