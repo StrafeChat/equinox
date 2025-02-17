@@ -15,13 +15,31 @@ import (
 
 	"github.com/StrafeChat/equinox/src/database"
 	"github.com/StrafeChat/equinox/src/routes"
+	// "github.com/resend/resend-go/v2"
 )
 
 func main() {
+
+	// apiKey := """
+
+    // client := resend.NewClient(apiKey)
+
+    // params := &resend.SendEmailRequest{
+    //     From:    "no-reply@strafe.chat",
+    //     To:      []string{"brydenisnotsmart@proton.me"},
+    //     Subject: "Hello World",
+    //     Html:    "<p>Congrats on sending your <strong>first email</strong>!</p>",
+    // }
+
+    // _, err := client.Emails.Send(params)
+	// if err != nil {
+	// 	panic("Error while sending email: " + err.Error())
+	// }
+
 	/*_ Load env variables from file _*/
-	err := godotenv.Load(".env")
-	if err != nil {
-		panic("Error while loading enviroment variables: " + err.Error())
+	errEnv := godotenv.Load(".env")
+	if errEnv != nil {
+		panic("Error while loading enviroment variables: " + errEnv.Error())
 	}
 
 	/*_ Initialize Databases _*/
