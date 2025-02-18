@@ -7,12 +7,12 @@ import (
 )
 
 type Room struct {
-	ID         gocql.UUID  `json:"id"`
-	Creator    *string     `json:"creator,omitempty"` // null if DM, set if group
-	Recipients []string    `json:"recipients"`        // array of user IDs
-	CreatedAt  time.Time   `json:"created_at"`
-	UpdatedAt  *time.Time  `json:"updated_at,omitempty"`
-	DeletedAt  *time.Time  `json:"deleted_at,omitempty"`
+	ID            gocql.UUID `json:"id"`
+	Creator       *string    `json:"creator,omitempty"` // null if DM, set if group
+	Recipients    []string   `json:"recipients"`        // array of user IDs
+	LastMessageId *string    `json:"last_message_id"`
+	CreatedAt     time.Time  `json:"created_at"`
+	UpdatedAt     *time.Time `json:"updated_at,omitempty"`
 }
 
 type CreateRoomInput struct {

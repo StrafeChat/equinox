@@ -266,7 +266,7 @@ func createUserModel(body *types.RegisterBody, userId, passwordHash string) mode
 		Username:      body.Username,
 		Discriminator: body.Discriminator,
 		DisplayName:   &body.DisplayName,
-		DateOfBirth:   body.DateOfBirth,
+		DateOfBirth:   &body.DateOfBirth,
 		VerifiedEmail: false,
 		Bot:           false,
 		Bots:          []string{},

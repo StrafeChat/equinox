@@ -50,7 +50,7 @@ type User struct {
 	Bio           *string                `db:"bio" json:"bio"`
 	Flags         UserFlags              `db:"flags" json:"flags"`
 	Relationships []string               `db:"relationships" json:"relationships"`
-	DateOfBirth   time.Time              `db:"date_of_birth" json:"date_of_birth"`
+	DateOfBirth   *time.Time             `db:"date_of_birth" json:"date_of_birth"`
 	VerifiedEmail bool                   `db:"verified_email" json:"verified_email"`
 	AboutMe       *string                `db:"about_me" json:"about_me"`
 	AccentColor   *string                `db:"accent_color" json:"accent_color"`
