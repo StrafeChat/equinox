@@ -5,7 +5,6 @@ var validStatuses = map[string]bool{
 	"online":    true,
 	"idle":      true,
 	"dnd":       true,
-	"invisible": true,
 	"offline":   true,
 }
 

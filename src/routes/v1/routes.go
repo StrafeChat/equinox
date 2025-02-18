@@ -11,4 +11,5 @@ func SetupRoutes(app *fiber.App) {
 
 	SetupAuthRoutes(app)
 	SetupUsersRoutes(app)
+	SetupRoomsRoutes(app)
 }
