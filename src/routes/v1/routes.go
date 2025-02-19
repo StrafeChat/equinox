@@ -8,8 +8,9 @@ import (
 
 func SetupRoutes(app *fiber.App) {
 	log.Println("Loading V1 routes.")
+	versionRouter := app.Group("/v1").(*fiber.Group)
 
-	SetupAuthRoutes(app)
-	SetupUsersRoutes(app)
-	SetupRoomsRoutes(app)
+	SetupAuthRoutes(versionRouter)
+	SetupUsersRoutes(versionRouter)
+	SetupRoomsRoutes(versionRouter)
 }
