@@ -1,12 +1,13 @@
 package handlers_v1
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/StrafeChat/equinox/src/database"
 	"github.com/StrafeChat/equinox/src/database/models"
+	"github.com/StrafeChat/equinox/src/helpers"
 	"github.com/StrafeChat/equinox/src/types"
-	"github.com/gocql/gocql"
 	"github.com/gofiber/fiber/v3"
 )
 
@@ -20,31 +21,32 @@ func CreateRoom(c fiber.Ctx) error {
 		})
 	}
 
-	// Validate the input using a hypothetical validation function
-	// if err := utils.ValidateInput(input); err != nil {
-	// 	return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-	// 		"message": "Validation failed",
-	// 		"errors":  utils.GetValidationErrors(err),
-	// 	})
-	// }
-
-	// Create new room
-	room := types.Room{
-		ID:         gocql.TimeUUID(),
-		Recipients: append(body.Recipients, user.ID),
-		CreatedAt:  time.Now(),
+	if body.Recipients[0] == "" {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"message": "Invalid request body, recipients is required.",
+		})
 	}
 
-	// Set creator if it's a group
+	room := types.Room{
+		ID:            helpers.GenerateRoomID().String(),
+		Recipients:    append(body.Recipients, user.ID),
+		LastMessageId: fmt.Sprint(-1),
+		CreatedAt:     time.Now(),
+		UpdatedAt:     time.Now(),
+	}
+
+	fmt.Println(body)
+
 	if body.IsGroup {
 		room.Creator = &user.ID
 	}
+	fmt.Println(room)
 
-	// Insert room into database using gocqlx
 	q := models.RoomTable.InsertQuery(*database.Session)
 	if err := q.BindStruct(room).ExecRelease(); err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-			"message": "Failed to create room",
+			"message": "Failed to create room.",
+			"error":   err.Error(),
 		})
 	}
 

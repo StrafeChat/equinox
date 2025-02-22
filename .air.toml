@@ -1,0 +1,4 @@
+[build]
+cmd = "go build -o tmp/main src/main.go"
+watch = ["src"]
+ignore = ["tmp", "vendor"]

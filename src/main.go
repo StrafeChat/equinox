@@ -19,19 +19,18 @@ import (
 )
 
 func main() {
-
 	// apiKey := """
 
-    // client := resend.NewClient(apiKey)
+	// client := resend.NewClient(apiKey)
 
-    // params := &resend.SendEmailRequest{
-    //     From:    "no-reply@strafe.chat",
-    //     To:      []string{"brydenisnotsmart@proton.me"},
-    //     Subject: "Hello World",
-    //     Html:    "<p>Congrats on sending your <strong>first email</strong>!</p>",
-    // }
+	// params := &resend.SendEmailRequest{
+	//     From:    "no-reply@strafe.chat",
+	//     To:      []string{"brydenisnotsmart@proton.me"},
+	//     Subject: "Hello World",
+	//     Html:    "<p>Congrats on sending your <strong>first email</strong>!</p>",
+	// }
 
-    // _, err := client.Emails.Send(params)
+	// _, err := client.Emails.Send(params)
 	// if err != nil {
 	// 	panic("Error while sending email: " + err.Error())
 	// }
@@ -58,7 +57,7 @@ func main() {
 			})
 		},
 		EnableTrustedProxyCheck: true,
-		TrustedProxies:         []string{"127.0.0.1", "::1", "172.24.0.1", "172.69.205.133"}, // Get the real IP from the request and not nginx
+		TrustedProxies:          []string{"127.0.0.1", "::1", "172.24.0.1", "172.69.205.133"}, // Get the real IP from the request and not nginx
 	})
 
 	/*_ Use protection _*/
@@ -82,35 +81,34 @@ func main() {
 
 	domain := os.Getenv("DOMAIN")
 	if domain == "" {
-		domain = "https://alpha.strafechat.dev"  // Default to production domain if env not set
+		domain = "https://alpha.strafechat.dev" // Default to production domain if env not set
 	}
 
 	app.Use(cors.New(cors.Config{
 		AllowOrigins: []string{"*"},
 		AllowMethods: []string{"GET", "POST", "PUT", "DELETE", "OPTIONS", "HEAD", "PATCH"},
 		AllowHeaders: []string{
-			"Origin", 
-			"Content-Type", 
-			"Accept", 
-			"Content-Length", 
-			"Accept-Language", 
-			"Accept-Encoding", 
-			"Connection", 
-			"Access-Control-Allow-Origin", 
+			"Origin",
+			"Content-Type",
+			"Accept",
+			"Content-Length",
+			"Accept-Language",
+			"Accept-Encoding",
+			"Connection",
+			"Access-Control-Allow-Origin",
 			"Access-Control-Allow-Methods",
 			"Access-Control-Allow-Headers",
 			"Access-Control-Allow-Credentials",
 			"X-Session-Token",
 		},
 		ExposeHeaders: []string{"X-Session-Token"},
-		MaxAge:       7200,
+		MaxAge:        7200,
 	}))
 
 	/*_ Log all incoming requests _*/
 	app.Use(logger.New(logger.Config{
 		Format: "[${time}] ${status} ${latency} ${ip} ${method} ${path}\n",
 	}))
-	
 
 	/*_ Setup all routes _*/
 	routes.SetupRoutes(app)
