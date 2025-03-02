@@ -19,7 +19,7 @@ require (
 	github.com/onsi/ginkgo v1.16.5 // indirect
 	github.com/onsi/gomega v1.33.1 // indirect
 	github.com/philhofer/fwd v1.1.2 // indirect
-	github.com/resend/resend-go/v2 v2.15.0 // indirect
+	// github.com/resend/resend-go/v2 v2.15.0 // indirect
 	github.com/scylladb/go-reflectx v1.0.1 // indirect
 	github.com/tinylib/msgp v1.1.8 // indirect
 	gopkg.in/inf.v0 v0.9.1 // indirect

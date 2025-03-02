@@ -13,11 +13,13 @@ func SetupUsersRoutes(verisonRouter *fiber.Group) {
 	router.Use(middleware.VerifyAuth())
 
 	router.Get("/@me", handlers_v1_users.MeGet)
+	router.Get("/bulk", handlers_v1_users.BulkGetUsers)
 	router.Get("/:id", handlers_v1_users.GetUser)
 	router.Post("/@me/relationships", handlers_v1_users.RelationshipsPost)
 	router.Put("/@me/relationships/:id", handlers_v1_users.RelationshipsPut)
 	router.Delete("/@me/relationships/:id", handlers_v1_users.RelationshipsDelete)
 	router.Post("/@me/rooms", handlers_v1_rooms.CreateRoom)
+	router.Get("/@me/rooms", handlers_v1_users.GetUserRooms)
 	router.Patch("/@me/avatar", handlers_v1_users.UpdateAvatar)
 	router.Patch("/@me/banner", handlers_v1_users.UpdateBanner)
 	router.Patch("/@me/status", handlers_v1_users.UpdateStatus)

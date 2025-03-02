@@ -4,10 +4,18 @@ import (
 	"time"
 )
 
+// Room types
+const (
+	RoomTypeDM           = 0
+	RoomTypeGroupDM      = 1
+	RoomTypeServerChannel = 2
+)
+
 type Room struct {
 	ID            string    `json:"id"`
 	Creator       *string   `json:"creator,omitempty"` // null if DM, set if group
 	Recipients    []string  `json:"recipients"`        // array of user IDs
+	Type          int       `json:"type"`              // 0 = DM, 1 = Group DM, 2 = Server Channel
 	LastMessageId string    `json:"last_message_id,omitempty"`
 	CreatedAt     time.Time `json:"created_at"`
 	UpdatedAt     time.Time `json:"updated_at,omitempty"`

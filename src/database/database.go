@@ -57,14 +57,20 @@ func CreateSchema() error {
 		&models.User{},
 		&models.Room{},
 		&models.Session{},
+		&models.Message{},
 		&models.BotByToken{},
 		&models.UserByEmail{},
-		&models.EmailVerifcation{},
 		&models.Relationship{},
+		&models.MessagesByRoom{},
+		&models.EmailVerifcation{},
+		&models.RoomRecipientByUser{},
 		&models.RelationshipBySender{},
 		&models.RelationshipByRecipient{},
 		&models.UserByUsernameAndDiscriminator{},
 	}
+	// indexes := []interface{}{
+	// 	&indexes.RoomRecipientByUser{},
+	// }
 
 	for _, model := range models {
 		if schemaModel, ok := model.(interface{ SchemaDefinition() []string }); ok {
@@ -75,6 +81,16 @@ func CreateSchema() error {
 			}
 		}
 	}
+
+	// for _, index := range indexes {
+	// 	if schemaIndex, ok := index.(interface{ SchemaDefinintion() []string }); ok {
+	// 		for _, stmt := range schemaIndex.SchemaDefinintion() {
+	// 			if err := Session.ExecStmt(stmt); err != nil {
+	// 				return err
+	// 			}
+	// 		}
+	// 	}
+	// }
 
 	return nil
 }
