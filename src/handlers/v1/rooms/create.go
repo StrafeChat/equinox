@@ -1,6 +1,7 @@
 package handlers_v1
 
 import (
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -75,6 +76,27 @@ func CreateRoom(c fiber.Ctx) error {
 				"error":   err.Error(),
 			})
 		}
+	}
+
+	// Publish room creation event to Redis
+	eventData := map[string]interface{}{
+		"type": "ROOM_CREATE",
+		"data": room,
+	}
+
+	eventBytes, err := json.Marshal(eventData)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"message": "Failed to create room event",
+			"error":   err.Error(),
+		})
+	}
+
+	if err := database.Rdb.Publish("ROOM_EVENTS", string(eventBytes)).Err(); err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"message": "Failed to publish room event",
+			"error":   err.Error(),
+		})
 	}
 
 	return c.Status(fiber.StatusCreated).JSON(room)
