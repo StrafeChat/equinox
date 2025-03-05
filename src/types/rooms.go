@@ -6,8 +6,8 @@ import (
 
 // Room types
 const (
-	RoomTypeDM           = 0
-	RoomTypeGroupDM      = 1
+	RoomTypePM            = 0
+	RoomTypeGroupPM       = 1
 	RoomTypeServerChannel = 2
 )
 

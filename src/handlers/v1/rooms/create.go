@@ -27,6 +27,62 @@ func CreateRoom(c fiber.Ctx) error {
 			"message": "Invalid request body, recipients is required.",
 		})
 	}
+	// For PMs, check if a room already exists with the same recipient
+	if !body.IsGroup && len(body.Recipients) == 1 {
+		// First, get all rooms for the current user
+		var userRooms []models.RoomRecipientByUser
+		q := models.RoomRecipientByUserTable.SelectQuery(*database.Session)
+
+		// Include both primary key components and use proper binding
+		if err := q.BindStruct(&models.RoomRecipientByUser{
+			UserId: user.ID,
+		}).Exec(); err != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+				"message": "Failed to fetch user rooms.",
+				"error":   err.Error(),
+			})
+		}
+
+		// Get results and handle errors properly
+		if err := q.Select(&userRooms); err != nil {
+			q.Release()
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+				"message": "Failed to get user rooms.",
+				"error":   err.Error(),
+			})
+		}
+		q.Release()
+
+		// Then, for each room, check if the other user is also a recipient
+		for _, userRoom := range userRooms {
+			// Get the room details to check recipients
+			var room types.Room
+			roomQ := models.RoomTable.SelectQuery(*database.Session)
+			if err := roomQ.BindMap(map[string]interface{}{
+				"id": userRoom.RoomId,
+			}).Exec(); err != nil {
+				continue // Skip if we can't get this room
+			}
+
+			if err := roomQ.Get(&room); err != nil {
+				roomQ.Release()
+				continue // Skip if we can't get this room
+			}
+			roomQ.Release()
+
+			// Check if this is a PM and contains the recipient we're looking for
+			if room.Type == types.RoomTypePM && len(room.Recipients) == 2 {
+				// Check if the other recipient is the one we're trying to create a PM with
+				for _, recipient := range room.Recipients {
+					if recipient == body.Recipients[0] {
+						return c.Status(fiber.StatusConflict).JSON(fiber.Map{
+							"message": "A direct message room already exists with this recipient.",
+						})
+					}
+				}
+			}
+		}
+	}
 
 	// Generate a new room ID
 	roomID := helpers.GenerateRoomID().String()
@@ -45,10 +101,10 @@ func CreateRoom(c fiber.Ctx) error {
 	// Set creator and type based on whether it's a group chat
 	if body.IsGroup {
 		room.Creator = &user.ID
-		room.Type = types.RoomTypeGroupDM
+		room.Type = types.RoomTypeGroupPM
 	} else {
-		// If there's only one recipient (plus the creator), it's a DM
-		room.Type = types.RoomTypeDM
+		// If there's only one recipient (plus the creator), it's a PM
+		room.Type = types.RoomTypePM
 	}
 
 	// Insert the room into the database
