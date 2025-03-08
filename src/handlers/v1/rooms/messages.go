@@ -10,13 +10,15 @@ import (
 	"github.com/StrafeChat/equinox/src/database"
 	"github.com/StrafeChat/equinox/src/database/models"
 	"github.com/StrafeChat/equinox/src/helpers"
+	"github.com/StrafeChat/equinox/src/types"
 	"github.com/gofiber/fiber/v3"
 	"github.com/scylladb/gocqlx/v3/qb"
 )
 
 type CreateMessageInput struct {
-	Content string `json:"content" validate:"required"`
-	Nonce   string `json:"nonce"`
+	Content           string   `json:"content" validate:"required"`
+	Nonce             string   `json:"nonce"`
+	MessageReferences []string `json:"message_references"`
 }
 
 type GetMessagesQuery struct {
@@ -289,7 +291,7 @@ func GetRoomMessages(c fiber.Ctx) error {
 
 	// Create a query builder for the messages table
 	queryBuilder := models.MessageTable.SelectBuilder().
-		Columns("id", "content", "author_id", "room_id", "created_at", "nonce", "space_id", "system", "tts", "attachments", "embeds", "flags", "mention_everyone", "mention_roles", "mention_rooms", "mentions", "message_references", "pinned")
+		Columns("id", "content", "author_id", "room_id", "created_at", "nonce", "space_id", "system", "tts", "attachments", "embeds", "flags", "mention_everyone", "mention_roles", "mention_rooms", "mentions", "message_references", "pinned", "edited_at")
 
 	// Build individual queries for each message ID
 	if len(messageIDsInt) > 0 {
@@ -395,6 +397,12 @@ func CreateMessage(c fiber.Ctx) error {
 		RoomID:    roomID,
 		CreatedAt: createdAt,
 		// UpdatedAt: createdAt,
+	}
+
+	// Handle message references (replies)
+	if len(body.MessageReferences) > 0 {
+		log.Printf("CreateMessage: Processing %d message references", len(body.MessageReferences))
+		message.MessageReferences = &body.MessageReferences
 	}
 
 	var wg sync.WaitGroup
@@ -503,4 +511,241 @@ func CreateMessage(c fiber.Ctx) error {
 
 	log.Printf("CreateMessage: Successfully completed for messageID=%s", messageID)
 	return c.Status(fiber.StatusCreated).JSON(message)
+}
+
+func DeleteMessage(c fiber.Ctx) error {
+	user := c.Locals("user").(models.User)
+	roomID := c.Params("roomID")
+	messageID := c.Params("messageID")
+
+	log.Printf("DeleteMessage: Started for roomID=%s, messageID=%s, userID=%s", roomID, messageID, user.ID)
+
+	if roomID == "" || messageID == "" {
+		log.Printf("DeleteMessage: Missing required parameters")
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"message": "Room ID and Message ID are required",
+		})
+	}
+
+	// Check if user has access to the room
+	var roomRecipients []models.RoomRecipientByUser
+	log.Printf("DeleteMessage: Checking room access for user %s", user.ID)
+	if err := models.RoomRecipientByUserTable.SelectBuilder().
+		Columns("user_id", "room_id").
+		Where(qb.Eq("user_id")).
+		Query(*database.Session).
+		BindMap(qb.M{
+			"user_id": user.ID,
+		}).
+		SelectRelease(&roomRecipients); err != nil {
+		log.Printf("DeleteMessage: Failed to check room access: %v", err)
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"message": "Failed to check room access",
+		})
+	}
+
+	// Check if the user is a recipient of the specified room
+	hasAccess := false
+	for _, recipient := range roomRecipients {
+		if recipient.RoomId == roomID {
+			hasAccess = true
+			break
+		}
+	}
+
+	log.Printf("DeleteMessage: User %s has access to room %s: %v", user.ID, roomID, hasAccess)
+	if !hasAccess {
+		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
+			"message": "You don't have access to this room",
+		})
+	}
+
+	// Get the message to check ownership
+	var message models.Message
+	if err := models.MessageTable.SelectBuilder().
+		Columns("id", "author_id", "room_id").
+		Where(qb.Eq("id")).
+		Query(*database.Session).
+		BindMap(qb.M{"id": messageID}).
+		GetRelease(&message); err != nil {
+		log.Printf("DeleteMessage: Failed to fetch message: %v", err)
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
+			"message": "Message not found",
+		})
+	}
+
+	// Get the room to check type and creator
+	var room types.Room
+	roomQ := models.RoomTable.SelectQuery(*database.Session)
+	if err := roomQ.BindMap(map[string]interface{}{
+		"id": roomID,
+	}).Exec(); err != nil {
+		log.Printf("DeleteMessage: Failed to fetch room: %v", err)
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"message": "Failed to fetch room details",
+		})
+	}
+
+	if err := roomQ.Get(&room); err != nil {
+		roomQ.Release()
+		log.Printf("DeleteMessage: Failed to get room details: %v", err)
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"message": "Failed to get room details",
+		})
+	}
+	roomQ.Release()
+
+	// Check if user has permission to delete the message
+	isAuthor := message.AuthorID == user.ID
+	isGroupCreator := room.Type == types.RoomTypeGroupPM && room.Creator != nil && *room.Creator == user.ID
+
+	// In normal PMs (type 0), users can only delete their own messages
+	// In group PMs (type 1), both the message author and group creator can delete messages
+	if room.Type == types.RoomTypePM {
+		if !isAuthor {
+			log.Printf("DeleteMessage: User %s is not authorized to delete message %s in PM", user.ID, messageID)
+			return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
+				"message": "In direct messages, you can only delete your own messages.",
+			})
+		}
+	} else if !isAuthor && !isGroupCreator {
+		log.Printf("DeleteMessage: User %s is not authorized to delete message %s", user.ID, messageID)
+		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
+			"message": "You can only delete your own messages or any message in a group PM you created.",
+		})
+	}
+
+	// Delete message from both tables concurrently
+	var wg sync.WaitGroup
+	errChan := make(chan error, 2)
+
+	// Delete from messages table
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		log.Printf("DeleteMessage: Deleting from messages table for messageID=%s", messageID)
+
+		// First, get the full message to retrieve the created_at field
+		var fullMessage models.Message
+		getMessageQuery := models.MessageTable.SelectBuilder().
+			Where(qb.Eq("id")).
+			Query(*database.Session).
+			BindMap(qb.M{"id": messageID})
+
+		if err := getMessageQuery.GetRelease(&fullMessage); err != nil {
+			log.Printf("DeleteMessage: Error retrieving full message for deletion: %v", err)
+			errChan <- err
+			return
+		}
+
+		// Now delete with all required fields
+		if err := models.MessageTable.DeleteBuilder().
+			Where(qb.Eq("id")).
+			Query(*database.Session).
+			BindMap(qb.M{
+				"id":         messageID,
+				"created_at": fullMessage.CreatedAt,
+			}).
+			ExecRelease(); err != nil {
+			log.Printf("DeleteMessage: Error deleting from messages table: %v", err)
+			errChan <- err
+			return
+		}
+		log.Printf("DeleteMessage: Successfully deleted from messages table")
+		errChan <- nil
+	}()
+
+	// Delete from messages_by_room table
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		log.Printf("DeleteMessage: Deleting from messages_by_room table for roomID=%s, messageID=%s", roomID, messageID)
+
+		// First, get the message to retrieve the created_at field
+		var messageByRoom models.MessagesByRoom
+		getQuery := models.MessagesByRoomTable.SelectBuilder().
+			Where(qb.Eq("room_id"), qb.Eq("id")).
+			Query(*database.Session).
+			BindMap(qb.M{
+				"room_id": roomID,
+				"id":      messageID,
+			})
+
+		if err := getQuery.GetRelease(&messageByRoom); err != nil {
+			log.Printf("DeleteMessage: Error retrieving message for deletion: %v", err)
+			errChan <- err
+			return
+		}
+
+		// Now delete with all required fields
+		if err := models.MessagesByRoomTable.DeleteBuilder().
+			Where(qb.Eq("room_id"), qb.Eq("id")).
+			Query(*database.Session).
+			BindMap(qb.M{
+				"room_id":    roomID,
+				"id":         messageID,
+				"created_at": messageByRoom.CreatedAt,
+			}).
+			ExecRelease(); err != nil {
+			log.Printf("DeleteMessage: Error deleting from messages_by_room table: %v", err)
+			errChan <- err
+			return
+		}
+		log.Printf("DeleteMessage: Successfully deleted from messages_by_room table")
+		errChan <- nil
+	}()
+
+	// Wait for all goroutines to complete
+	wg.Wait()
+	// Close the error channel
+	close(errChan)
+
+	// Check if any errors occurred
+	var errors []error
+	for err := range errChan {
+		if err != nil {
+			errors = append(errors, err)
+		}
+	}
+
+	if len(errors) > 0 {
+		// Log the errors for debugging
+		for _, err := range errors {
+			log.Printf("Error in message deletion: %v", err)
+		}
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"message": "Failed to delete message",
+		})
+	}
+
+	// Publish message deletion event to Redis for Stargate
+	event := map[string]interface{}{
+		"type": "MESSAGE_DELETE",
+		"data": map[string]interface{}{
+			"id":      messageID,
+			"room_id": roomID,
+		},
+	}
+
+	log.Printf("DeleteMessage: Preparing to publish message deletion event to Redis")
+	eventJson, err := json.Marshal(event)
+	if err != nil {
+		log.Printf("DeleteMessage: Error marshaling message deletion event: %v", err)
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"message": "Failed to marshal message deletion event",
+		})
+	}
+
+	log.Printf("DeleteMessage: Publishing message deletion event to Redis ROOM_EVENTS channel")
+	if err := database.Rdb.Publish("ROOM_EVENTS", string(eventJson)).Err(); err != nil {
+		log.Printf("DeleteMessage: Error publishing message deletion event: %v", err)
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"message": "Failed to publish message deletion event",
+		})
+	}
+
+	log.Printf("DeleteMessage: Successfully completed for messageID=%s", messageID)
+	return c.Status(fiber.StatusNoContent).JSON(fiber.Map{
+		"message": "Message deleted successfully",
+	})
 }

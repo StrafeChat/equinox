@@ -141,11 +141,12 @@ type Message struct {
 	MessageReferences *[]string                 `db:"message_references" json:"message_references"`
 	Pinned            *bool                     `db:"pinned" json:"pinned"`
 	CreatedAt         time.Time                 `db:"created_at" json:"created_at"`
+	EditedAt          *time.Time                `db:"edited_at" json:"edited_at"`
 }
 
 var MessageMeta = table.Metadata{
 	Name:    "messages",
-	Columns: []string{"id", "nonce", "room_id", "space_id", "author_id", "content", "system", "tts", "attachments", "embeds", "flags", "mention_everyone", "mention_roles", "mention_rooms", "mentions", "message_references", "pinned", "created_at"},
+	Columns: []string{"id", "nonce", "room_id", "space_id", "author_id", "content", "system", "tts", "attachments", "embeds", "flags", "mention_everyone", "mention_roles", "mention_rooms", "mentions", "message_references", "pinned", "created_at", "edited_at"},
 	PartKey: []string{"id"},
 	SortKey: []string{"created_at"},
 }
@@ -217,6 +218,7 @@ func (m *Message) SchemaDefinition() []string {
 		message_references SET<bigint>,
 		pinned boolean,
 		created_at timestamp,
+		edited_at timestamp,
 		PRIMARY KEY (id, created_at)
 	) WITH CLUSTERING ORDER BY (created_at DESC);`}
 }

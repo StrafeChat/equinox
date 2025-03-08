@@ -13,4 +13,6 @@ func SetupRoomsRoutes(verisonRouter *fiber.Group) {
 
 	router.Post("/:id/messages", handlers_v1.CreateMessage)
 	router.Get("/:id/messages", handlers_v1.GetRoomMessages)
+	router.Delete("/:roomID/messages/:messageID", handlers_v1.DeleteMessage)
+	router.Patch("/:roomID/messages/:messageID", handlers_v1.EditMessage)
 }
