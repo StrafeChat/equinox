@@ -399,6 +399,11 @@ func CreateMessage(c fiber.Ctx) error {
 		// UpdatedAt: createdAt,
 	}
 
+	// Add unread entry for all recipients except the sender and those who are online
+	if err := AddUnreadMessage(roomID, messageID, user.ID); err != nil {
+		log.Printf("CreateMessage: Failed to add unread entries: %v", err)
+	}
+
 	// Handle message references (replies)
 	if len(body.MessageReferences) > 0 {
 		log.Printf("CreateMessage: Processing %d message references", len(body.MessageReferences))

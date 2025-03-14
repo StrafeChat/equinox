@@ -62,6 +62,7 @@ func CreateSchema() error {
 		&models.UserByEmail{},
 		&models.Relationship{},
 		&models.MessagesByRoom{},
+		&models.MessageUnread{},
 		&models.EmailVerifcation{},
 		&models.RoomRecipientByUser{},
 		&models.RelationshipBySender{},

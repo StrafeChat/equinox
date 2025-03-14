@@ -15,4 +15,7 @@ func SetupRoomsRoutes(verisonRouter *fiber.Group) {
 	router.Get("/:id/messages", handlers_v1.GetRoomMessages)
 	router.Delete("/:roomID/messages/:messageID", handlers_v1.DeleteMessage)
 	router.Patch("/:roomID/messages/:messageID", handlers_v1.EditMessage)
+	router.Get("/:id/unreads", handlers_v1.GetUnreadMessages)
+	router.Post("/:id/ack", handlers_v1.AcknowledgeMessages)
+	router.Post("/:id/typing", handlers_v1.HandleTypingIndicator)
 }
