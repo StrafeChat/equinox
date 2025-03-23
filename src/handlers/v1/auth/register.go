@@ -1,6 +1,7 @@
 package handlers_v1
 
 import (
+	"encoding/json"
 	"errors"
 	"log"
 	"os"
@@ -168,6 +169,27 @@ func RegisterPost(c fiber.Ctx) error {
 		Secure:   true,
 		SameSite: "Strict",
 	})
+
+	// Publish user registration event to Redis for Nebula to create default avatar
+	userEvent := struct {
+		Type      string `json:"type"`
+		UserID    string `json:"user_id"`
+		CreatedAt int64  `json:"created_at"`
+	}{
+		Type:      "USER_REGISTERED",
+		UserID:    userId.String(),
+		CreatedAt: time.Now().UnixMilli(),
+	}
+
+	eventJson, err := json.Marshal(userEvent)
+	if err != nil {
+		log.Printf("Error marshaling user registration event: %v", err)
+	} else {
+		log.Printf("Publishing user registration event to Redis USER_EVENTS channel for user ID: %s", userId.String())
+		if err := database.Rdb.Publish("USER_EVENTS", string(eventJson)).Err(); err != nil {
+			log.Printf("Error publishing user registration event: %v", err)
+		}
+	}
 
 	return c.Status(fiber.StatusCreated).JSON(fiber.Map{"message": "Registration successful.", "token": token})
 }
