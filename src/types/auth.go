@@ -16,3 +16,18 @@ type RegisterBody struct {
 	Password      string    `json:"password"`
 	Locale        string    `json:"locale"`
 }
+
+type PasswordResetRequestBody struct {
+	Email string `json:"email"`
+}
+
+type PasswordResetVerifyBody struct {
+	UserId string `json:"user_id"` // Now optional
+	Code   string `json:"code"`
+}
+
+type PasswordResetCompleteBody struct {
+	UserId      string `json:"user_id"` // Now optional
+	Code        string `json:"code"`
+	NewPassword string `json:"new_password"`
+}

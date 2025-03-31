@@ -11,4 +11,7 @@ func SetupAuthRoutes(verisonRouter *fiber.Group) {
 
 	router.Post("/login", authHandler.LoginPost)
 	router.Post("/register", authHandler.RegisterPost)
+	router.Post("/password-reset", authHandler.PasswordResetRequestPost)
+	router.Post("/password-reset/verify", authHandler.PasswordResetVerifyPost)
+	router.Post("/password-reset/complete", authHandler.PasswordResetCompletePost)
 }

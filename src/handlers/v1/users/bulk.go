@@ -1,8 +1,6 @@
 package handlers_v1
 
 import (
-	"fmt"
-
 	"github.com/StrafeChat/equinox/src/database"
 	"github.com/StrafeChat/equinox/src/database/models"
 	"github.com/gofiber/fiber/v3"
@@ -22,7 +20,6 @@ func BulkGetUsers(c fiber.Ctx) error {
 			"message": "Invalid request body",
 		})
 	}
-	fmt.Println("AHH")
 	userIds := body.IDs
 
 	if len(userIds) == 0 {

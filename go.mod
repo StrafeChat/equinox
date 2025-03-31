@@ -7,7 +7,9 @@ toolchain go1.23.6
 require (
 	github.com/bwmarrin/snowflake v0.3.0
 	github.com/gofiber/fiber/v3 v3.0.0-beta.3
+	github.com/ip2location/ip2location-go v8.3.0+incompatible
 	github.com/joho/godotenv v1.5.1
+	github.com/resend/resend-go/v2 v2.17.0
 	github.com/scylladb/gocqlx/v3 v3.0.1
 	golang.org/x/crypto v0.27.0
 )
@@ -33,6 +35,7 @@ require (
 	github.com/klauspost/compress v1.17.9 // indirect
 	github.com/mattn/go-colorable v0.1.13 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
+	github.com/mssola/user_agent v0.6.0
 	github.com/valyala/bytebufferpool v1.0.0 // indirect
 	github.com/valyala/fasthttp v1.55.0 // indirect
 	github.com/valyala/tcplisten v1.0.0 // indirect

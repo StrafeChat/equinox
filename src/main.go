@@ -14,6 +14,7 @@ import (
 	"github.com/joho/godotenv"
 
 	"github.com/StrafeChat/equinox/src/database"
+	"github.com/StrafeChat/equinox/src/helpers"
 	"github.com/StrafeChat/equinox/src/routes"
 	// "github.com/resend/resend-go/v2"
 )
@@ -44,6 +45,9 @@ func main() {
 	/*_ Initialize Databases _*/
 	database.InitDB()
 	defer database.Session.Close()
+
+	// Start the password reset cleanup task
+	helpers.ScheduleCleanupTask()
 
 	app := fiber.New(fiber.Config{
 		ErrorHandler: func(c fiber.Ctx, err error) error {
