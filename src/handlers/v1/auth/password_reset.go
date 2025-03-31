@@ -3,9 +3,11 @@ package handlers_v1
 import (
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"sort"
 	"strings"
@@ -13,7 +15,6 @@ import (
 
 	"github.com/gocql/gocql"
 	"github.com/gofiber/fiber/v3"
-	"github.com/ip2location/ip2location-go"
 	"github.com/mssola/user_agent"
 	"github.com/resend/resend-go/v2"
 	"github.com/scylladb/gocqlx/v3/qb"
@@ -46,7 +47,6 @@ func getDeviceInfo(userAgentString string) string {
 	return fmt.Sprintf("%s on %s (%s %s)", deviceType, os, browser, version)
 }
 
-// getCityFromIP attempts to get city information from an IP address
 func getCityFromIP(ipAddress string) string {
 	// Skip for private/local IPs
 	if strings.HasPrefix(ipAddress, "127.") || strings.HasPrefix(ipAddress, "192.168.") ||
@@ -54,46 +54,43 @@ func getCityFromIP(ipAddress string) string {
 		return "Local Network"
 	}
 
-	// Try to get IP2Location database path from environment
-	dbPath := os.Getenv("IP2LOCATION_DB_PATH")
-	if dbPath == "" {
-		dbPath = "./IP2LOCATION-LITE-DB5.BIN" // Default path
-	}
-
-	// Check if the database file exists
-	_, err := os.Stat(dbPath)
-	if os.IsNotExist(err) {
-		log.Printf("IP2Location database not found at %s", dbPath)
-		return "Unknown Location"
-	}
-
-	// Open the IP2Location database
-	db, err := ip2location.OpenDB(dbPath)
+	// Use a free IP geolocation API
+	apiURL := "https://ipapi.co/" + ipAddress + "/json/"
+	resp, err := http.Get(apiURL)
 	if err != nil {
-		log.Printf("Error opening IP2Location database: %v", err)
+		log.Printf("Error fetching IP data: %v", err)
 		return "Unknown Location"
 	}
-	defer db.Close()
+	defer resp.Body.Close()
 
-	// Get location data
-	results, err := db.Get_all(ipAddress)
-	if err != nil {
-		log.Printf("Error getting location data: %v", err)
+	// Parse response
+	var result map[string]interface{}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		log.Printf("Error decoding IP API response: %v", err)
 		return "Unknown Location"
 	}
 
-	// Format the location information
-	if results.City == "-" {
-		if results.Region == "-" {
-			if results.Country_long == "-" {
-				return "Unknown Location"
-			}
-			return results.Country_long
-		}
-		return fmt.Sprintf("%s, %s", results.Region, results.Country_long)
+	city, cityExists := result["city"].(string)
+	region, regionExists := result["region"].(string)
+	country, countryExists := result["country_name"].(string)
+
+	// Construct location string
+	if !cityExists && !regionExists && !countryExists {
+		return "Unknown Location"
 	}
 
-	return fmt.Sprintf("%s, %s, %s", results.City, results.Region, results.Country_long)
+	locationParts := []string{}
+	if cityExists {
+		locationParts = append(locationParts, city)
+	}
+	if regionExists {
+		locationParts = append(locationParts, region)
+	}
+	if countryExists {
+		locationParts = append(locationParts, country)
+	}
+
+	return strings.Join(locationParts, ", ")
 }
 
 // PasswordResetRequestPost handles the request to reset a password
