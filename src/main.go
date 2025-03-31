@@ -17,7 +17,6 @@ import (
 	"github.com/StrafeChat/equinox/src/helpers"
 	"github.com/StrafeChat/equinox/src/middleware"
 	"github.com/StrafeChat/equinox/src/routes"
-	// "github.com/resend/resend-go/v2"
 )
 
 func main() {
@@ -112,7 +111,7 @@ func main() {
 
 	/*_ Log all incoming requests _*/
 	app.Use(logger.New(logger.Config{
-		Format: "[${time}] ${status} ${latency} ${ip} ${method} ${path}\n",
+		Format: "[${time}] ${status} ${latency} ${locals:original_ip} ${method} ${path}\n",
 	}))
 
 	/*_ Setup all routes _*/

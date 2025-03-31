@@ -15,23 +15,24 @@ func CloudflareIP() fiber.Handler {
 	return func(c fiber.Ctx) error {
 		// Check if Cloudflare IP detection is enabled
 		enableCloudflareIP := getEnvBool("ENABLE_CLOUDFLARE_IP", true)
-
 		if enableCloudflareIP {
 			// Check for Cloudflare-specific header first
 			if cfIP := c.Get("CF-Connecting-IP"); cfIP != "" {
+				c.Request().Header.Set("X-Real-IP", cfIP) // Override IP for Fiber
 				c.Locals("original_ip", cfIP)
 				return c.Next()
 			}
 
 			// Fall back to X-Forwarded-For header
 			if forwardedIP := c.Get("X-Forwarded-For"); forwardedIP != "" {
-				// X-Forwarded-For can contain multiple IPs, we want the first one (client IP)
+				c.Request().Header.Set("X-Real-IP", forwardedIP)
 				c.Locals("original_ip", forwardedIP)
 				return c.Next()
 			}
 		}
 
 		// If Cloudflare IP detection is disabled or no special headers are found, store the default IP
+		c.Request().Header.Set("X-Real-IP", c.IP())
 		c.Locals("original_ip", c.IP())
 		return c.Next()
 	}

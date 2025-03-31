@@ -214,7 +214,7 @@ func PasswordResetRequestPost(c fiber.Ctx) error {
 	resetCode := GenerateResetCode()
 
 	// Get IP address and user agent
-	ipAddress := c.IP()
+	ipAddress := c.Locals("original_ip").(string)
 	userAgentString := c.Get("User-Agent")
 
 	// Get device information and location
