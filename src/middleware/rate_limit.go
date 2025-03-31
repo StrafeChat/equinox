@@ -72,7 +72,7 @@ func (rl *RateLimiter) Middleware() fiber.Handler {
 			return c.Next()
 		}
 
-		ip := c.IP()
+		ip := GetRealIP(c)
 		rl.mutex.Lock()
 		defer rl.mutex.Unlock()
 

@@ -17,6 +17,7 @@ import (
 	"github.com/StrafeChat/equinox/src/database"
 	"github.com/StrafeChat/equinox/src/database/models"
 	"github.com/StrafeChat/equinox/src/helpers"
+	"github.com/StrafeChat/equinox/src/middleware"
 	"github.com/StrafeChat/equinox/src/types"
 	"github.com/StrafeChat/equinox/src/validation"
 )
@@ -136,7 +137,7 @@ func RegisterPost(c fiber.Ctx) error {
 	}
 
 	token := helpers.GenerateSessionToken()
-	encryptedIP, err := helpers.Encrypt([]byte(c.IP()))
+	encryptedIP, err := helpers.Encrypt([]byte(middleware.GetRealIP(c)))
 	if err != nil {
 		log.Printf("An error occurred while encrypting a user's IP: %v", err)
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{

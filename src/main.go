@@ -15,6 +15,7 @@ import (
 
 	"github.com/StrafeChat/equinox/src/database"
 	"github.com/StrafeChat/equinox/src/helpers"
+	"github.com/StrafeChat/equinox/src/middleware"
 	"github.com/StrafeChat/equinox/src/routes"
 	// "github.com/resend/resend-go/v2"
 )
@@ -74,7 +75,7 @@ func main() {
 		Max:        25,
 		Expiration: 5 * time.Second,
 		KeyGenerator: func(c fiber.Ctx) string {
-			return c.IP()
+			return middleware.GetRealIP(c)
 		},
 		LimitReached: func(c fiber.Ctx) error {
 			return c.SendStatus(fiber.StatusTooManyRequests)

@@ -21,6 +21,7 @@ import (
 
 	"github.com/StrafeChat/equinox/src/database"
 	"github.com/StrafeChat/equinox/src/database/models"
+	"github.com/StrafeChat/equinox/src/middleware"
 	"github.com/StrafeChat/equinox/src/types"
 	"github.com/StrafeChat/equinox/src/validation"
 )
@@ -147,7 +148,7 @@ func PasswordResetRequestPost(c fiber.Ctx) error {
 
 	log.Printf("Checking for existing reset codes for user ID: %s", emailUser.ID)
 	log.Printf("Query structure: %+v", existingResetQuery)
-	log.Printf("Query WHERE conditions: %+v", existingResetQuery.Where)
+
 	log.Printf("Query execution prepared with binding: %+v", qb.M{
 		"user_id": emailUser.ID,
 	})
@@ -345,7 +346,7 @@ func PasswordResetRequestPost(c fiber.Ctx) error {
 func PasswordResetVerifyPost(c fiber.Ctx) error {
 	body := new(types.PasswordResetVerifyBody)
 
-	log.Printf("[PasswordResetVerify] Received request from IP: %s, User-Agent: %s", c.IP(), c.Get("User-Agent"))
+	log.Printf("[PasswordResetVerify] Received request from IP: %s, User-Agent: %s", middleware.GetRealIP(c), c.Get("User-Agent"))
 
 	if err := c.Bind().Body(body); err != nil {
 		log.Printf("[PasswordResetVerify] Error parsing request body: %v", err)
