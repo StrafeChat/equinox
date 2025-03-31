@@ -21,21 +21,6 @@ import (
 )
 
 func main() {
-	// apiKey := """
-
-	// client := resend.NewClient(apiKey)
-
-	// params := &resend.SendEmailRequest{
-	//     From:    "no-reply@strafe.chat",
-	//     To:      []string{"brydenisnotsmart@proton.me"},
-	//     Subject: "Hello World",
-	//     Html:    "<p>Congrats on sending your <strong>first email</strong>!</p>",
-	// }
-
-	// _, err := client.Emails.Send(params)
-	// if err != nil {
-	// 	panic("Error while sending email: " + err.Error())
-	// }
 
 	/*_ Load env variables from file _*/
 	errEnv := godotenv.Load(".env")
@@ -62,7 +47,19 @@ func main() {
 			})
 		},
 		EnableTrustedProxyCheck: true,
-		TrustedProxies:          []string{"127.0.0.1", "::1", "172.24.0.1", "172.69.205.133"}, // Get the real IP from the request and not nginx
+		// Include Cloudflare IP ranges along with local proxies
+		TrustedProxies: []string{
+			// Local proxies
+			"127.0.0.1", "::1", "172.24.0.1",
+			// Cloudflare IPv4 ranges
+			"173.245.48.0/20", "103.21.244.0/22", "103.22.200.0/22", "103.31.4.0/22",
+			"141.101.64.0/18", "108.162.192.0/18", "190.93.240.0/20", "188.114.96.0/20",
+			"197.234.240.0/22", "198.41.128.0/17", "162.158.0.0/15", "104.16.0.0/13",
+			"104.24.0.0/14", "172.64.0.0/13", "131.0.72.0/22",
+			// Cloudflare IPv6 ranges (partial list)
+			"2400:cb00::/32", "2606:4700::/32", "2803:f800::/32", "2405:b500::/32",
+			"2405:8100::/32", "2a06:98c0::/29", "2c0f:f248::/32",
+		},
 	})
 
 	/*_ Use protection _*/
@@ -109,6 +106,9 @@ func main() {
 		ExposeHeaders: []string{"X-Session-Token"},
 		MaxAge:        7200,
 	}))
+
+	/*_ Apply Cloudflare IP detection middleware _*/
+	app.Use(middleware.CloudflareIP())
 
 	/*_ Log all incoming requests _*/
 	app.Use(logger.New(logger.Config{
