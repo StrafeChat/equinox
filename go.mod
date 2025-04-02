@@ -7,7 +7,6 @@ toolchain go1.23.6
 require (
 	github.com/bwmarrin/snowflake v0.3.0
 	github.com/gofiber/fiber/v3 v3.0.0-beta.3
-	github.com/ip2location/ip2location-go v8.3.0+incompatible
 	github.com/joho/godotenv v1.5.1
 	github.com/resend/resend-go/v2 v2.17.0
 	github.com/scylladb/gocqlx/v3 v3.0.1

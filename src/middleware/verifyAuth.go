@@ -124,7 +124,7 @@ func VerifyAuth() fiber.Handler {
 			var user models.User
 			userByIdQuery := userById.Query(*database.Session).
 				BindStruct(models.User{
-					ID: session.UserId,
+					ID: fmt.Sprint(session.UserId),
 				})
 			if err := userByIdQuery.GetRelease(&user); err != nil {
 				if errors.Is(err, gocql.ErrNotFound) {

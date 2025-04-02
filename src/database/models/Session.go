@@ -28,12 +28,13 @@ func (u *Session) SchemaDefinition() []string {
 	return []string{
 		`CREATE TABLE IF NOT EXISTS sessions (
 			session_token text PRIMARY KEY,
-			user_id bigint,
+			user_id text,
 			ip text,
 			user_agent text,
 			trusted boolean,
 			created_at timestamp,
 			expires_at timestamp
 		);`,
+		`CREATE INDEX IF NOT EXISTS sessions_user_id_idx ON sessions (user_id);`,
 	}
 }

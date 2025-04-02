@@ -17,7 +17,8 @@ func CleanupExpiredResetCodes() {
 
 	// Find all expired reset codes using the table with expires_at as the partition key
 	expiredCodesQuery := models.PasswordResetByExpirationTable.SelectBuilder().
-		Where(qb.Lt("expires_at"))
+		Where(qb.Lt("expires_at")).
+		AllowFiltering()
 
 	log.Printf("Executing query to find expired reset codes with expires_at < %v", now)
 	expiredCodesQueryExec := expiredCodesQuery.Query(*database.Session).

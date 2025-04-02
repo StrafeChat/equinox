@@ -86,6 +86,11 @@ func LoginPost(c fiber.Ctx) error {
 		})
 	}
 
+	// fmt.Println(encryptedIP, c.IP())
+
+	// Log the user ID for the session
+	fmt.Printf("Creating session for user ID: %s\n", user.ID)
+
 	session := models.Session{
 		Token:     token,
 		UserId:    user.ID,
@@ -97,12 +102,35 @@ func LoginPost(c fiber.Ctx) error {
 	}
 
 	/*_ Create a session and return the cookie.  _*/
+	// Insert into sessions table
 	createSessionQuery := models.SessionTable.InsertBuilder()
 	sessionTableQuery := createSessionQuery.Query(*database.Session).
 		BindStruct(session)
 
 	if err := sessionTableQuery.ExecRelease(); err != nil {
 		fmt.Printf("An error occurred while creating a session: %v\nQuery: %v", err, sessionTableQuery)
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"error": "An internal server error occurred.",
+		})
+	}
+
+	// Insert into sessions_by_user table
+	sessionByUser := models.SessionByUser{
+		UserId:    session.UserId,
+		Token:     session.Token,
+		IP:        session.IP,
+		UserAgent: session.UserAgent,
+		Trusted:   session.Trusted,
+		CreatedAt: session.CreatedAt,
+		ExpiresAt: session.ExpiresAt,
+	}
+
+	createSessionByUserQuery := models.SessionByUserTable.InsertBuilder()
+	sessionByUserTableQuery := createSessionByUserQuery.Query(*database.Session).
+		BindStruct(sessionByUser)
+
+	if err := sessionByUserTableQuery.ExecRelease(); err != nil {
+		fmt.Printf("An error occurred while creating a session_by_user: %v\nQuery: %v", err, sessionByUserTableQuery)
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 			"error": "An internal server error occurred.",
 		})
