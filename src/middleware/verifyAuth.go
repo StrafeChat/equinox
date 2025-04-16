@@ -103,7 +103,7 @@ func VerifyAuth() fiber.Handler {
 			}
 
 			if session.ExpiresAt.Before(time.Now()) {
-				// Delete expired session
+				// Delete expired session from sessions table
 				deleteSession := models.SessionTable.DeleteBuilder().
 					Where(qb.Eq("session_token"))
 
@@ -111,6 +111,19 @@ func VerifyAuth() fiber.Handler {
 					BindStruct(models.Session{Token: token}).
 					ExecRelease(); err != nil {
 					fmt.Printf("Error deleting expired session: %v", err)
+				}
+
+				// Also delete from sessions_by_user table
+				deleteSessionByUser := models.SessionByUserTable.DeleteBuilder().
+					Where(qb.Eq("user_id"), qb.Eq("session_token"))
+
+				if err := deleteSessionByUser.Query(*database.Session).
+					BindMap(qb.M{
+						"user_id":       session.UserId,
+						"session_token": token,
+					}).
+					ExecRelease(); err != nil {
+					fmt.Printf("Error deleting expired session from sessions_by_user table: %v", err)
 				}
 
 				return c.Status(401).SendString("Session expired")

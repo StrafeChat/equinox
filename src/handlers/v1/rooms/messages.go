@@ -94,14 +94,12 @@ func GetRoomMessages(c fiber.Ctx) error {
 	selectBuilder := models.MessagesByRoomTable.SelectBuilder().
 		Columns("room_id", "id", "created_at").
 		Where(qb.Eq("room_id")).
-		OrderBy("id", qb.DESC).
 		Limit(uint(query.Limit))
 
 	if query.Before != "" {
 		selectBuilder = selectBuilder.Where(qb.Lt("id"))
 	} else if query.After != "" {
-		selectBuilder = selectBuilder.Where(qb.Gt("id")).
-			OrderBy("id", qb.ASC)
+		selectBuilder = selectBuilder.Where(qb.Gt("id"))
 	} else if query.Around != "" {
 		// For 'around', we'll fetch messages before and after the specified ID
 		halfLimit := query.Limit / 2
