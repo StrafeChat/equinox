@@ -23,6 +23,7 @@ func SetupUsersRoutes(verisonRouter *fiber.Group) {
 	router.Get("/@me/rooms", handlers_v1_users.GetUserRooms)
 	router.Patch("/@me/avatar", handlers_v1_users.UpdateAvatar)
 	router.Patch("/@me/banner", handlers_v1_users.UpdateBanner)
+	router.Patch("/@me/bio", handlers_v1_users.UpdateBio)
 	router.Patch("/@me/status", handlers_v1_users.UpdateStatus)
 
 	// Session management routes
