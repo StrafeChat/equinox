@@ -99,13 +99,15 @@ func CreateRoom(c fiber.Ctx) error {
 	fmt.Println(body)
 
 	// Set creator and type based on whether it's a group chat
-	if body.IsGroup {
-		room.Creator = &user.ID
-		room.Type = types.RoomTypeGroupPM
-	} else {
-		// If there's only one recipient (plus the creator), it's a PM
-		room.Type = types.RoomTypePM
-	}
+  if body.IsGroup {
+    room.Creator = &user.ID
+    room.Type = types.RoomTypeGroupPM
+  } else {
+    // If there's only one recipient (plus the creator), it's a PM
+    room.Type = types.RoomTypePM
+    // For PMs, the creator should still be set to identify who initiated the conversation
+    room.Creator = &user.ID
+  }
 
 	// Insert the room into the database
 	q := models.RoomTable.InsertQuery(*database.Session)

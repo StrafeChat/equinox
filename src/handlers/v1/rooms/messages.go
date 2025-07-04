@@ -201,12 +201,14 @@ func GetRoomMessages(c fiber.Ctx) error {
 		}
 
 		// Build the query for fetching messages
-		queryBuilder := models.MessageTable.SelectBuilder().Columns("id", "content", "author_id", "room_id", "created_at", "nonce", "space_id", "system", "tts", "attachments", "embeds", "flags", "mention_everyone", "mention_roles", "mention_rooms", "mentions", "message_references", "pinned")
+		// Removed unused queryBuilder variable
 
 		// Fetch each message individually
 		for _, msgID := range messageIDsInt {
 			var msg models.Message
-			if err := queryBuilder.Where(qb.Eq("id")).
+			if err := models.MessageTable.SelectBuilder().
+				Columns("id", "content", "author_id", "room_id", "created_at", "nonce", "space_id", "system", "tts", "attachments", "embeds", "flags", "mention_everyone", "mention_roles", "mention_rooms", "mentions", "message_references", "pinned", "edited_at", "type", "system_type", "system_data").
+				Where(qb.Eq("id")).
 				Query(*database.Session).
 				BindMap(qb.M{"id": msgID}).
 				GetRelease(&msg); err != nil {
@@ -287,15 +289,13 @@ func GetRoomMessages(c fiber.Ctx) error {
 	var fullMessages []models.Message
 	log.Printf("GetRoomMessages: Fetching full message details for %d message IDs", len(messageIDs))
 
-	// Create a query builder for the messages table
-	queryBuilder := models.MessageTable.SelectBuilder().
-		Columns("id", "content", "author_id", "room_id", "created_at", "nonce", "space_id", "system", "tts", "attachments", "embeds", "flags", "mention_everyone", "mention_roles", "mention_rooms", "mentions", "message_references", "pinned", "edited_at")
-
 	// Build individual queries for each message ID
 	if len(messageIDsInt) > 0 {
 		for _, msgID := range messageIDsInt {
 			var msg models.Message
-			if err := queryBuilder.Where(qb.Eq("id")).
+			if err := models.MessageTable.SelectBuilder().
+				Columns("id", "content", "author_id", "room_id", "created_at", "nonce", "space_id", "system", "tts", "attachments", "embeds", "flags", "mention_everyone", "mention_roles", "mention_rooms", "mentions", "message_references", "pinned", "edited_at", "type", "system_type", "system_data").
+				Where(qb.Eq("id")).
 				Query(*database.Session).
 				BindMap(qb.M{"id": msgID}).
 				GetRelease(&msg); err != nil {
@@ -391,7 +391,7 @@ func CreateMessage(c fiber.Ctx) error {
 		ID:        messageID,
 		Content:   &body.Content,
 		Nonce:     &body.Nonce,
-		AuthorID:  user.ID,
+		AuthorID:  &user.ID,
 		RoomID:    roomID,
 		CreatedAt: createdAt,
 		// UpdatedAt: createdAt,
@@ -599,7 +599,7 @@ func DeleteMessage(c fiber.Ctx) error {
 	roomQ.Release()
 
 	// Check if user has permission to delete the message
-	isAuthor := message.AuthorID == user.ID
+	isAuthor := message.AuthorID != nil && *message.AuthorID == user.ID
 	isGroupCreator := room.Type == types.RoomTypeGroupPM && room.Creator != nil && *room.Creator == user.ID
 
 	// In normal PMs (type 0), users can only delete their own messages

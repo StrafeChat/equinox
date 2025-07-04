@@ -84,7 +84,7 @@ func EditMessage(c fiber.Ctx) error {
 	}
 
 	// Check if user is the author of the message
-	if message.AuthorID != user.ID {
+	if *message.AuthorID != user.ID {
 		log.Printf("EditMessage: User %s is not the author of message %s", user.ID, messageID)
 		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
 			"message": "You can only edit your own messages",
@@ -98,9 +98,9 @@ func EditMessage(c fiber.Ctx) error {
 		Where(qb.Eq("id")).
 		Query(*database.Session).
 		BindMap(qb.M{
-			"id":        messageID,
-			"content":   body.Content,
-			"edited_at": editedAt,
+			"id":         messageID,
+			"content":    body.Content,
+			"edited_at":  editedAt,
 			"created_at": message.CreatedAt, // Include created_at from the original message as it's part of the primary key
 		}).ExecRelease(); err != nil {
 		log.Printf("EditMessage: Error updating message: %v", err)

@@ -114,6 +114,15 @@ type MessageSudo struct {
 	Color     *string `db:"color" json:"color"`
 }
 
+type MessageSystemData struct {
+	Type      string                 `db:"type" json:"type"`
+	UserID    *string                `db:"user_id" json:"user_id,omitempty"`       // For member events
+	ActorID   *string                `db:"actor_id" json:"actor_id,omitempty"`     // Who performed the action
+	OldValue  *string                `db:"old_value" json:"old_value,omitempty"`   // For property changes
+	NewValue  *string                `db:"new_value" json:"new_value,omitempty"`   // For property changes
+	ExtraData string `db:"extra_data" json:"extra_data,omitempty"` // Additional data as JSON string
+}
+
 func (ms MessageSudo) ToMap() map[string]interface{} {
 	return map[string]interface{}{
 		"name":      ms.Name,
@@ -122,16 +131,30 @@ func (ms MessageSudo) ToMap() map[string]interface{} {
 	}
 }
 
+func (msd MessageSystemData) ToMap() map[string]interface{} {
+	return map[string]interface{}{
+		"type":       msd.Type,
+		"user_id":    msd.UserID,
+		"actor_id":   msd.ActorID,
+		"old_value":  msd.OldValue,
+		"new_value":  msd.NewValue,
+		"extra_data": msd.ExtraData,
+	}
+}
+
 type Message struct {
 	ID                string                    `db:"id" json:"id"`
 	Nonce             *string                   `db:"nonce" json:"nonce"`
 	RoomID            string                    `db:"room_id" json:"room_id"`
 	SpaceID           *string                   `db:"space_id" json:"space_id"`
-	AuthorID          string                    `db:"author_id" json:"author_id"`
+	AuthorID          *string                   `db:"author_id" json:"author_id"`
 	Content           *string                   `db:"content" json:"content"`
+	Type              *int                      `db:"type" json:"type"`
+	SystemType        *string                   `db:"system_type" json:"system_type"`
+	SystemData        *map[string]interface{} `db:"system_data" json:"system_data"`
 	System            bool                      `db:"system" json:"system"`
 	TTS               bool                      `db:"tts" json:"tts"`
-	Atachments        []*map[string]interface{} `db:"attachments" json:"attachments"`
+	Attachments       []*map[string]interface{} `db:"attachments" json:"attachments"`
 	Embeds            []*map[string]interface{} `db:"embeds" json:"embeds"`
 	Flags             *int                      `db:"flags" json:"flags"`
 	MentionEveryone   bool                      `db:"mention_everyone" json:"mention_everyone"`
@@ -144,9 +167,11 @@ type Message struct {
 	EditedAt          *time.Time                `db:"edited_at" json:"edited_at"`
 }
 
+
+
 var MessageMeta = table.Metadata{
 	Name:    "messages",
-	Columns: []string{"id", "nonce", "room_id", "space_id", "author_id", "content", "system", "tts", "attachments", "embeds", "flags", "mention_everyone", "mention_roles", "mention_rooms", "mentions", "message_references", "pinned", "created_at", "edited_at"},
+	Columns: []string{"id", "nonce", "room_id", "space_id", "author_id", "content", "type", "system_type", "system_data", "system", "tts", "attachments", "embeds", "flags", "mention_everyone", "mention_roles", "mention_rooms", "mentions", "message_references", "pinned", "created_at", "edited_at"},
 	PartKey: []string{"id"},
 	SortKey: []string{"created_at"},
 }
@@ -199,6 +224,14 @@ func (m *Message) SchemaDefinition() []string {
 		avatar_url text,
 		color text
 	);`,
+		`CREATE TYPE IF NOT EXISTS message_system_data (
+		type text,
+		user_id text,
+		actor_id text,
+		old_value text,
+		new_value text,
+		extra_data text
+	);`,
 		`CREATE TABLE IF NOT EXISTS messages (
 		id bigint,
 		nonce text,
@@ -206,6 +239,9 @@ func (m *Message) SchemaDefinition() []string {
 		space_id bigint,
 		author_id bigint,
 		content text,
+		type int,
+		system_type text,
+		system_data FROZEN<message_system_data>,
 		system boolean,
 		tts boolean,
 		attachments SET<FROZEN<message_attachment>>,

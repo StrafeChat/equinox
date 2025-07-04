@@ -39,7 +39,7 @@ func BulkGetUsers(c fiber.Ctx) error {
 	for _, id := range userIds {
 		var user models.User
 		userById := models.UserTable.SelectBuilder().
-			Columns("id", "username", "discriminator", "display_name", "avatar", "banner", "presence").
+			Columns("id", "username", "discriminator", "display_name", "avatar", "banner", "presence", "flags", "about_me", "bio").
 			Where(qb.Eq("id")).
 			Limit(1)
 
@@ -56,6 +56,9 @@ func BulkGetUsers(c fiber.Ctx) error {
 				"Avatar":        user.Avatar,
 				"Banner":        user.Banner,
 				"Presence":      user.Presence,
+				"Flags":         user.Flags,
+				"AboutMe":       user.AboutMe,
+				"Bio":           user.Bio,
 			}
 		}
 	}

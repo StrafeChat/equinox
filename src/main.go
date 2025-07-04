@@ -14,6 +14,7 @@ import (
 	"github.com/joho/godotenv"
 
 	"github.com/StrafeChat/equinox/src/database"
+	"github.com/StrafeChat/equinox/src/events"
 	"github.com/StrafeChat/equinox/src/helpers"
 	"github.com/StrafeChat/equinox/src/middleware"
 	"github.com/StrafeChat/equinox/src/routes"
@@ -33,6 +34,9 @@ func main() {
 
 	// Start the password reset cleanup task
 	helpers.ScheduleCleanupTask()
+
+	// Start the room event listener
+	go events.StartRoomEventListener()
 
 	app := fiber.New(fiber.Config{
 		ErrorHandler: func(c fiber.Ctx, err error) error {

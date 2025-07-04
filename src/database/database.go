@@ -38,6 +38,11 @@ func InitDB() error {
 		return err
 	}
 
+	// Run room schema migration
+	if err := MigrateRoomSchema(); err != nil {
+		log.Printf("Room schema migration completed with warnings: %v", err)
+	}
+
 	/*_ Connect to Redis _*/
 	Rdb = redis.NewClient(&redis.Options{
 		Addr: os.Getenv("REDIS_HOST"),

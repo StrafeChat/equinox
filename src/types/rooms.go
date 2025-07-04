@@ -16,6 +16,9 @@ type Room struct {
 	Creator       *string   `json:"creator,omitempty"` // null if DM, set if group
 	Recipients    []string  `json:"recipients"`        // array of user IDs
 	Type          int       `json:"type"`              // 0 = DM, 1 = Group DM, 2 = Server Channel
+	Name          *string   `json:"name,omitempty"`    // optional name for group PMs
+	Topic         *string   `json:"topic,omitempty"`   // optional topic for group PMs
+	Icon          *string   `json:"icon,omitempty"`    // optional icon for group PMs
 	LastMessageId string    `json:"last_message_id,omitempty"`
 	CreatedAt     time.Time `json:"created_at"`
 	UpdatedAt     time.Time `json:"updated_at,omitempty"`

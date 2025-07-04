@@ -93,12 +93,9 @@ func ScheduleCleanupTask() {
 		ticker := time.NewTicker(1 * time.Hour)
 		defer ticker.Stop()
 
-		for {
-			select {
-			case <-ticker.C:
-				log.Println("Running scheduled cleanup of expired password reset codes")
-				CleanupExpiredResetCodes()
-			}
+		for range ticker.C {
+			log.Println("Running scheduled cleanup of expired password reset codes")
+			CleanupExpiredResetCodes()
 		}
 	}()
 
