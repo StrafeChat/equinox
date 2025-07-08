@@ -352,10 +352,10 @@ func AddMember(c fiber.Ctx) error {
 			})
 		}
 
-		if err := database.Rdb.Publish("ROOM_EVENTS", string(roomCreateEventBytes)).Err(); err != nil {
+		if publishErr := database.Rdb.Publish("ROOM_EVENTS", string(roomCreateEventBytes)).Err(); publishErr != nil {
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 				"message": "Failed to publish room creation event",
-				"error":   err.Error(),
+				"error":   publishErr.Error(),
 			})
 		}
 
@@ -521,13 +521,13 @@ func RemoveMember(c fiber.Ctx) error {
 		"updated_at": room.UpdatedAt,
 		"id":         room.ID,
 	}
-	
+
 	// If creator was changed, include it in the update
 	if room.Creator != nil {
 		updateFields = append(updateFields, "creator")
 		updateData["creator"] = *room.Creator
 	}
-	
+
 	if err := models.RoomTable.UpdateBuilder().
 		Set(updateFields...).
 		Where(qb.Eq("id")).
@@ -543,7 +543,7 @@ func RemoveMember(c fiber.Ctx) error {
 
 	// Remove RoomRecipientByUser entries for this user and room
 	log.Printf("RemoveMember: Removing RoomRecipientByUser entries for user %s in room %s", body.UserID, roomID)
-	
+
 	// First, get all records for this user to find the one for this room
 	var roomRecipients []models.RoomRecipientByUser
 	if err := models.RoomRecipientByUserTable.SelectBuilder().
@@ -558,7 +558,7 @@ func RemoveMember(c fiber.Ctx) error {
 			"error":   err.Error(),
 		})
 	}
-	
+
 	// Find and delete the specific record for this room
 	var deleted bool
 	for _, recipient := range roomRecipients {
@@ -580,14 +580,14 @@ func RemoveMember(c fiber.Ctx) error {
 			break
 		}
 	}
-	
+
 	if !deleted {
 		log.Printf("RemoveMember: No RoomRecipientByUser entry found for user %s in room %s", body.UserID, roomID)
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
 			"message": "Room recipient entry not found",
 		})
 	}
-	
+
 	log.Printf("RemoveMember: Successfully removed RoomRecipientByUser entry for user %s in room %s", body.UserID, roomID)
 
 	// Publish member removal event to Redis
@@ -882,7 +882,7 @@ func UpdateRoom(c fiber.Ctx) error {
 		Where(qb.Eq("id")).
 		Query(*database.Session).
 		BindMap(qb.M{"id": roomID})
-	
+
 	if err := stmt.GetRelease(&roomModel); err != nil {
 		log.Printf("UpdateRoom: Failed to fetch room: %v", err)
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
@@ -890,7 +890,7 @@ func UpdateRoom(c fiber.Ctx) error {
 			"error":   err.Error(),
 		})
 	}
-	
+
 	// Update the room fields
 	if input.Name != nil {
 		roomModel.Name = input.Name
@@ -902,7 +902,7 @@ func UpdateRoom(c fiber.Ctx) error {
 		roomModel.Icon = input.Icon
 	}
 	roomModel.UpdatedAt = time.Now()
-	
+
 	// Update in database using the same pattern as UpdateProfile
 	// Always update all fields to keep it simple and consistent
 	updateStmt := models.RoomTable.UpdateBuilder().
@@ -910,7 +910,7 @@ func UpdateRoom(c fiber.Ctx) error {
 		Where(qb.Eq("id")).
 		Query(*database.Session).
 		BindStruct(&roomModel)
-	
+
 	if err := updateStmt.ExecRelease(); err != nil {
 		log.Printf("UpdateRoom: Failed to update room: %v", err)
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{

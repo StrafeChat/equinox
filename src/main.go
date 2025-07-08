@@ -63,6 +63,16 @@ func main() {
 			"2400:cb00::/32", "2606:4700::/32", "2803:f800::/32", "2405:b500::/32",
 			"2405:8100::/32", "2a06:98c0::/29", "2c0f:f248::/32",
 		},
+		// Performance optimizations
+		ReadBufferSize:  16384,  // 16KB read buffer
+		WriteBufferSize: 16384,  // 16KB write buffer
+		Concurrency: 256 * 1024, // Handle more concurrent connections
+		ReadTimeout:  30 * time.Second,
+		WriteTimeout: 30 * time.Second,
+		IdleTimeout:  120 * time.Second,
+		BodyLimit:    50 * 1024 * 1024, // 50MB body limit
+		DisableKeepalive: false,
+		ReduceMemoryUsage: false, // Keep false for better performance
 	})
 
 	/*_ Use protection _*/

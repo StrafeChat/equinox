@@ -257,23 +257,23 @@ func RelationshipsDelete(c fiber.Ctx) error {
 	if containsString(c.Locals("user").(models.User).Relationships, strconv.FormatInt(relationshipId, 10)) {
 		user := c.Locals("user").(models.User)
 		otherUserById := models.UserTable.SelectBuilder().
-		Columns("id", "username", "email", "discriminator", "display_name", "about_me", "bio", "bot", "created_at", "updated_at", "avatar", "banner", "accent_color", "locale", "presence", "bots", "relationships").
-		Where(qb.Eq("id")).
-		Limit(1)
+			Columns("id", "username", "email", "discriminator", "display_name", "about_me", "bio", "bot", "created_at", "updated_at", "avatar", "banner", "accent_color", "locale", "presence", "bots", "relationships").
+			Where(qb.Eq("id")).
+			Limit(1)
 
-	var otherUser models.User
-	userByIdQuery := otherUserById.Query(*database.Session).
-		BindStruct(models.User{
-			ID: strconv.FormatInt(relationshipId, 10),
-		})
-	if err := userByIdQuery.GetRelease(&otherUser); err != nil {
-		if errors.Is(err, gocql.ErrNotFound) {
-			return c.Status(401).SendString("Unauthorized")
+		var otherUser models.User
+		userByIdQuery := otherUserById.Query(*database.Session).
+			BindStruct(models.User{
+				ID: strconv.FormatInt(relationshipId, 10),
+			})
+		if queryErr := userByIdQuery.GetRelease(&otherUser); queryErr != nil {
+			if errors.Is(err, gocql.ErrNotFound) {
+				return c.Status(401).SendString("Unauthorized")
+			}
+			return c.Status(500).SendString("Internal Server Error")
 		}
-		return c.Status(500).SendString("Internal Server Error")
-	} 
-		err := helpers.RemoveRelationships(&user, &otherUser)
-		if err != nil {
+		removeErr := helpers.RemoveRelationships(&user, &otherUser)
+		if removeErr != nil {
 			return fiber.NewError(fiber.StatusInternalServerError, "Failed to remove friend")
 		}
 
@@ -284,16 +284,16 @@ func RelationshipsDelete(c fiber.Ctx) error {
 			RecipientId: otherUser.ID,
 			CreatedAt:   time.Now().Unix(),
 		}
-	
-		eventJSON, err := json.Marshal(event)
-		if err != nil {
-			log.Printf("Error marshaling relationship event: %v", err)
+
+		eventJSON, marshalErr := json.Marshal(event)
+		if marshalErr != nil {
+			log.Printf("Error marshaling relationship event: %v", marshalErr)
 		} else {
-			if err := database.Rdb.Publish("RELATIONSHIP_EVENTS", string(eventJSON)).Err(); err != nil {
-				log.Printf("Error publishing relationship event: %v", err)
+			if marshalErr := database.Rdb.Publish("RELATIONSHIP_EVENTS", string(eventJSON)).Err(); marshalErr != nil {
+				log.Printf("Error publishing relationship event: %v", marshalErr)
 			}
 		}
-	
+
 		return c.SendStatus(fiber.StatusNoContent)
 	}
 

@@ -2,6 +2,7 @@ package handlers_v1
 
 import (
 	"encoding/json"
+	"fmt"
 	"log"
 	"strconv"
 	"sync"
@@ -28,6 +29,114 @@ type GetMessagesQuery struct {
 	Around string `query:"around"`
 }
 
+// fetchMessagesFromIDs fetches full message details concurrently
+func fetchMessagesFromIDs(messageIDs []string) ([]models.Message, error) {
+	if len(messageIDs) == 0 {
+		return []models.Message{}, nil
+	}
+
+	// Convert string IDs to int64
+	messageIDsInt := make([]int64, 0, len(messageIDs))
+	for _, id := range messageIDs {
+		messageIDInt, err := strconv.ParseInt(id, 10, 64)
+		if err != nil {
+			log.Printf("fetchMessagesFromIDs: Error converting message ID to int64: %v", err)
+			continue
+		}
+		messageIDsInt = append(messageIDsInt, messageIDInt)
+	}
+
+	if len(messageIDsInt) == 0 {
+		return nil, fmt.Errorf("no valid message IDs")
+	}
+
+	// Use concurrent fetching with worker pool
+	const maxWorkers = 10
+	workers := len(messageIDsInt)
+	if workers > maxWorkers {
+		workers = maxWorkers
+	}
+
+	messagesChan := make(chan models.Message, len(messageIDsInt))
+	errorsChan := make(chan error, len(messageIDsInt))
+	jobsChan := make(chan int64, len(messageIDsInt))
+
+	// Start workers
+	var wg sync.WaitGroup
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for msgID := range jobsChan {
+				var msg models.Message
+				if err := models.MessageTable.SelectBuilder().
+					Columns("id", "content", "author_id", "room_id", "created_at", "nonce", "space_id", "system", "tts", "attachments", "embeds", "flags", "mention_everyone", "mention_roles", "mention_rooms", "mentions", "message_references", "pinned", "edited_at", "type", "system_type", "system_data").
+					Where(qb.Eq("id")).
+					Query(*database.Session).
+					BindMap(qb.M{"id": msgID}).
+					GetRelease(&msg); err != nil {
+					errorsChan <- fmt.Errorf("failed to fetch message ID %d: %v", msgID, err)
+					continue
+				}
+				messagesChan <- msg
+			}
+		}()
+	}
+
+	// Send jobs
+	go func() {
+		defer close(jobsChan)
+		for _, msgID := range messageIDsInt {
+			jobsChan <- msgID
+		}
+	}()
+
+	// Wait for workers to complete
+	go func() {
+		wg.Wait()
+		close(messagesChan)
+		close(errorsChan)
+	}()
+
+	// Collect results
+	var fullMessages []models.Message
+	var errors []error
+
+	done := false
+	for !done {
+		select {
+		case msg, ok := <-messagesChan:
+			if !ok {
+				messagesChan = nil
+			} else {
+				fullMessages = append(fullMessages, msg)
+			}
+		case err, ok := <-errorsChan:
+			if !ok {
+				errorsChan = nil
+			} else {
+				errors = append(errors, err)
+			}
+		}
+		if messagesChan == nil && errorsChan == nil {
+			done = true
+		}
+	}
+
+	if len(errors) > 0 {
+		log.Printf("fetchMessagesFromIDs: %d errors occurred while fetching messages", len(errors))
+		for _, err := range errors {
+			log.Printf("fetchMessagesFromIDs: %v", err)
+		}
+	}
+
+	if len(fullMessages) == 0 {
+		return nil, fmt.Errorf("failed to fetch any messages")
+	}
+
+	return fullMessages, nil
+}
+
 func GetRoomMessages(c fiber.Ctx) error {
 	user := c.Locals("user").(models.User)
 	roomID := c.Params("id")
@@ -52,8 +161,8 @@ func GetRoomMessages(c fiber.Ctx) error {
 		query.Limit, query.Before, query.After, query.Around)
 
 	// Check if user has access to the room
-	var roomRecipients []models.RoomRecipientByUser
 	log.Printf("GetRoomMessages: Checking room access for user %s", user.ID)
+	var roomRecipients []models.RoomRecipientByUser
 	if err := models.RoomRecipientByUserTable.SelectBuilder().
 		Columns("user_id", "room_id").
 		Where(qb.Eq("user_id")).
@@ -68,11 +177,14 @@ func GetRoomMessages(c fiber.Ctx) error {
 		})
 	}
 
+	log.Printf("GetRoomMessages: Found %d room recipients for user %s", len(roomRecipients), user.ID)
+
 	// Check if the user is a recipient of the specified room
 	hasAccess := false
 	for _, recipient := range roomRecipients {
 		if recipient.RoomId == roomID {
 			hasAccess = true
+			log.Printf("GetRoomMessages: User %s has access to room %s", user.ID, roomID)
 			break
 		}
 	}
@@ -90,224 +202,140 @@ func GetRoomMessages(c fiber.Ctx) error {
 		log.Printf("GetRoomMessages: Adjusted limit to default: %d", query.Limit)
 	}
 
-	// Build the query based on the parameters
-	selectBuilder := models.MessagesByRoomTable.SelectBuilder().
-		Columns("room_id", "id", "created_at").
-		Where(qb.Eq("room_id")).
-		Limit(uint(query.Limit))
+	var messageIDs []string
 
-	if query.Before != "" {
-		selectBuilder = selectBuilder.Where(qb.Lt("id"))
-	} else if query.After != "" {
-		selectBuilder = selectBuilder.Where(qb.Gt("id"))
-	} else if query.Around != "" {
-		// For 'around', we'll fetch messages before and after the specified ID
+	// Handle different query modes
+	if query.Around != "" {
+		// For 'around', fetch messages before and after the specified ID concurrently
 		halfLimit := query.Limit / 2
 		log.Printf("GetRoomMessages: Using 'around' mode with ID %s, half limit: %d", query.Around, halfLimit)
 
-		// Get messages before the specified ID
+		// Create builders for before and after queries
 		beforeBuilder := models.MessagesByRoomTable.SelectBuilder().
 			Columns("room_id", "id", "created_at").
 			Where(qb.Eq("room_id"), qb.Lt("id")).
 			Limit(uint(halfLimit))
 
-		// Get messages after the specified ID
 		afterBuilder := models.MessagesByRoomTable.SelectBuilder().
 			Columns("room_id", "id", "created_at").
 			Where(qb.Eq("room_id"), qb.Gt("id")).
 			Limit(uint(halfLimit))
 
-		var beforeMessages, afterMessages []models.MessagesByRoom
-
 		// Execute both queries concurrently
-		var wg sync.WaitGroup
-		wg.Add(2)
-
-		var beforeErr, afterErr error
-		go func() {
-			defer wg.Done()
-			log.Printf("GetRoomMessages: Executing 'before' query for room %s, message ID %s", roomID, query.Around)
-			if err := beforeBuilder.Query(*database.Session).
-				BindMap(qb.M{
-					"room_id": roomID,
-					"id":      query.Around,
-				}).
-				SelectRelease(&beforeMessages); err != nil {
-				log.Printf("GetRoomMessages: Error in 'before' query: %v", err)
-				beforeErr = err
-			} else {
-				log.Printf("GetRoomMessages: 'Before' query returned %d messages", len(beforeMessages))
-			}
-		}()
-
-		go func() {
-			defer wg.Done()
-			log.Printf("GetRoomMessages: Executing 'after' query for room %s, message ID %s", roomID, query.Around)
-			if err := afterBuilder.Query(*database.Session).
-				BindMap(qb.M{
-					"room_id": roomID,
-					"id":      query.Around,
-				}).
-				SelectRelease(&afterMessages); err != nil {
-				log.Printf("GetRoomMessages: Error in 'after' query: %v", err)
-				afterErr = err
-			} else {
-				log.Printf("GetRoomMessages: 'After' query returned %d messages", len(afterMessages))
-			}
-		}()
-
-		wg.Wait()
-
-		// Check for errors in concurrent queries
-		if beforeErr != nil || afterErr != nil {
-			log.Printf("Error fetching messages: before=%v, after=%v", beforeErr, afterErr)
-			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-				"message": "Failed to fetch messages",
-			})
+		type queryResult struct {
+			messages []models.MessagesByRoom
+			err      error
+			queryType string
 		}
 
-		// Combine the message IDs
-		messageIDs := make([]string, 0, len(beforeMessages)+len(afterMessages))
+		resultsChan := make(chan queryResult, 2)
+
+		// Before query
+		go func() {
+			var beforeMessages []models.MessagesByRoom
+			err := beforeBuilder.Query(*database.Session).
+				BindMap(qb.M{
+					"room_id": roomID,
+					"id":      query.Around,
+				}).
+				SelectRelease(&beforeMessages)
+			resultsChan <- queryResult{beforeMessages, err, "before"}
+		}()
+
+		// After query
+		go func() {
+			var afterMessages []models.MessagesByRoom
+			err := afterBuilder.Query(*database.Session).
+				BindMap(qb.M{
+					"room_id": roomID,
+					"id":      query.Around,
+				}).
+				SelectRelease(&afterMessages)
+			resultsChan <- queryResult{afterMessages, err, "after"}
+		}()
+
+		// Collect results
+		var beforeMessages, afterMessages []models.MessagesByRoom
+		for i := 0; i < 2; i++ {
+			result := <-resultsChan
+			if result.err != nil {
+				log.Printf("GetRoomMessages: Error in '%s' query: %v", result.queryType, result.err)
+				return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+					"message": "Failed to fetch messages",
+				})
+			}
+			if result.queryType == "before" {
+				beforeMessages = result.messages
+			} else {
+				afterMessages = result.messages
+			}
+		}
+
+		log.Printf("GetRoomMessages: 'Before' query returned %d messages, 'After' query returned %d messages", len(beforeMessages), len(afterMessages))
+
+		// Combine message IDs
+		messageIDs = make([]string, 0, len(beforeMessages)+len(afterMessages))
 		for _, msg := range beforeMessages {
 			messageIDs = append(messageIDs, msg.ID)
 		}
 		for _, msg := range afterMessages {
 			messageIDs = append(messageIDs, msg.ID)
 		}
-
-		log.Printf("GetRoomMessages: Combined %d message IDs for full retrieval", len(messageIDs))
-
-		// If no messages found, return empty array
-		if len(messageIDs) == 0 {
-			log.Printf("GetRoomMessages: No messages found for 'around' query")
-			return c.Status(fiber.StatusOK).JSON(fiber.Map{
-				"messages": []models.Message{},
-			})
-		}
-
-		// Fetch full message details from messages table
-		var fullMessages []models.Message
-		log.Printf("GetRoomMessages: Fetching full message details for %d message IDs", len(messageIDs))
-
-		// Convert string IDs to int64 for database query
-		var messageIDsInt []int64
-		for _, id := range messageIDs {
-			messageIDInt, err := strconv.ParseInt(id, 10, 64)
-			if err != nil {
-				log.Printf("GetRoomMessages: Error converting message ID to int64: %v", err)
-				continue
-			}
-			messageIDsInt = append(messageIDsInt, messageIDInt)
-		}
-
-		// Build the query for fetching messages
-		// Removed unused queryBuilder variable
-
-		// Fetch each message individually
-		for _, msgID := range messageIDsInt {
-			var msg models.Message
-			if err := models.MessageTable.SelectBuilder().
-				Columns("id", "content", "author_id", "room_id", "created_at", "nonce", "space_id", "system", "tts", "attachments", "embeds", "flags", "mention_everyone", "mention_roles", "mention_rooms", "mentions", "message_references", "pinned", "edited_at", "type", "system_type", "system_data").
-				Where(qb.Eq("id")).
-				Query(*database.Session).
-				BindMap(qb.M{"id": msgID}).
-				GetRelease(&msg); err != nil {
-				log.Printf("GetRoomMessages: Error fetching message ID %d: %v", msgID, err)
-				continue
-			}
-			fullMessages = append(fullMessages, msg)
-		}
-
-		// Check if we failed to fetch any messages
-		if len(fullMessages) == 0 {
-			log.Printf("GetRoomMessages: Error fetching full message details")
-			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-				"message": "Failed to fetch full message details",
-			})
-		}
-
-		log.Printf("GetRoomMessages: Successfully retrieved %d full messages", len(fullMessages))
-		return c.Status(fiber.StatusOK).JSON(fiber.Map{
-			"messages": fullMessages,
-		})
-	}
-
-	// Execute the query for before/after/default cases
-	var messagesByRoom []models.MessagesByRoom
-	queryParams := qb.M{"room_id": roomID}
-
-	if query.Before != "" {
-		queryParams["id"] = query.Before
-		log.Printf("GetRoomMessages: Using 'before' mode with ID %s", query.Before)
-	} else if query.After != "" {
-		queryParams["id"] = query.After
-		log.Printf("GetRoomMessages: Using 'after' mode with ID %s", query.After)
 	} else {
-		log.Printf("GetRoomMessages: Using default mode (no before/after/around)")
+		// Handle before/after/default cases
+		selectBuilder := models.MessagesByRoomTable.SelectBuilder().
+			Columns("room_id", "id", "created_at").
+			Where(qb.Eq("room_id")).
+			Limit(uint(query.Limit))
+
+		queryParams := qb.M{"room_id": roomID}
+
+		if query.Before != "" {
+			selectBuilder = selectBuilder.Where(qb.Lt("id"))
+			queryParams["id"] = query.Before
+			log.Printf("GetRoomMessages: Using 'before' mode with ID %s", query.Before)
+		} else if query.After != "" {
+			selectBuilder = selectBuilder.Where(qb.Gt("id"))
+			queryParams["id"] = query.After
+			log.Printf("GetRoomMessages: Using 'after' mode with ID %s", query.After)
+		} else {
+			log.Printf("GetRoomMessages: Using default mode (no before/after/around)")
+		}
+
+		log.Printf("GetRoomMessages: Executing main query for room %s", roomID)
+		var messagesByRoom []models.MessagesByRoom
+		if err := selectBuilder.Query(*database.Session).
+			BindMap(queryParams).
+			SelectRelease(&messagesByRoom); err != nil {
+			log.Printf("GetRoomMessages: Error in main query: %v", err)
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+				"message": "Failed to fetch messages",
+			})
+		}
+
+		log.Printf("GetRoomMessages: Main query returned %d messages", len(messagesByRoom))
+
+		// Extract message IDs
+		messageIDs = make([]string, len(messagesByRoom))
+		for i, msg := range messagesByRoom {
+			messageIDs[i] = msg.ID
+		}
 	}
 
-	log.Printf("GetRoomMessages: Executing main query for room %s", roomID)
-	if err := selectBuilder.Query(*database.Session).
-		BindMap(queryParams).
-		SelectRelease(&messagesByRoom); err != nil {
-		log.Printf("GetRoomMessages: Error in main query: %v", err)
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-			"message": "Failed to fetch messages",
-		})
-	}
-
-	log.Printf("GetRoomMessages: Main query returned %d messages", len(messagesByRoom))
+	log.Printf("GetRoomMessages: Total %d message IDs for full retrieval", len(messageIDs))
 
 	// If no messages found, return empty array
-	if len(messagesByRoom) == 0 {
-		log.Printf("GetRoomMessages: No messages found for main query")
+	if len(messageIDs) == 0 {
+		log.Printf("GetRoomMessages: No messages found")
 		return c.Status(fiber.StatusOK).JSON(fiber.Map{
 			"messages": []models.Message{},
 		})
 	}
 
-	// Extract message IDs
-	messageIDs := make([]string, len(messagesByRoom))
-	for i, msg := range messagesByRoom {
-		messageIDs[i] = msg.ID
-	}
-
-	log.Printf("GetRoomMessages: Extracted %d message IDs for full retrieval", len(messageIDs))
-
-	// Convert string IDs to int64 for database query
-	var messageIDsInt []int64
-	for _, id := range messageIDs {
-		messageIDInt, err := strconv.ParseInt(id, 10, 64)
-		if err != nil {
-			log.Printf("GetRoomMessages: Error converting message ID to int64: %v", err)
-			continue
-		}
-		messageIDsInt = append(messageIDsInt, messageIDInt)
-	}
-
-	// Fetch full message details from messages table
-	var fullMessages []models.Message
-	log.Printf("GetRoomMessages: Fetching full message details for %d message IDs", len(messageIDs))
-
-	// Build individual queries for each message ID
-	if len(messageIDsInt) > 0 {
-		for _, msgID := range messageIDsInt {
-			var msg models.Message
-			if err := models.MessageTable.SelectBuilder().
-				Columns("id", "content", "author_id", "room_id", "created_at", "nonce", "space_id", "system", "tts", "attachments", "embeds", "flags", "mention_everyone", "mention_roles", "mention_rooms", "mentions", "message_references", "pinned", "edited_at", "type", "system_type", "system_data").
-				Where(qb.Eq("id")).
-				Query(*database.Session).
-				BindMap(qb.M{"id": msgID}).
-				GetRelease(&msg); err != nil {
-				continue
-			}
-			fullMessages = append(fullMessages, msg)
-		}
-	}
-
-	// Check if we failed to fetch any messages
-	if len(fullMessages) == 0 {
-		log.Printf("GetRoomMessages: Error fetching full message details")
+	// Fetch full message details concurrently
+	fullMessages, err := fetchMessagesFromIDs(messageIDs)
+	if err != nil {
+		log.Printf("GetRoomMessages: Error fetching full message details: %v", err)
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 			"message": "Failed to fetch full message details",
 		})
