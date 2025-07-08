@@ -43,6 +43,12 @@ func InitDB() error {
 		log.Printf("Room schema migration completed with warnings: %v", err)
 	}
 
+	// Run verification tokens schema migration
+	if err := MigrateVerificationTokensSchema(); err != nil {
+		log.Printf("Verification tokens schema migration failed: %v", err)
+		return err
+	}
+
 	/*_ Connect to Redis _*/
 	Rdb = redis.NewClient(&redis.Options{
 		Addr: os.Getenv("REDIS_HOST"),
@@ -69,8 +75,8 @@ func CreateSchema() error {
 		&models.MessagesByRoom{},
 		&models.MessageUnread{},
 		&models.SessionByUser{},
-		&models.EmailVerifcation{},
 		&models.PasswordReset{},
+		&models.VerificationToken{},
 		&models.RoomRecipientByUser{},
 		&models.RelationshipBySender{},
 		&models.RelationshipByRecipient{},

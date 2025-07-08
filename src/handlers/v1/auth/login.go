@@ -3,6 +3,8 @@ package handlers_v1
 import (
 	"errors"
 	"fmt"
+	"os"
+	"strings"
 	"time"
 
 	"golang.org/x/crypto/bcrypt"
@@ -48,7 +50,7 @@ func LoginPost(c fiber.Ctx) error {
 	}
 
 	userById := models.UserTable.SelectBuilder().
-		Columns("id", "password").
+		Columns("id", "password", "verified_email").
 		Where(qb.Eq("id")).
 		Limit(1)
 
@@ -74,6 +76,14 @@ func LoginPost(c fiber.Ctx) error {
 	err = bcrypt.CompareHashAndPassword([]byte(*user.Password), []byte(body.Password))
 	if err != nil {
 		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Invalid email or password."})
+	}
+
+	// Check if email verification is enabled and if user's email is verified
+	emailVerificationEnabled := strings.ToLower(os.Getenv("ENABLE_EMAIL_VERIFICATION")) == "true"
+	if emailVerificationEnabled && !user.VerifiedEmail {
+		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
+			"error": "Please verify your email address before logging in. Check your email for a verification link.",
+		})
 	}
 
 	token := helpers.GenerateSessionToken()

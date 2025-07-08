@@ -24,4 +24,31 @@ func MigrateRoomSchema() error {
 	return nil
 }
 
+// MigrateVerificationTokensSchema recreates the verification_tokens table with the correct column name
+func MigrateVerificationTokensSchema() error {
+	log.Println("Migrating verification_tokens table schema...")
+	
+	// Drop the existing verification_tokens table if it exists
+	if err := Session.ExecStmt(`DROP TABLE IF EXISTS verification_tokens`); err != nil {
+		log.Printf("Failed to drop verification_tokens table: %v", err)
+		return err
+	}
+	log.Println("Dropped existing verification_tokens table")
+	
+	// Recreate the verification_tokens table with the correct schema
+	if err := Session.ExecStmt(`CREATE TABLE IF NOT EXISTS verification_tokens (
+		verification_token text PRIMARY KEY,
+		user_id bigint,
+		email text,
+		created_at timestamp,
+		expires_at timestamp
+	)`); err != nil {
+		log.Printf("Failed to create verification_tokens table: %v", err)
+		return err
+	}
+	log.Println("Created verification_tokens table with updated schema")
+	
+	return nil
+}
+
 // MigrateMessageSchema creates the new message types and updates the messages table

@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"golang.org/x/crypto/bcrypt"
@@ -18,6 +19,7 @@ import (
 	"github.com/StrafeChat/equinox/src/database/models"
 	"github.com/StrafeChat/equinox/src/helpers"
 	"github.com/StrafeChat/equinox/src/middleware"
+	"github.com/StrafeChat/equinox/src/services"
 	"github.com/StrafeChat/equinox/src/types"
 	"github.com/StrafeChat/equinox/src/validation"
 )
@@ -136,6 +138,25 @@ func RegisterPost(c fiber.Ctx) error {
 		}
 	}
 
+	// Check if email verification is enabled
+	emailVerificationEnabled := strings.ToLower(os.Getenv("ENABLE_EMAIL_VERIFICATION")) == "true"
+
+	if emailVerificationEnabled {
+		// Send verification email
+		emailService := services.NewEmailService()
+		if err := emailService.SendVerificationEmail(userId.String(), body.Email, body.Username); err != nil {
+			log.Printf("Error sending verification email: %v", err)
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+				"error": "An error occurred while sending verification email.",
+			})
+		}
+
+		return c.Status(fiber.StatusCreated).JSON(fiber.Map{
+			"message": "Registration successful. Please check your email to verify your account before logging in.",
+		})
+	}
+
+	// If email verification is disabled, create session immediately
 	token := helpers.GenerateSessionToken()
 	encryptedIP, err := helpers.Encrypt([]byte(middleware.GetRealIP(c)))
 	if err != nil {
@@ -155,7 +176,7 @@ func RegisterPost(c fiber.Ctx) error {
 		ExpiresAt: time.Now().Add(64 * time.Hour),
 	}
 
-	if err := insertSession(session); err != nil {
+	if sessionErr := insertSession(session); sessionErr != nil {
 		log.Printf("An error occurred while creating a session: %v", err)
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 			"error": "An internal server error occurred.",
