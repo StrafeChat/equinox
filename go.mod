@@ -98,8 +98,8 @@ require (
 	github.com/andybalholm/brotli v1.1.0 // indirect
 	github.com/go-redis/redis v6.15.9+incompatible
 	github.com/gocql/gocql v1.6.0
-	github.com/google/uuid v1.6.0 // indirect
-	github.com/klauspost/compress v1.18.0 // indirect
+	github.com/google/uuid v1.6.0
+	github.com/klauspost/compress v1.17.9 // indirect
 	github.com/mattn/go-colorable v0.1.13 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/mssola/user_agent v0.6.0

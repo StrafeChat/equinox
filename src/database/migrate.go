@@ -51,4 +51,37 @@ func MigrateVerificationTokensSchema() error {
 	return nil
 }
 
+// MigrateMessageAttachmentSchema updates the message_attachment UDT to include size field
+func MigrateMessageAttachmentSchema() error {
+	log.Println("Migrating message_attachment UDT schema...")
+	
+	// First, try to add the size field to the existing UDT
+	if err := Session.ExecStmt(`ALTER TYPE message_attachment ADD size bigint`); err != nil {
+		log.Printf("Size field might already exist in message_attachment: %v", err)
+		// If the field already exists, that's fine
+	} else {
+		log.Println("Added size field to message_attachment type")
+	}
+	
+	return nil
+}
+
+// MigrateFileSchema adds width and height columns to the files table
+func MigrateFileSchema() error {
+	log.Println("Migrating files table schema...")
+	
+	// Try to add width column if it doesn't exist
+	if err := Session.ExecStmt(`ALTER TABLE files ADD width int`); err != nil {
+		log.Printf("Width column might already exist in files table: %v", err)
+	}
+	
+	// Try to add height column if it doesn't exist
+	if err := Session.ExecStmt(`ALTER TABLE files ADD height int`); err != nil {
+		log.Printf("Height column might already exist in files table: %v", err)
+	}
+	
+	log.Println("Files table migration completed")
+	return nil
+}
+
 // MigrateMessageSchema creates the new message types and updates the messages table

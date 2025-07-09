@@ -90,9 +90,9 @@ func handleRoomIconUpdate(event RoomEvent) {
 	// Check if user has permission to update the room
 	var room types.Room
 	roomQ := models.RoomTable.SelectQuery(*database.Session)
-	if err := roomQ.BindMap(map[string]interface{}{
+	if roomErr := roomQ.BindMap(map[string]interface{}{
 		"id": event.RoomID,
-	}).GetRelease(&room); err != nil {
+	}).GetRelease(&room); roomErr != nil {
 		log.Printf("Failed to get room %s: %v", event.RoomID, err)
 		return
 	}
@@ -114,7 +114,7 @@ func handleRoomIconUpdate(event RoomEvent) {
 			"updated_at": time.Now(),
 		})
 
-	if err := updateStmt.ExecRelease(); err != nil {
+	if execErr := updateStmt.ExecRelease(); execErr != nil {
 		log.Printf("Failed to update room icon in database: %v", err)
 		return
 	}
@@ -129,7 +129,7 @@ func handleRoomIconUpdate(event RoomEvent) {
 		NewValue: &event.IconURL,
 	}
 
-	if err := helpers.CreateSystemMessage(event.RoomID, helpers.RoomIconChanged, systemData); err != nil {
+	if createErr := helpers.CreateSystemMessage(event.RoomID, helpers.RoomIconChanged, systemData); createErr != nil {
 		log.Printf("Failed to create system message for room icon change: %v", err)
 		// Don't return here - continue with room update event
 	} else {

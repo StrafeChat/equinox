@@ -199,7 +199,7 @@ func PasswordResetRequestPost(c fiber.Ctx) error {
 						"code": existingResets[i].Code,
 					})
 
-				if err := deleteQueryExec.ExecRelease(); err != nil {
+				if execErr := deleteQueryExec.ExecRelease(); execErr != nil {
 					log.Printf("Error deleting old reset code: %v", err)
 					// Continue anyway
 				}
@@ -236,7 +236,7 @@ func PasswordResetRequestPost(c fiber.Ctx) error {
 	query := models.PasswordResetTable.InsertBuilder().Query(*database.Session).
 		BindStruct(resetData)
 
-	if err := query.ExecRelease(); err != nil {
+	if execErr := query.ExecRelease(); execErr != nil {
 		log.Printf("Error storing password reset code in main table: %v", err)
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "An error occurred while processing your request."})
 	}
@@ -245,7 +245,7 @@ func PasswordResetRequestPost(c fiber.Ctx) error {
 	userQuery := models.PasswordResetByUserTable.InsertBuilder().Query(*database.Session).
 		BindStruct(resetData)
 
-	if err := userQuery.ExecRelease(); err != nil {
+	if execErr := userQuery.ExecRelease(); execErr != nil {
 		log.Printf("Error storing password reset code in by_user table: %v", err)
 		// Continue anyway as the main table insert succeeded
 	}
@@ -254,7 +254,7 @@ func PasswordResetRequestPost(c fiber.Ctx) error {
 	expirationQuery := models.PasswordResetByExpirationTable.InsertBuilder().Query(*database.Session).
 		BindStruct(resetData)
 
-	if err := expirationQuery.ExecRelease(); err != nil {
+	if execErr := expirationQuery.ExecRelease(); execErr != nil {
 		log.Printf("Error storing password reset code in by_expiration table: %v", err)
 		// Continue anyway as the main table insert succeeded
 	}
@@ -439,7 +439,7 @@ func PasswordResetCompletePost(c fiber.Ctx) error {
 			"password": passwordStr,
 		})
 
-	if err := updateQueryExec.ExecRelease(); err != nil {
+	if execErr := updateQueryExec.ExecRelease(); execErr != nil {
 		log.Printf("Error updating password: %v", err)
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "An error occurred while updating your password."})
 	}
@@ -472,7 +472,7 @@ func PasswordResetCompletePost(c fiber.Ctx) error {
 			"code": body.Code,
 		})
 
-	if err := deleteCodeQueryExec.ExecRelease(); err != nil {
+	if execErr := deleteCodeQueryExec.ExecRelease(); execErr != nil {
 		log.Printf("Error deleting reset code from main table: %v", err)
 		// Continue anyway as the password has been updated
 	}
@@ -488,7 +488,7 @@ func PasswordResetCompletePost(c fiber.Ctx) error {
 				"created_at": resetDataForDeletion.CreatedAt,
 			})
 
-		if err := deleteByUserQueryExec.ExecRelease(); err != nil {
+		if execErr := deleteByUserQueryExec.ExecRelease(); execErr != nil {
 			log.Printf("Error deleting reset code from by_user table: %v", err)
 			// Continue anyway
 		}
@@ -505,7 +505,7 @@ func PasswordResetCompletePost(c fiber.Ctx) error {
 				"code":       body.Code,
 			})
 
-		if err := deleteByExpirationQueryExec.ExecRelease(); err != nil {
+		if execErr := deleteByExpirationQueryExec.ExecRelease(); execErr != nil {
 			log.Printf("Error deleting reset code from by_expiration table: %v", err)
 			// Continue anyway
 		}

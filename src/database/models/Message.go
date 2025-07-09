@@ -12,6 +12,7 @@ type MessageAttachment struct {
 	Type   string `db:"type" json:"type"`
 	Height int    `db:"height" json:"height"`
 	Width  int    `db:"width" json:"width"`
+	Size   int64  `db:"size" json:"size"`
 }
 
 func (ma MessageAttachment) ToMap() map[string]interface{} {
@@ -21,6 +22,7 @@ func (ma MessageAttachment) ToMap() map[string]interface{} {
 		"type":   ma.Type,
 		"height": ma.Height,
 		"width":  ma.Width,
+		"size":   ma.Size,
 	}
 }
 
@@ -185,7 +187,8 @@ func (m *Message) SchemaDefinition() []string {
 		url text,
 		type text,
 		height int,
-		width int
+		width int,
+		size bigint
 	);`,
 		`CREATE TYPE IF NOT EXISTS message_embed_author (
 		name text,
