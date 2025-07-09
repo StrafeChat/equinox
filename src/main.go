@@ -32,11 +32,24 @@ func main() {
 	database.InitDB()
 	defer database.Session.Close()
 
+	// Run migration to update message_attachment UDT
+	if err := database.MigrateMessageAttachmentSchema(); err != nil {
+		log.Printf("Failed to migrate message_attachment schema: %v", err)
+	}
+
+	// Run migration to add width and height columns to files table
+	if err := database.MigrateFileSchema(); err != nil {
+		log.Printf("Failed to migrate files schema: %v", err)
+	}
+
 	// Start the password reset cleanup task
 	helpers.ScheduleCleanupTask()
 
 	// Start the room event listener
 	go events.StartRoomEventListener()
+
+	// Start the file event listener
+	go events.StartFileEventListener()
 
 	app := fiber.New(fiber.Config{
 		ErrorHandler: func(c fiber.Ctx, err error) error {

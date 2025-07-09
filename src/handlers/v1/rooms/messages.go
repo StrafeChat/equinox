@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -17,9 +18,10 @@ import (
 )
 
 type CreateMessageInput struct {
-	Content           string   `json:"content" validate:"required"`
+	Content           string   `json:"content"`
 	Nonce             string   `json:"nonce"`
 	MessageReferences []string `json:"message_references"`
+	Attachments       []string `json:"attachments"`
 }
 
 type GetMessagesQuery struct {
@@ -27,6 +29,48 @@ type GetMessagesQuery struct {
 	Before string `query:"before"`
 	After  string `query:"after"`
 	Around string `query:"around"`
+}
+
+// fetchAttachmentMetadata fetches file metadata directly from database
+func fetchAttachmentMetadata(attachmentID string) (map[string]interface{}, error) {
+	log.Printf("fetchAttachmentMetadata: Fetching metadata for attachment ID: %s", attachmentID)
+
+	// Query file metadata directly from database
+	var file models.File
+	if err := models.FileTable.SelectBuilder().
+		Columns("id", "filename", "mime_type", "size", "width", "height", "user_id", "stored_filename").
+		Where(qb.Eq("id")).
+		Query(*database.Session).
+		BindMap(qb.M{"id": attachmentID}).
+		GetRelease(&file); err != nil {
+		log.Printf("fetchAttachmentMetadata: Database query failed for ID %s: %v", attachmentID, err)
+		return nil, fmt.Errorf("failed to get file metadata from database: %v", err)
+	}
+
+	log.Printf("fetchAttachmentMetadata: Found file data - ID: %s, Filename: %s, MimeType: %s, Size: %d", file.ID, file.Filename, file.MimeType, file.Size)
+
+	// Transform the data to match the expected attachment format
+	attachmentData := map[string]interface{}{
+		"id":      file.ID,
+		"name":    file.Filename,
+		"url":     fmt.Sprintf("/attachments/%s/%s", file.UserID, file.StoredFilename),
+		"type":    file.MimeType,
+		"height":  0, // Default values for media dimensions
+		"width":   0,
+		"size":    file.Size,
+		"user_id": file.UserID,
+	}
+
+	// Set actual dimensions if available
+	if file.Width != nil {
+		attachmentData["width"] = *file.Width
+	}
+	if file.Height != nil {
+		attachmentData["height"] = *file.Height
+	}
+
+	log.Printf("fetchAttachmentMetadata: Returning attachment data: %+v", attachmentData)
+	return attachmentData, nil
 }
 
 // fetchMessagesFromIDs fetches full message details concurrently
@@ -137,6 +181,101 @@ func fetchMessagesFromIDs(messageIDs []string) ([]models.Message, error) {
 	return fullMessages, nil
 }
 
+// fetchAuthorDetails fetches user details for message authors concurrently
+func fetchAuthorDetails(authorIDs []string) (map[string]interface{}, error) {
+	if len(authorIDs) == 0 {
+		return make(map[string]interface{}), nil
+	}
+
+	// Remove duplicates
+	uniqueIDs := make(map[string]bool)
+	for _, id := range authorIDs {
+		if id != "" {
+			uniqueIDs[id] = true
+		}
+	}
+
+	// Convert to slice for concurrent processing
+	uniqueIDSlice := make([]string, 0, len(uniqueIDs))
+	for id := range uniqueIDs {
+		uniqueIDSlice = append(uniqueIDSlice, id)
+	}
+
+	// Use concurrent fetching with worker pool
+	const maxWorkers = 10
+	workers := len(uniqueIDSlice)
+	if workers > maxWorkers {
+		workers = maxWorkers
+	}
+
+	type authorResult struct {
+		id   string
+		user models.User
+		err  error
+	}
+
+	resultsChan := make(chan authorResult, len(uniqueIDSlice))
+	jobsChan := make(chan string, len(uniqueIDSlice))
+
+	// Start workers
+	var wg sync.WaitGroup
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for authorID := range jobsChan {
+				var user models.User
+				err := models.UserTable.SelectBuilder().
+					Columns("id", "username", "discriminator", "display_name", "avatar", "banner", "presence", "flags", "about_me", "bio", "bot").
+					Where(qb.Eq("id")).
+					Limit(1).
+					Query(*database.Session).
+					BindMap(qb.M{"id": authorID}).
+					GetRelease(&user)
+				resultsChan <- authorResult{id: authorID, user: user, err: err}
+			}
+		}()
+	}
+
+	// Send jobs
+	go func() {
+		defer close(jobsChan)
+		for _, authorID := range uniqueIDSlice {
+			jobsChan <- authorID
+		}
+	}()
+
+	// Wait for workers to complete
+	go func() {
+		wg.Wait()
+		close(resultsChan)
+	}()
+
+	// Collect results
+	authors := make(map[string]interface{})
+	for result := range resultsChan {
+		if result.err == nil {
+			authors[result.id] = fiber.Map{
+				"id":            result.user.ID,
+				"username":      result.user.Username,
+				"discriminator": result.user.Discriminator,
+				"display_name":  result.user.DisplayName,
+				"avatar":        result.user.Avatar,
+				"banner":        result.user.Banner,
+				"presence":      result.user.Presence,
+				"flags":         result.user.Flags,
+				"about_me":      result.user.AboutMe,
+				"bio":           result.user.Bio,
+				"bot":           result.user.Bot,
+			}
+		} else {
+			log.Printf("fetchAuthorDetails: Failed to fetch user %s: %v", result.id, result.err)
+		}
+	}
+
+	return authors, nil
+}
+
 func GetRoomMessages(c fiber.Ctx) error {
 	user := c.Locals("user").(models.User)
 	roomID := c.Params("id")
@@ -223,8 +362,8 @@ func GetRoomMessages(c fiber.Ctx) error {
 
 		// Execute both queries concurrently
 		type queryResult struct {
-			messages []models.MessagesByRoom
-			err      error
+			messages  []models.MessagesByRoom
+			err       error
 			queryType string
 		}
 
@@ -343,6 +482,15 @@ func GetRoomMessages(c fiber.Ctx) error {
 
 	log.Printf("GetRoomMessages: Successfully retrieved %d full messages", len(fullMessages))
 
+	// Debug: Check if any messages have attachments
+	for i, msg := range fullMessages {
+		if len(msg.Attachments) > 0 {
+			log.Printf("GetRoomMessages: Message %d has %d attachments: %+v", i, len(msg.Attachments), msg.Attachments)
+		} else {
+			log.Printf("GetRoomMessages: Message %d has no attachments", i)
+		}
+	}
+
 	// Reverse the order for 'after' queries to maintain chronological order
 	if query.After != "" {
 		log.Printf("GetRoomMessages: Reversing message order for 'after' query")
@@ -351,9 +499,65 @@ func GetRoomMessages(c fiber.Ctx) error {
 		}
 	}
 
-	log.Printf("GetRoomMessages: Completed successfully, returning %d messages", len(fullMessages))
+	// Collect unique author IDs from messages
+	authorIDs := make([]string, 0)
+	for _, msg := range fullMessages {
+		if msg.AuthorID != nil && *msg.AuthorID != "" {
+			authorIDs = append(authorIDs, *msg.AuthorID)
+		}
+	}
+
+	// Fetch author details
+	authors, err := fetchAuthorDetails(authorIDs)
+	if err != nil {
+		log.Printf("GetRoomMessages: Error fetching author details: %v", err)
+		// Continue without author details rather than failing the entire request
+		authors = make(map[string]interface{})
+	}
+
+	// Convert messages to interface{} slice and add author details + process attachments
+	messagesWithAuthors := make([]interface{}, len(fullMessages))
+	for i, msg := range fullMessages {
+		// Create a new map with the message data
+		msgWithAuthor := make(map[string]interface{})
+
+		// Copy all existing message fields
+		msgBytes, _ := json.Marshal(msg)
+		json.Unmarshal(msgBytes, &msgWithAuthor)
+
+		// Add author details if available
+		if msg.AuthorID != nil && *msg.AuthorID != "" {
+			if authorData, exists := authors[*msg.AuthorID]; exists {
+				msgWithAuthor["author"] = authorData
+			}
+		}
+
+		// Process attachments - they should already contain full data from database
+		if len(msg.Attachments) > 0 {
+			log.Printf("GetRoomMessages: Found %d attachments for message %s", len(msg.Attachments), msg.ID)
+			processedAttachments := make([]interface{}, 0, len(msg.Attachments))
+
+			for _, attachment := range msg.Attachments {
+				if attachment != nil {
+					// Attachments should already contain full data from database
+					processedAttachments = append(processedAttachments, *attachment)
+					log.Printf("GetRoomMessages: Attachment data: %+v", *attachment)
+				}
+			}
+
+			msgWithAuthor["attachments"] = processedAttachments
+			log.Printf("GetRoomMessages: Successfully processed %d attachments for message %s", len(processedAttachments), msg.ID)
+		} else {
+			// Ensure attachments field is an empty array instead of null
+			msgWithAuthor["attachments"] = []interface{}{}
+		}
+
+		messagesWithAuthors[i] = msgWithAuthor
+	}
+
+	log.Printf("GetRoomMessages: Completed successfully, returning %d messages with author details", len(messagesWithAuthors))
 	return c.Status(fiber.StatusOK).JSON(fiber.Map{
-		"messages": fullMessages,
+		"messages": messagesWithAuthors,
 	})
 }
 
@@ -375,6 +579,14 @@ func CreateMessage(c fiber.Ctx) error {
 		log.Printf("CreateMessage: Invalid request body: %v", err)
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
 			"message": "Invalid request body",
+		})
+	}
+
+	// Validate that either content or attachments are provided
+	if (body.Content == "" || strings.TrimSpace(body.Content) == "") && len(body.Attachments) == 0 {
+		log.Printf("CreateMessage: No content or attachments provided")
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"message": "Either content or attachments must be provided",
 		})
 	}
 	// Check if user has access to the room
@@ -434,6 +646,30 @@ func CreateMessage(c fiber.Ctx) error {
 	if len(body.MessageReferences) > 0 {
 		log.Printf("CreateMessage: Processing %d message references", len(body.MessageReferences))
 		message.MessageReferences = &body.MessageReferences
+	}
+
+	// Handle attachments
+	if len(body.Attachments) > 0 {
+		log.Printf("CreateMessage: Processing %d attachments", len(body.Attachments))
+		attachments := make([]*map[string]interface{}, 0, len(body.Attachments))
+
+		for _, attachmentID := range body.Attachments {
+			log.Printf("CreateMessage: Processing attachment ID: %s", attachmentID)
+			// Fetch attachment metadata from Nebula
+			attachmentData, err := fetchAttachmentMetadata(attachmentID)
+			if err != nil {
+				log.Printf("CreateMessage: Failed to fetch attachment metadata for ID %s: %v", attachmentID, err)
+				continue // Skip invalid attachments
+			}
+
+			log.Printf("CreateMessage: Fetched attachment data: %+v", attachmentData)
+			attachments = append(attachments, &attachmentData)
+		}
+
+		if len(attachments) > 0 {
+			message.Attachments = attachments
+			log.Printf("CreateMessage: Final attachments to store: %+v", attachments)
+		}
 	}
 
 	var wg sync.WaitGroup
