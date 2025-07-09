@@ -25,4 +25,8 @@ func SetupRoomsRoutes(verisonRouter *fiber.Group) {
 	router.Post("/:id/members", handlers_v1.AddMember)
 	router.Delete("/:id/members", handlers_v1.RemoveMember)
 	router.Post("/:id/transfer-ownership", handlers_v1.TransferOwnership)
+
+	// voice
+	router.Post("/join/:id", handlers_v1.JoinPost)
+
 }
