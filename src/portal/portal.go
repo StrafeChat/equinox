@@ -2,6 +2,7 @@ package portal
 
 import (
 	"context"
+	"log"
 	"os"
 	"slices"
 	"time"
@@ -17,6 +18,7 @@ var (
 )
 
 func InitPortal() error {
+	log.Println("Connecting to Livekit")
 
 	host := os.Getenv("LIVEKIT_HOST")
 	key := os.Getenv("LIVEKIT_API_KEY")
