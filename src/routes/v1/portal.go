@@ -1,10 +1,10 @@
 package routes_v1
 
 import (
-	"log"
 	"net/http"
 	"os"
 
+	"github.com/StrafeChat/equinox/src/portal"
 	"github.com/valyala/fasthttp/fasthttpadaptor"
 
 	"github.com/gofiber/fiber/v3"
@@ -43,9 +43,7 @@ func ServeHTTP(r *http.Request) {
 		// Could not validate, handle error
 		return
 	}
+
 	// Consume WebhookEvent
-	switch event.GetEvent() {
-	case "participant_joined":
-		log.Println("participant joined ", event.GetParticipant().Identity)
-	}
+	portal.ProcessWebhookEvent(event)
 }
