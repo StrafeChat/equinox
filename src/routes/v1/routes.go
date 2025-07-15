@@ -13,10 +13,7 @@ func SetupRoutes(app *fiber.App) {
 	SetupAuthRoutes(versionRouter)
 	SetupUsersRoutes(versionRouter)
 	SetupRoomsRoutes(versionRouter)
-<<<<<<< HEAD
+	SetupPortalRoutes(versionRouter)
 	SetupSpacesRoutes(versionRouter)
 	SetupInvitesRoutes(versionRouter)
-=======
-	SetupPortalRoutes(versionRouter)
->>>>>>> 51ab100ae19eff33e3733c6032e4d71977faaa27
 }
