@@ -17,6 +17,7 @@ import (
 	"github.com/StrafeChat/equinox/src/events"
 	"github.com/StrafeChat/equinox/src/helpers"
 	"github.com/StrafeChat/equinox/src/middleware"
+	"github.com/StrafeChat/equinox/src/portal"
 	"github.com/StrafeChat/equinox/src/routes"
 )
 
@@ -31,6 +32,9 @@ func main() {
 	/*_ Initialize Databases _*/
 	database.InitDB()
 	defer database.Session.Close()
+
+	/*_ Initialize Livekit Connection _*/
+	portal.InitPortal()
 
 	// Run migration to update message_attachment UDT
 	if err := database.MigrateMessageAttachmentSchema(); err != nil {
