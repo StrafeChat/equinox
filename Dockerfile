@@ -1,5 +1,5 @@
 # Dockerfile for equinox
-FROM golang:1.23
+FROM golang:1.24
 
 WORKDIR /app
 
