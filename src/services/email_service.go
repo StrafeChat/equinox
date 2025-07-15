@@ -8,9 +8,9 @@ import (
 	"os"
 	"time"
 
-	"github.com/resend/resend-go/v2"
 	"github.com/StrafeChat/equinox/src/database"
 	"github.com/StrafeChat/equinox/src/database/models"
+	"github.com/resend/resend-go/v2"
 )
 
 type EmailService struct{}

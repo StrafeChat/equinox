@@ -1,4 +1,5 @@
 package utils
+
 // IsValidStatus checks if the given status is valid
 func IsValidStatus(status string) bool {
 	switch status {

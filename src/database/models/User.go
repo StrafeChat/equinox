@@ -50,6 +50,7 @@ type User struct {
 	Bio           *string                `db:"bio" json:"bio"`
 	Flags         UserFlags              `db:"flags" json:"flags"`
 	Relationships []string               `db:"relationships" json:"relationships"`
+	Spaces        []int64                `db:"spaces" json:"spaces"`
 	DateOfBirth   *time.Time             `db:"date_of_birth" json:"date_of_birth"`
 	VerifiedEmail bool                   `db:"verified_email" json:"verified_email"`
 	AboutMe       *string                `db:"about_me" json:"about_me"`
@@ -62,7 +63,7 @@ type User struct {
 
 var userMetadata = table.Metadata{
 	Name:    "users",
-	Columns: []string{"id", "email", "password", "username", "discriminator", "display_name", "avatar", "banner", "bot", "system", "bio", "flags", "date_of_birth", "verified_email", "about_me", "accent_color", "locale", "presence", "created_at", "updated_at"},
+	Columns: []string{"id", "email", "password", "username", "discriminator", "display_name", "avatar", "banner", "bot", "system", "bio", "flags", "relationships", "spaces", "date_of_birth", "verified_email", "about_me", "accent_color", "locale", "presence", "created_at", "updated_at"},
 	PartKey: []string{"id"},
 }
 
@@ -90,6 +91,7 @@ func (u *User) SchemaDefinition() []string {
             bio text,
             flags int,
 			relationships set<bigint>,
+			spaces set<bigint>,
             date_of_birth timestamp,
 			verified_email boolean,
             about_me text,

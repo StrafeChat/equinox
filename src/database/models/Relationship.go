@@ -60,7 +60,7 @@ func (r *Relationship) UnmarshalJSON(data []byte) error {
 	if err := json.Unmarshal(data, &aux); err != nil {
 		return err
 	}
-	
+
 	var err error
 	if r.Id, err = strconv.ParseInt(aux.Id, 10, 64); err != nil {
 		return err

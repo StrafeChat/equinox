@@ -7,8 +7,8 @@ import (
 
 	"github.com/StrafeChat/equinox/src/database"
 	"github.com/StrafeChat/equinox/src/database/models"
+	"github.com/StrafeChat/equinox/src/utils"
 	"github.com/gofiber/fiber/v3"
-	"github.com/scylladb/gocqlx/v3/qb"
 )
 
 // HandleTypingIndicator processes typing indicator events and broadcasts them via Redis
@@ -25,29 +25,13 @@ func HandleTypingIndicator(c fiber.Ctx) error {
 	}
 
 	// Check if user has access to the room
-	var roomRecipients []models.RoomRecipientByUser
 	log.Printf("HandleTypingIndicator: Checking room access for user %s", user.ID)
-	if err := models.RoomRecipientByUserTable.SelectBuilder().
-		Columns("user_id", "room_id").
-		Where(qb.Eq("user_id")).
-		Query(*database.Session).
-		BindMap(qb.M{
-			"user_id": user.ID,
-		}).
-		SelectRelease(&roomRecipients); err != nil {
+	hasAccess, err := checkRoomAccess(roomID, user.ID, utils.SEND_MESSAGES)
+	if err != nil {
 		log.Printf("HandleTypingIndicator: Failed to check room access: %v", err)
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 			"message": "Failed to check room access",
 		})
-	}
-
-	// Check if the user is a recipient of the specified room
-	hasAccess := false
-	for _, recipient := range roomRecipients {
-		if recipient.RoomId == roomID {
-			hasAccess = true
-			break
-		}
 	}
 
 	log.Printf("HandleTypingIndicator: User %s has access to room %s: %v", user.ID, roomID, hasAccess)

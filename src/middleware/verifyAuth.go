@@ -163,7 +163,8 @@ func VerifyAuth() fiber.Handler {
 					}
 					return c.Status(500).SendString("Internal Server Error")
 				}
-				c.Locals("user", bot)
+				c.Locals("user", user)
+				c.Locals("bot", bot)
 			} else {
 				c.Locals("user", user)
 			}

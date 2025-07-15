@@ -7,11 +7,11 @@ import (
 )
 
 var (
-	userNode    *snowflake.Node
-	spaceNode   *snowflake.Node
-	roomNode    *snowflake.Node
-	roleNode    *snowflake.Node
-	messageNode *snowflake.Node
+	userNode         *snowflake.Node
+	spaceNode        *snowflake.Node
+	roomNode         *snowflake.Node
+	roleNode         *snowflake.Node
+	messageNode      *snowflake.Node
 	relationshipNode *snowflake.Node
 )
 

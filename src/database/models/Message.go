@@ -117,12 +117,12 @@ type MessageSudo struct {
 }
 
 type MessageSystemData struct {
-	Type      string                 `db:"type" json:"type"`
-	UserID    *string                `db:"user_id" json:"user_id,omitempty"`       // For member events
-	ActorID   *string                `db:"actor_id" json:"actor_id,omitempty"`     // Who performed the action
-	OldValue  *string                `db:"old_value" json:"old_value,omitempty"`   // For property changes
-	NewValue  *string                `db:"new_value" json:"new_value,omitempty"`   // For property changes
-	ExtraData string `db:"extra_data" json:"extra_data,omitempty"` // Additional data as JSON string
+	Type      string  `db:"type" json:"type"`
+	UserID    *string `db:"user_id" json:"user_id,omitempty"`       // For member events
+	ActorID   *string `db:"actor_id" json:"actor_id,omitempty"`     // Who performed the action
+	OldValue  *string `db:"old_value" json:"old_value,omitempty"`   // For property changes
+	NewValue  *string `db:"new_value" json:"new_value,omitempty"`   // For property changes
+	ExtraData string  `db:"extra_data" json:"extra_data,omitempty"` // Additional data as JSON string
 }
 
 func (ms MessageSudo) ToMap() map[string]interface{} {
@@ -148,12 +148,12 @@ type Message struct {
 	ID                string                    `db:"id" json:"id"`
 	Nonce             *string                   `db:"nonce" json:"nonce"`
 	RoomID            string                    `db:"room_id" json:"room_id"`
-	SpaceID           *string                   `db:"space_id" json:"space_id"`
+	SpaceID           *int64                    `db:"space_id" json:"space_id"`
 	AuthorID          *string                   `db:"author_id" json:"author_id"`
 	Content           *string                   `db:"content" json:"content"`
 	Type              *int                      `db:"type" json:"type"`
 	SystemType        *string                   `db:"system_type" json:"system_type"`
-	SystemData        *map[string]interface{} `db:"system_data" json:"system_data"`
+	SystemData        *map[string]interface{}   `db:"system_data" json:"system_data"`
 	System            bool                      `db:"system" json:"system"`
 	TTS               bool                      `db:"tts" json:"tts"`
 	Attachments       []*map[string]interface{} `db:"attachments" json:"attachments"`
@@ -168,8 +168,6 @@ type Message struct {
 	CreatedAt         time.Time                 `db:"created_at" json:"created_at"`
 	EditedAt          *time.Time                `db:"edited_at" json:"edited_at"`
 }
-
-
 
 var MessageMeta = table.Metadata{
 	Name:    "messages",

@@ -7,6 +7,7 @@ import (
 
 	"github.com/StrafeChat/equinox/src/database"
 	"github.com/StrafeChat/equinox/src/database/models"
+	"github.com/StrafeChat/equinox/src/utils"
 	"github.com/gofiber/fiber/v3"
 	"github.com/scylladb/gocqlx/v3/qb"
 )
@@ -38,29 +39,13 @@ func EditMessage(c fiber.Ctx) error {
 	}
 
 	// Check if user has access to the room
-	var roomRecipients []models.RoomRecipientByUser
 	log.Printf("EditMessage: Checking room access for user %s", user.ID)
-	if err := models.RoomRecipientByUserTable.SelectBuilder().
-		Columns("user_id", "room_id").
-		Where(qb.Eq("user_id")).
-		Query(*database.Session).
-		BindMap(qb.M{
-			"user_id": user.ID,
-		}).
-		SelectRelease(&roomRecipients); err != nil {
+	hasAccess, err := checkRoomAccess(roomID, user.ID, utils.READ_MESSAGE_HISTORY)
+	if err != nil {
 		log.Printf("EditMessage: Failed to check room access: %v", err)
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 			"message": "Failed to check room access",
 		})
-	}
-
-	// Check if the user is a recipient of the specified room
-	hasAccess := false
-	for _, recipient := range roomRecipients {
-		if recipient.RoomId == roomID {
-			hasAccess = true
-			break
-		}
 	}
 
 	log.Printf("EditMessage: User %s has access to room %s: %v", user.ID, roomID, hasAccess)
@@ -91,17 +76,42 @@ func EditMessage(c fiber.Ctx) error {
 		})
 	}
 
-	// Update the message content and set edited_at timestamp
+	// Parse mentions from the new content
+	mentions := utils.ParseMentions(body.Content)
+	
+	// Check if user has permission to mention @everyone
+	canMentionEveryone := false
+	if mentions.MentionEveryone {
+		userPermissions, err := getUserPermissionsForRoom(roomID, user.ID)
+		if err != nil {
+			log.Printf("EditMessage: Failed to get user permissions: %v", err)
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+				"message": "Failed to check permissions",
+			})
+		}
+		canMentionEveryone = utils.HasPermission(userPermissions, utils.MENTION_EVERYONE)
+	}
+	
+	// If user tries to mention @everyone without permission, remove it
+	if mentions.MentionEveryone && !canMentionEveryone {
+		mentions.MentionEveryone = false
+	}
+
+	// Update the message content and mentions
 	editedAt := time.Now()
 	if err := models.MessageTable.UpdateBuilder().
-		Set("content", "edited_at").
+		Set("content", "edited_at", "mention_everyone", "mention_roles", "mention_rooms", "mentions").
 		Where(qb.Eq("id")).
 		Query(*database.Session).
 		BindMap(qb.M{
-			"id":         messageID,
-			"content":    body.Content,
-			"edited_at":  editedAt,
-			"created_at": message.CreatedAt, // Include created_at from the original message as it's part of the primary key
+			"id":               messageID,
+			"content":          body.Content,
+			"edited_at":        editedAt,
+			"mention_everyone": mentions.MentionEveryone,
+			"mention_roles":    mentions.RoleMentions,
+			"mention_rooms":    mentions.RoomMentions,
+			"mentions":         mentions.UserMentions,
+			"created_at":       message.CreatedAt, // Include created_at from the original message as it's part of the primary key
 		}).ExecRelease(); err != nil {
 		log.Printf("EditMessage: Error updating message: %v", err)
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{

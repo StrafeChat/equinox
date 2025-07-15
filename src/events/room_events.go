@@ -64,6 +64,9 @@ func StartRoomEventListener() {
 		case "ROOM_ICON_UPDATE":
 			log.Printf("[StartRoomEventListener] Handling ROOM_ICON_UPDATE event")
 			go handleRoomIconUpdate(event)
+		case "ROOM_POSITIONS_UPDATE":
+			log.Printf("[StartRoomEventListener] Handling ROOM_POSITIONS_UPDATE event")
+			go handleRoomPositionsUpdate(event)
 		default:
 			log.Printf("[StartRoomEventListener] Unknown room event type: %s", event.Type)
 		}
@@ -159,6 +162,26 @@ func handleRoomIconUpdate(event RoomEvent) {
 	}
 
 	log.Printf("Published room update event for room %s", event.RoomID)
+}
+
+// handleRoomPositionsUpdate handles room positions update events
+func handleRoomPositionsUpdate(event RoomEvent) {
+	log.Printf("[handleRoomPositionsUpdate] Starting to handle room positions update")
+
+	// Check if room positions data exists
+	if _, ok := event.Data["room_positions"]; !ok {
+		log.Printf("[handleRoomPositionsUpdate] Missing room_positions data in event")
+		return
+	}
+
+	updatedBy, _ := event.Data["updated_by"].(string)
+
+	log.Printf("[handleRoomPositionsUpdate] Processing positions update by user %s", updatedBy)
+
+	// Note: We don't republish this event to avoid infinite loops.
+	// The original event published by the positions handler is sufficient
+	// for Stargate to broadcast to clients.
+	log.Printf("[handleRoomPositionsUpdate] Room positions update processed successfully")
 }
 
 // validateSessionToken validates a session token and returns the user ID

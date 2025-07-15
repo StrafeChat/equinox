@@ -52,6 +52,6 @@ func GetUser(c fiber.Ctx) error {
 	}
 
 	response := helpers.GetUserResponseFormat(user)
-	
+
 	return c.Status(fiber.StatusOK).JSON(response)
 }

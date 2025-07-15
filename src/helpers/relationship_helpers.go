@@ -54,7 +54,7 @@ func GetUserByID(userId int64) (models.User, error) {
 		BindMap(qb.M{
 			"id": userId,
 		})
-	
+
 	err := userQuery.GetRelease(&user)
 	return user, err
 }
@@ -201,7 +201,7 @@ func UpdateRelationships(recipient, sender *models.User, relationship models.Rel
 		Query(*database.Session).
 		BindMap(qb.M{
 			"relationships": recipient.Relationships,
-			"id":           recipient.ID,
+			"id":            recipient.ID,
 		}).
 		ExecRelease(); err != nil {
 		return err
@@ -219,7 +219,7 @@ func UpdateRelationships(recipient, sender *models.User, relationship models.Rel
 		Query(*database.Session).
 		BindMap(qb.M{
 			"relationships": sender.Relationships,
-			"id":           sender.ID,
+			"id":            sender.ID,
 		}).
 		ExecRelease(); err != nil {
 		return err
@@ -236,7 +236,7 @@ func DeleteRelationship(relationship models.Relationship, relationshipId string)
 		Query(*database.Session).
 		BindMap(qb.M{
 			"recipient_id": strconv.FormatInt(relationship.RecipientId, 10),
-			"id":          relationshipId,
+			"id":           relationshipId,
 		}).
 		ExecRelease(); err != nil {
 		return err
@@ -248,7 +248,7 @@ func DeleteRelationship(relationship models.Relationship, relationshipId string)
 		Query(*database.Session).
 		BindMap(qb.M{
 			"sender_id": strconv.FormatInt(relationship.SenderId, 10),
-			"id":       relationshipId,
+			"id":        relationshipId,
 		}).
 		ExecRelease(); err != nil {
 		return err
@@ -267,52 +267,52 @@ func DeleteRelationship(relationship models.Relationship, relationshipId string)
 }
 
 func RemoveRelationships(user1, user2 *models.User) error {
-    // Remove user2's ID from user1's relationships
-    if user1.Relationships != nil {
-        user2ID := user2.ID
-        newRelationships := make([]string, 0)
-        for _, id := range user1.Relationships {
-            if id != user2ID {
-                newRelationships = append(newRelationships, id)
-            }
-        }
-        user1.Relationships = newRelationships
+	// Remove user2's ID from user1's relationships
+	if user1.Relationships != nil {
+		user2ID := user2.ID
+		newRelationships := make([]string, 0)
+		for _, id := range user1.Relationships {
+			if id != user2ID {
+				newRelationships = append(newRelationships, id)
+			}
+		}
+		user1.Relationships = newRelationships
 
-        if err := models.UserTable.UpdateBuilder().
-            Set("relationships").
-            Where(qb.Eq("id")).
-            Query(*database.Session).
-            BindMap(qb.M{
-                "relationships": user1.Relationships,
-                "id":           user1.ID,
-            }).
-            ExecRelease(); err != nil {
-            return err
-        }
-    }
+		if err := models.UserTable.UpdateBuilder().
+			Set("relationships").
+			Where(qb.Eq("id")).
+			Query(*database.Session).
+			BindMap(qb.M{
+				"relationships": user1.Relationships,
+				"id":            user1.ID,
+			}).
+			ExecRelease(); err != nil {
+			return err
+		}
+	}
 
-    if user2.Relationships != nil {
-        user1ID := user1.ID
-        newRelationships := make([]string, 0)
-        for _, id := range user2.Relationships {
-            if id != user1ID {
-                newRelationships = append(newRelationships, id)
-            }
-        }
-        user2.Relationships = newRelationships
+	if user2.Relationships != nil {
+		user1ID := user1.ID
+		newRelationships := make([]string, 0)
+		for _, id := range user2.Relationships {
+			if id != user1ID {
+				newRelationships = append(newRelationships, id)
+			}
+		}
+		user2.Relationships = newRelationships
 
-        if err := models.UserTable.UpdateBuilder().
-            Set("relationships").
-            Where(qb.Eq("id")).
-            Query(*database.Session).
-            BindMap(qb.M{
-                "relationships": user2.Relationships,
-                "id":           user2.ID,
-            }).
-            ExecRelease(); err != nil {
-            return err
-        }
-    }
+		if err := models.UserTable.UpdateBuilder().
+			Set("relationships").
+			Where(qb.Eq("id")).
+			Query(*database.Session).
+			BindMap(qb.M{
+				"relationships": user2.Relationships,
+				"id":            user2.ID,
+			}).
+			ExecRelease(); err != nil {
+			return err
+		}
+	}
 
-    return nil
+	return nil
 }

@@ -111,6 +111,6 @@ func MeGet(c fiber.Ctx) error {
 	log.Printf("User: %+v", user)
 	log.Printf("Relationships: %+v", relationships)
 	log.Printf("Response: %+v", response)
-	
+
 	return c.Status(fiber.StatusOK).JSON(response)
 }

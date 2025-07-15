@@ -19,6 +19,9 @@ func SetupRoomsRoutes(verisonRouter *fiber.Group) {
 	router.Post("/:id/ack", handlers_v1.AcknowledgeMessages)
 	router.Post("/:id/typing", handlers_v1.HandleTypingIndicator)
 
+	// Room positions route (must come before /:id route)
+	router.Patch("/positions", handlers_v1.UpdateRoomPositions)
+
 	// Room management routes
 	router.Patch("/:id", handlers_v1.UpdateRoom)
 	router.Delete("/:id", handlers_v1.DeleteRoom)

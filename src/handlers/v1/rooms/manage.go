@@ -28,9 +28,10 @@ type TransferOwnershipInput struct {
 }
 
 type UpdateRoomInput struct {
-	Name  *string `json:"name,omitempty"`
-	Topic *string `json:"topic,omitempty"`
-	Icon  *string `json:"icon,omitempty"`
+	Name     *string `json:"name,omitempty"`
+	Topic    *string `json:"topic,omitempty"`
+	Icon     *string `json:"icon,omitempty"`
+	Position *int    `json:"position,omitempty"`
 }
 
 // DeleteRoom deletes a PM group (only by creator, unless they left)
@@ -841,10 +842,17 @@ func UpdateRoom(c fiber.Ctx) error {
 
 	log.Printf("UpdateRoom: Room found - type=%d, creator=%v, recipients=%v", room.Type, room.Creator, room.Recipients)
 
-	// Check if room is a group PM
-	if room.Type != types.RoomTypeGroupPM {
+	// Check if room is a group PM or space room/section for position updates
+	if room.Type != types.RoomTypeGroupPM && input.Position == nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
 			"message": "Can only update group PM settings",
+		})
+	}
+
+	// For position updates, allow space rooms and sections
+	if input.Position != nil && room.Type != types.RoomTypeTextRoom && room.Type != types.RoomTypeVoiceRoom && room.Type != types.RoomTypeSpaceSection {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"message": "Position can only be updated for space rooms and sections",
 		})
 	}
 
@@ -870,7 +878,7 @@ func UpdateRoom(c fiber.Ctx) error {
 	}
 
 	// Check if there are fields to update
-	if input.Name == nil && input.Topic == nil && input.Icon == nil {
+	if input.Name == nil && input.Topic == nil && input.Icon == nil && input.Position == nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
 			"message": "No fields to update",
 		})
@@ -901,12 +909,15 @@ func UpdateRoom(c fiber.Ctx) error {
 	if input.Icon != nil {
 		roomModel.Icon = input.Icon
 	}
+	if input.Position != nil {
+		roomModel.Position = input.Position
+	}
 	roomModel.UpdatedAt = time.Now()
 
 	// Update in database using the same pattern as UpdateProfile
 	// Always update all fields to keep it simple and consistent
 	updateStmt := models.RoomTable.UpdateBuilder().
-		Set("name", "topic", "icon", "updated_at").
+		Set("name", "topic", "icon", "position", "updated_at").
 		Where(qb.Eq("id")).
 		Query(*database.Session).
 		BindStruct(&roomModel)
@@ -940,6 +951,9 @@ func UpdateRoom(c fiber.Ctx) error {
 	}
 	if input.Icon != nil {
 		eventData["data"].(map[string]interface{})["icon"] = *input.Icon
+	}
+	if input.Position != nil {
+		eventData["data"].(map[string]interface{})["position"] = *input.Position
 	}
 
 	eventBytes, err := json.Marshal(eventData)

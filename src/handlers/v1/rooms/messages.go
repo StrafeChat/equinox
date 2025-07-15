@@ -12,7 +12,9 @@ import (
 	"github.com/StrafeChat/equinox/src/database"
 	"github.com/StrafeChat/equinox/src/database/models"
 	"github.com/StrafeChat/equinox/src/helpers"
+	"github.com/StrafeChat/equinox/src/repository"
 	"github.com/StrafeChat/equinox/src/types"
+	"github.com/StrafeChat/equinox/src/utils"
 	"github.com/gofiber/fiber/v3"
 	"github.com/scylladb/gocqlx/v3/qb"
 )
@@ -29,6 +31,109 @@ type GetMessagesQuery struct {
 	Before string `query:"before"`
 	After  string `query:"after"`
 	Around string `query:"around"`
+}
+
+// checkSpaceMemberPermission checks if a user has the required permission in a space
+func checkSpaceMemberPermission(spaceID int64, userID, permission string) (bool, error) {
+	spaceRolesRepo := repository.NewSpaceRolesRepository(database.Session)
+	memberRolesRepo := repository.NewSpaceMemberRolesRepository(*database.Session)
+
+	return spaceRolesRepo.HasPermission(spaceID, userID, permission, memberRolesRepo)
+}
+
+// getUserPermissionsForRoom gets all permissions for a user in a room
+func getUserPermissionsForRoom(roomID, userID string) ([]string, error) {
+	// First get the room details to check its type and space_id
+	var room types.Room
+	roomQuery := models.RoomTable.SelectQuery(*database.Session)
+	if err := roomQuery.BindMap(map[string]interface{}{
+		"id": roomID,
+	}).Exec(); err != nil {
+		log.Printf("getUserPermissionsForRoom: Failed to fetch room: %v", err)
+		return nil, err
+	}
+
+	if err := roomQuery.Get(&room); err != nil {
+		roomQuery.Release()
+		log.Printf("getUserPermissionsForRoom: Failed to get room details: %v", err)
+		return nil, err
+	}
+	roomQuery.Release()
+
+	// For textroom types (type 2), get space member permissions
+	if room.Type == types.RoomTypeTextRoom && room.SpaceID != nil {
+		spaceRolesRepo := repository.NewSpaceRolesRepository(database.Session)
+		memberRolesRepo := repository.NewSpaceMemberRolesRepository(*database.Session)
+
+		permissions, err := spaceRolesRepo.CalculateMemberPermissions(*room.SpaceID, userID, memberRolesRepo)
+		if err != nil {
+			log.Printf("getUserPermissionsForRoom: Failed to get space permissions: %v", err)
+			return []string{}, nil
+		}
+		return permissions, nil
+	}
+
+	// For PM/Group PM types, return basic permissions
+	if room.Type == types.RoomTypePM || room.Type == types.RoomTypeGroupPM {
+		return []string{utils.SEND_MESSAGES, utils.READ_MESSAGE_HISTORY}, nil
+	}
+
+	// For other room types, return empty permissions
+	return []string{}, nil
+}
+
+// checkRoomAccess checks if a user has access to a room based on room type
+func checkRoomAccess(roomID, userID string, permission string) (bool, error) {
+	// First get the room details to check its type and space_id
+	var room types.Room
+	roomQuery := models.RoomTable.SelectQuery(*database.Session)
+	if err := roomQuery.BindMap(map[string]interface{}{
+		"id": roomID,
+	}).Exec(); err != nil {
+		log.Printf("checkRoomAccess: Failed to fetch room: %v", err)
+		return false, err
+	}
+
+	if err := roomQuery.Get(&room); err != nil {
+		roomQuery.Release()
+		log.Printf("checkRoomAccess: Failed to get room details: %v", err)
+		return false, err
+	}
+	roomQuery.Release()
+
+	// For textroom types (type 2), check space member permissions
+	if room.Type == types.RoomTypeTextRoom && room.SpaceID != nil {
+		log.Printf("checkRoomAccess: Checking space member permission for textroom %s in space %d", roomID, *room.SpaceID)
+		return checkSpaceMemberPermission(*room.SpaceID, userID, permission)
+	}
+
+	// For PM/Group PM types (type 0, 1), check recipient permissions
+	if room.Type == types.RoomTypePM || room.Type == types.RoomTypeGroupPM {
+		log.Printf("checkRoomAccess: Checking recipient access for PM/Group PM room %s", roomID)
+		var roomRecipients []models.RoomRecipientByUser
+		if err := models.RoomRecipientByUserTable.SelectBuilder().
+			Columns("user_id", "room_id").
+			Where(qb.Eq("user_id")).
+			Query(*database.Session).
+			BindMap(qb.M{
+				"user_id": userID,
+			}).SelectRelease(&roomRecipients); err != nil {
+			log.Printf("checkRoomAccess: Failed to check room recipients: %v", err)
+			return false, err
+		}
+
+		// Check if the user is a recipient of the specified room
+		for _, recipient := range roomRecipients {
+			if recipient.RoomId == roomID {
+				return true, nil
+			}
+		}
+		return false, nil
+	}
+
+	// For other room types, deny access by default
+	log.Printf("checkRoomAccess: Unsupported room type %d for room %s", room.Type, roomID)
+	return false, nil
 }
 
 // fetchAttachmentMetadata fetches file metadata directly from database
@@ -299,39 +404,20 @@ func GetRoomMessages(c fiber.Ctx) error {
 	log.Printf("GetRoomMessages: Query parameters - Limit: %d, Before: %s, After: %s, Around: %s",
 		query.Limit, query.Before, query.After, query.Around)
 
-	// Check if user has access to the room
-	log.Printf("GetRoomMessages: Checking room access for user %s", user.ID)
-	var roomRecipients []models.RoomRecipientByUser
-	if err := models.RoomRecipientByUserTable.SelectBuilder().
-		Columns("user_id", "room_id").
-		Where(qb.Eq("user_id")).
-		Query(*database.Session).
-		BindMap(qb.M{
-			"user_id": user.ID,
-		}).
-		SelectRelease(&roomRecipients); err != nil {
+	// Check if user has access to the room and permission to read message history
+	log.Printf("GetRoomMessages: Checking room access and read message history permission for user %s", user.ID)
+	hasAccess, err := checkRoomAccess(roomID, user.ID, utils.READ_MESSAGE_HISTORY)
+	if err != nil {
 		log.Printf("GetRoomMessages: Failed to check room access: %v", err)
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 			"message": "Failed to check room access",
 		})
 	}
 
-	log.Printf("GetRoomMessages: Found %d room recipients for user %s", len(roomRecipients), user.ID)
-
-	// Check if the user is a recipient of the specified room
-	hasAccess := false
-	for _, recipient := range roomRecipients {
-		if recipient.RoomId == roomID {
-			hasAccess = true
-			log.Printf("GetRoomMessages: User %s has access to room %s", user.ID, roomID)
-			break
-		}
-	}
-
 	log.Printf("GetRoomMessages: User %s has access to room %s: %v", user.ID, roomID, hasAccess)
 	if !hasAccess {
 		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
-			"message": "You don't have access to this room",
+			"message": "You don't have permission to read message history in this room",
 		})
 	}
 
@@ -589,36 +675,20 @@ func CreateMessage(c fiber.Ctx) error {
 			"message": "Either content or attachments must be provided",
 		})
 	}
-	// Check if user has access to the room
-	var roomRecipients []models.RoomRecipientByUser
-	log.Printf("CreateMessage: Checking room access for user %s", user.ID)
-	if err := models.RoomRecipientByUserTable.SelectBuilder().
-		Columns("user_id", "room_id", "created_at", "last_seen").
-		Where(qb.Eq("user_id")).
-		Query(*database.Session).
-		BindMap(qb.M{
-			"user_id": user.ID,
-		}).
-		SelectRelease(&roomRecipients); err != nil {
+	// Check if user has access to the room and permission to send messages
+	log.Printf("CreateMessage: Checking room access and send message permission for user %s", user.ID)
+	hasAccess, err := checkRoomAccess(roomID, user.ID, utils.SEND_MESSAGES)
+	if err != nil {
 		log.Printf("CreateMessage: Failed to check room access: %v", err)
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 			"message": "Failed to check room access",
 		})
 	}
 
-	// Check if the user is a recipient of the specified room
-	hasAccess := false
-	for _, recipient := range roomRecipients {
-		if recipient.RoomId == roomID {
-			hasAccess = true
-			break
-		}
-	}
-
 	log.Printf("CreateMessage: User %s has access to room %s: %v", user.ID, roomID, hasAccess)
 	if !hasAccess {
 		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
-			"message": "You don't have access to this room",
+			"message": "You don't have permission to send messages in this room",
 		})
 	}
 	// Create message
@@ -627,13 +697,38 @@ func CreateMessage(c fiber.Ctx) error {
 
 	log.Printf("CreateMessage: Generated messageID=%s", messageID)
 
+	// Parse mentions from content
+	mentionResult := utils.ParseMentions(body.Content)
+	log.Printf("CreateMessage: Parsed mentions - Users: %v, Roles: %v, Rooms: %v, Everyone: %v",
+		mentionResult.UserMentions, mentionResult.RoleMentions, mentionResult.RoomMentions, mentionResult.MentionEveryone)
+
+	// Get user's permissions to validate @everyone mention
+	userPermissions, err := getUserPermissionsForRoom(roomID, user.ID)
+	if err != nil {
+		log.Printf("CreateMessage: Failed to get user permissions: %v", err)
+		userPermissions = []string{} // Default to no permissions
+	}
+
+	// Validate @everyone mention
+	canMentionEveryone := utils.ValidateEveryoneMention(userPermissions)
+	if mentionResult.MentionEveryone && !canMentionEveryone {
+		log.Printf("CreateMessage: User %s does not have permission to use @everyone", user.ID)
+		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
+			"message": "You don't have permission to mention @everyone",
+		})
+	}
+
 	message := models.Message{
-		ID:        messageID,
-		Content:   &body.Content,
-		Nonce:     &body.Nonce,
-		AuthorID:  &user.ID,
-		RoomID:    roomID,
-		CreatedAt: createdAt,
+		ID:              messageID,
+		Content:         &body.Content,
+		Nonce:           &body.Nonce,
+		AuthorID:        &user.ID,
+		RoomID:          roomID,
+		CreatedAt:       createdAt,
+		MentionRoles:    &mentionResult.RoleMentions,
+		MentionRooms:    &mentionResult.RoomMentions,
+		Mentions:        &mentionResult.UserMentions,
+		MentionEveryone: mentionResult.MentionEveryone && canMentionEveryone,
 		// UpdatedAt: createdAt,
 	}
 
@@ -795,29 +890,13 @@ func DeleteMessage(c fiber.Ctx) error {
 	}
 
 	// Check if user has access to the room
-	var roomRecipients []models.RoomRecipientByUser
 	log.Printf("DeleteMessage: Checking room access for user %s", user.ID)
-	if err := models.RoomRecipientByUserTable.SelectBuilder().
-		Columns("user_id", "room_id").
-		Where(qb.Eq("user_id")).
-		Query(*database.Session).
-		BindMap(qb.M{
-			"user_id": user.ID,
-		}).
-		SelectRelease(&roomRecipients); err != nil {
+	hasAccess, err := checkRoomAccess(roomID, user.ID, utils.READ_MESSAGE_HISTORY)
+	if err != nil {
 		log.Printf("DeleteMessage: Failed to check room access: %v", err)
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 			"message": "Failed to check room access",
 		})
-	}
-
-	// Check if the user is a recipient of the specified room
-	hasAccess := false
-	for _, recipient := range roomRecipients {
-		if recipient.RoomId == roomID {
-			hasAccess = true
-			break
-		}
 	}
 
 	log.Printf("DeleteMessage: User %s has access to room %s: %v", user.ID, roomID, hasAccess)

@@ -14,11 +14,11 @@ type RelationshipsDeleteParams struct {
 }
 
 type RelationshipEvent struct {
-	Type      string `json:"type"`
-	ID        string `json:"id"`
-	SenderId  string `json:"sender_id"`
+	Type        string `json:"type"`
+	ID          string `json:"id"`
+	SenderId    string `json:"sender_id"`
 	RecipientId string `json:"recipient_id"`
-	CreatedAt int64 `json:"created_at"`
+	CreatedAt   int64  `json:"created_at"`
 }
 
 const (
