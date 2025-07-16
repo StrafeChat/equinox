@@ -9,6 +9,15 @@ import (
 	"github.com/StrafeChat/equinox/src/database"
 )
 
+// SpaceUpdateEvent represents a space update event
+type SpaceUpdateEvent struct {
+	Type      string                 `json:"type"`
+	SpaceID   int64                  `json:"space_id"`
+	Updates   map[string]interface{} `json:"updates"`
+	UpdatedBy string                 `json:"updated_by"`
+	Timestamp int64                  `json:"timestamp"`
+}
+
 // PublishSpaceCreateEvent publishes a space creation event to Redis
 func PublishSpaceCreateEvent(spaceData map[string]interface{}) error {
 	log.Printf("[PublishSpaceCreateEvent] Publishing space create event: SpaceID=%s", spaceData["id"])
@@ -158,5 +167,33 @@ func PublishSpaceRoleDeleteEvent(spaceID int64, roleID string, deletedBy string)
 	}
 
 	log.Printf("[PublishSpaceRoleDeleteEvent] Successfully published role delete event for space %d, role %s", spaceID, roleID)
+	return nil
+}
+
+// PublishSpaceUpdate publishes a space update event to Redis
+func PublishSpaceUpdate(event SpaceUpdateEvent) error {
+	log.Printf("[PublishSpaceUpdate] Publishing space update event: SpaceID=%d", event.SpaceID)
+
+	// Create space update event
+	spaceUpdateEvent := map[string]interface{}{
+		"type":       event.Type,
+		"space_id":   strconv.FormatInt(event.SpaceID, 10),
+		"sender_id":  event.UpdatedBy,
+		"data":       event.Updates,
+		"created_at": event.Timestamp,
+	}
+
+	eventBytes, err := json.Marshal(spaceUpdateEvent)
+	if err != nil {
+		log.Printf("[PublishSpaceUpdate] Failed to marshal space update event: %v", err)
+		return err
+	}
+
+	if err := database.Rdb.Publish("SPACE_EVENTS", string(eventBytes)).Err(); err != nil {
+		log.Printf("[PublishSpaceUpdate] Failed to publish space update event: %v", err)
+		return err
+	}
+
+	log.Printf("[PublishSpaceUpdate] Successfully published space update event")
 	return nil
 }

@@ -24,7 +24,7 @@ type CreateInviteInput struct {
 type InviteResponse struct {
 	ID        string       `json:"id"`
 	Code      string       `json:"code"`
-	SpaceID   int64        `json:"space_id"`
+	SpaceID   string       `json:"space_id"`
 	InviterID string       `json:"inviter_id"`
 	MaxUses   *int         `json:"max_uses,omitempty"`
 	Uses      int          `json:"uses"`
@@ -203,7 +203,7 @@ func CreateInvite(c fiber.Ctx) error {
 	response := InviteResponse{
 		ID:        invite.ID,
 		Code:      invite.Code,
-		SpaceID:   invite.SpaceID,
+		SpaceID:   strconv.FormatInt(invite.SpaceID, 10),
 		InviterID: invite.InviterID,
 		MaxUses:   invite.MaxUses,
 		Uses:      invite.Uses,
@@ -290,7 +290,7 @@ func GetSpaceInvites(c fiber.Ctx) error {
 		response := InviteResponse{
 			ID:        invite.ID,
 			Code:      invite.Code,
-			SpaceID:   invite.SpaceID,
+			SpaceID:   strconv.FormatInt(invite.SpaceID, 10),
 			InviterID: invite.InviterID,
 			MaxUses:   invite.MaxUses,
 			Uses:      invite.Uses,
@@ -471,7 +471,7 @@ func UseInvite(c fiber.Ctx) error {
 
 	return c.JSON(fiber.Map{
 		"message":  fmt.Sprintf("Successfully joined %s", space.Name),
-		"space_id": space.ID,
+		"space_id": strconv.FormatInt(space.ID, 10),
 		"space":    space,
 	})
 }
@@ -537,7 +537,7 @@ func GetInviteInfo(c fiber.Ctx) error {
 
 	// Return invite info
 	return c.JSON(fiber.Map{
-		"space_id":             space.ID,
+		"space_id":             strconv.FormatInt(space.ID, 10),
 		"space_name":           space.Name,
 		"space_icon":           space.Icon,
 		"space_banner":         space.Banner,

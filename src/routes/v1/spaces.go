@@ -20,6 +20,9 @@ func SetupSpacesRoutes(versionRouter *fiber.Group) {
 	// GET /spaces/:id - Get specific space details
 	router.Get("/:id", spaces.GetSpace)
 
+	// PATCH /spaces/:id - Update space details
+	router.Patch("/:id", spaces.UpdateSpace)
+
 	// Space Members Routes
 	router.Get("/:id/members", spaces.GetSpaceMembers)
 	router.Patch("/:id/members/:userId/roles", spaces.UpdateMemberRoles)

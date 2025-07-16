@@ -62,19 +62,29 @@ func (r *SpaceRepository) UpdateSpace(spaceID int64, updates map[string]interfac
 		return fmt.Errorf("no updates provided")
 	}
 
-	updateBuilder := models.SpaceTable.UpdateBuilder().Where(qb.Eq("id"))
-	for field := range updates {
+	// Build update query - don't add extra WHERE clause as UpdateBuilder already handles primary key
+	updateBuilder := models.SpaceTable.UpdateBuilder()
+	
+	// Collect fields and values in deterministic order
+	var setValues []interface{}
+	for field, value := range updates {
 		updateBuilder = updateBuilder.Set(field)
+		setValues = append(setValues, value)
 	}
-
+	
+	// Build the query
 	query := updateBuilder.Query(*r.session)
-	values := make([]interface{}, 0, len(updates)+1)
-	for _, value := range updates {
-		values = append(values, value)
-	}
-	values = append(values, spaceID)
-
-	if err := query.Bind(values...).ExecRelease(); err != nil {
+	
+	// Debug logging
+	log.Printf("[UpdateSpace] Query: %s", query.String())
+	log.Printf("[UpdateSpace] SET values count: %d, values: %+v", len(setValues), setValues)
+	log.Printf("[UpdateSpace] WHERE value (spaceID): %d", spaceID)
+	
+	// Bind SET values first, then WHERE value (primary key)
+	allValues := append(setValues, spaceID)
+	log.Printf("[UpdateSpace] All values count: %d, values: %+v", len(allValues), allValues)
+	
+	if err := query.Bind(allValues...).ExecRelease(); err != nil {
 		log.Printf("[UpdateSpace] Error updating space %d: %v", spaceID, err)
 		return err
 	}

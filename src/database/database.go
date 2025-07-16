@@ -43,6 +43,11 @@ func InitDB() error {
 		log.Printf("Room schema migration completed with warnings: %v", err)
 	}
 
+	// Run spaces schema migration
+	if err := MigrateSpacesSchema(); err != nil {
+		log.Printf("Spaces schema migration completed with warnings: %v", err)
+	}
+
 	// Run verification tokens schema migration
 	if err := MigrateVerificationTokensSchema(); err != nil {
 		log.Printf("Verification tokens schema migration failed: %v", err)

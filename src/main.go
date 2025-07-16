@@ -65,6 +65,9 @@ func main() {
 	// Start the file event listener
 	go events.StartFileEventListener()
 
+	// Start the space event listener
+	go events.StartSpaceEventListener()
+
 	app := fiber.New(fiber.Config{
 		ErrorHandler: func(c fiber.Ctx, err error) error {
 			log.Printf("Error in request: %v", err)
