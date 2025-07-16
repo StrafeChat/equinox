@@ -7,9 +7,12 @@ import (
 )
 
 func SetupInvitesRoutes(versionRouter *fiber.Group) {
+	// Public invite routes (no auth required)
+	publicRouter := versionRouter.Group("/invite")
+	publicRouter.Get("/:code", spaces.GetInviteInfo)
+
 	// Authenticated invite routes
 	authRouter := versionRouter.Group("/invite")
 	authRouter.Use(middleware.VerifyAuth())
 	authRouter.Post("/:code/use", spaces.UseInvite)
-	authRouter.Get("/:code", spaces.GetInviteInfo)
 }
