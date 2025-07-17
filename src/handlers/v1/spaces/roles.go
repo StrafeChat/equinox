@@ -143,9 +143,15 @@ func CreateRole(c fiber.Ctx) error {
 		})
 	}
 
-	// Check if user is space owner or has manage roles permission
-	if !isSpaceOwner(spaceID, user.ID) {
-		// TODO: Check for manage roles permission
+	// Check if user has permission to manage roles
+	hasPermission, err := utils.CheckPermissionFromContext(database.Session, user.ID, strconv.FormatInt(spaceID, 10), utils.MANAGE_ROLES)
+	if err != nil {
+		log.Printf("[CreateRole] Error checking permissions: %v", err)
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"error": "Failed to check permissions",
+		})
+	}
+	if !hasPermission {
 		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
 			"error": "You don't have permission to manage roles",
 		})
@@ -252,22 +258,18 @@ func UpdateRole(c fiber.Ctx) error {
 	user := c.Locals("user").(models.User)
 	userID := user.ID
 
-	// Check if user has permission to manage roles or is space owner
-	if !isSpaceOwner(spaceID, userID) {
-		rolesRepo := repository.NewSpaceRolesRepository(database.Session)
-		memberRolesRepo := repository.NewSpaceMemberRolesRepository(*database.Session)
-		hasPermission, err := rolesRepo.HasPermission(spaceID, userID, utils.MANAGE_ROLES, memberRolesRepo)
-		if err != nil {
-			log.Printf("Error checking permission: %v", err)
-			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-				"error": "Internal server error",
-			})
-		}
-		if !hasPermission {
-			return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
-				"error": "Forbidden",
-			})
-		}
+	// Check if user has permission to manage roles
+	hasPermission, err := utils.CheckPermissionFromContext(database.Session, userID, strconv.FormatInt(spaceID, 10), utils.MANAGE_ROLES)
+	if err != nil {
+		log.Printf("[UpdateRole] Error checking permissions: %v", err)
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"error": "Failed to check permissions",
+		})
+	}
+	if !hasPermission {
+		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
+			"error": "You don't have permission to manage roles",
+		})
 	}
 
 	var req UpdateRoleRequest
@@ -366,22 +368,18 @@ func DeleteRole(c fiber.Ctx) error {
 	user := c.Locals("user").(models.User)
 	userID := user.ID
 
-	// Check if user has permission to manage roles or is space owner
-	if !isSpaceOwner(spaceID, userID) {
-		rolesRepo := repository.NewSpaceRolesRepository(database.Session)
-		memberRolesRepo := repository.NewSpaceMemberRolesRepository(*database.Session)
-		hasPermission, err := rolesRepo.HasPermission(spaceID, userID, utils.MANAGE_ROLES, memberRolesRepo)
-		if err != nil {
-			log.Printf("Error checking permission: %v", err)
-			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-				"error": "Internal server error",
-			})
-		}
-		if !hasPermission {
-			return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
-				"error": "Forbidden",
-			})
-		}
+	// Check if user has permission to manage roles
+	hasPermission, err := utils.CheckPermissionFromContext(database.Session, userID, strconv.FormatInt(spaceID, 10), utils.MANAGE_ROLES)
+	if err != nil {
+		log.Printf("[DeleteRole] Error checking permissions: %v", err)
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"error": "Failed to check permissions",
+		})
+	}
+	if !hasPermission {
+		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
+			"error": "You don't have permission to manage roles",
+		})
 	}
 
 	// Delete role using the new system that removes it from all members
@@ -441,22 +439,18 @@ func AddRoleToMember(c fiber.Ctx) error {
 	user := c.Locals("user").(models.User)
 	userID := user.ID
 
-	// Check if user has permission to manage roles or is space owner
-	if !isSpaceOwner(spaceID, userID) {
-		rolesRepo := repository.NewSpaceRolesRepository(database.Session)
-		memberRolesRepo := repository.NewSpaceMemberRolesRepository(*database.Session)
-		hasPermission, err := rolesRepo.HasPermission(spaceID, userID, utils.MANAGE_ROLES, memberRolesRepo)
-		if err != nil {
-			log.Printf("Error checking permission: %v", err)
-			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-				"error": "Internal server error",
-			})
-		}
-		if !hasPermission {
-			return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
-				"error": "Forbidden",
-			})
-		}
+	// Check if user has permission to manage roles
+	hasPermission, err := utils.CheckPermissionFromContext(database.Session, userID, strconv.FormatInt(spaceID, 10), utils.MANAGE_ROLES)
+	if err != nil {
+		log.Printf("[AddRoleToMember] Error checking permissions: %v", err)
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"error": "Failed to check permissions",
+		})
+	}
+	if !hasPermission {
+		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
+			"error": "You don't have permission to manage roles",
+		})
 	}
 
 	// Add role to member using the new junction table
@@ -504,22 +498,18 @@ func RemoveRoleFromMember(c fiber.Ctx) error {
 	user := c.Locals("user").(models.User)
 	userID := user.ID
 
-	// Check if user has permission to manage roles or is space owner
-	if !isSpaceOwner(spaceID, userID) {
-		rolesRepo := repository.NewSpaceRolesRepository(database.Session)
-		memberRolesRepo := repository.NewSpaceMemberRolesRepository(*database.Session)
-		hasPermission, err := rolesRepo.HasPermission(spaceID, userID, utils.MANAGE_ROLES, memberRolesRepo)
-		if err != nil {
-			log.Printf("Error checking permission: %v", err)
-			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-				"error": "Internal server error",
-			})
-		}
-		if !hasPermission {
-			return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
-				"error": "Forbidden",
-			})
-		}
+	// Check if user has permission to manage roles
+	hasPermission, err := utils.CheckPermissionFromContext(database.Session, userID, strconv.FormatInt(spaceID, 10), utils.MANAGE_ROLES)
+	if err != nil {
+		log.Printf("[RemoveRoleFromMember] Error checking permissions: %v", err)
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"error": "Failed to check permissions",
+		})
+	}
+	if !hasPermission {
+		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
+			"error": "You don't have permission to manage roles",
+		})
 	}
 
 	// Remove role from member using the new junction table
@@ -572,9 +562,7 @@ func CheckUserPermission(c fiber.Ctx) error {
 	}
 
 	// Check if user has the requested permission
-	rolesRepo := repository.NewSpaceRolesRepository(database.Session)
-	memberRolesRepo := repository.NewSpaceMemberRolesRepository(*database.Session)
-	hasPermission, err := rolesRepo.HasPermission(spaceID, user.ID, permission, memberRolesRepo)
+	hasPermission, err := utils.CheckPermissionFromContext(database.Session, user.ID, strconv.FormatInt(spaceID, 10), permission)
 	if err != nil {
 		log.Printf("Error checking permission: %v", err)
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{

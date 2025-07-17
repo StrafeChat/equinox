@@ -9,6 +9,7 @@ import (
 	"github.com/StrafeChat/equinox/src/database/models"
 	"github.com/StrafeChat/equinox/src/events"
 	"github.com/StrafeChat/equinox/src/repository"
+	"github.com/StrafeChat/equinox/src/utils"
 	"github.com/gofiber/fiber/v3"
 	"github.com/scylladb/gocqlx/v2/qb"
 )
@@ -158,9 +159,15 @@ func UpdateMemberRoles(c fiber.Ctx) error {
 		})
 	}
 
-	// Check if user has permission to manage roles (owner or has manage roles permission)
-	if !isSpaceOwner(spaceID, user.ID) {
-		// TODO: Add proper permission checking for manage roles
+	// Check if user has permission to manage roles
+	hasPermission, err := utils.CheckPermissionFromContext(database.Session, user.ID, strconv.FormatInt(spaceID, 10), utils.MANAGE_ROLES)
+	if err != nil {
+		log.Printf("[UpdateMemberRoles] Error checking permissions: %v", err)
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"error": "Failed to check permissions",
+		})
+	}
+	if !hasPermission {
 		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
 			"error": "You don't have permission to manage roles",
 		})
@@ -243,9 +250,15 @@ func KickMember(c fiber.Ctx) error {
 		})
 	}
 
-	// Check if user has permission to kick members (owner or has kick members permission)
-	if !isSpaceOwner(spaceID, user.ID) {
-		// TODO: Add proper permission checking for kick members
+	// Check if user has permission to kick members
+	hasPermission, err := utils.CheckPermissionFromContext(database.Session, user.ID, strconv.FormatInt(spaceID, 10), utils.KICK_MEMBERS)
+	if err != nil {
+		log.Printf("[KickMember] Error checking permissions: %v", err)
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"error": "Failed to check permissions",
+		})
+	}
+	if !hasPermission {
 		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
 			"error": "You don't have permission to kick members",
 		})

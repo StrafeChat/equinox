@@ -12,7 +12,6 @@ import (
 	"github.com/StrafeChat/equinox/src/database"
 	"github.com/StrafeChat/equinox/src/database/models"
 	"github.com/StrafeChat/equinox/src/helpers"
-	"github.com/StrafeChat/equinox/src/repository"
 	"github.com/StrafeChat/equinox/src/types"
 	"github.com/StrafeChat/equinox/src/utils"
 	"github.com/gofiber/fiber/v3"
@@ -56,10 +55,12 @@ func getUserPermissionsForRoom(roomID, userID string) ([]string, error) {
 
 	// For textroom types (type 2), get space member permissions
 	if room.Type == types.RoomTypeTextRoom && room.SpaceID != nil {
-		spaceRolesRepo := repository.NewSpaceRolesRepository(database.Session)
-		memberRolesRepo := repository.NewSpaceMemberRolesRepository(*database.Session)
-
-		permissions, err := spaceRolesRepo.CalculateMemberPermissions(*room.SpaceID, userID, memberRolesRepo)
+		userIDInt, err := strconv.ParseInt(userID, 10, 64)
+		if err != nil {
+			log.Printf("getUserPermissionsForRoom: Invalid user ID: %v", err)
+			return []string{}, nil
+		}
+		permissions, err := utils.GetUserPermissionsInSpace(database.Session, userIDInt, *room.SpaceID)
 		if err != nil {
 			log.Printf("getUserPermissionsForRoom: Failed to get space permissions: %v", err)
 			return []string{}, nil
@@ -98,10 +99,7 @@ func checkRoomAccess(roomID, userID string, permission string) (bool, error) {
 	// For textroom types (type 2), check space member permissions
 	if room.Type == types.RoomTypeTextRoom && room.SpaceID != nil {
 		log.Printf("checkRoomAccess: Checking space member permission for textroom %s in space %d", roomID, *room.SpaceID)
-		spaceRolesRepo := repository.NewSpaceRolesRepository(database.Session)
-		memberRolesRepo := repository.NewSpaceMemberRolesRepository(*database.Session)
-
-		return spaceRolesRepo.HasPermission(*room.SpaceID, userID, permission, memberRolesRepo)
+		return utils.CheckPermissionFromContext(database.Session, userID, strconv.FormatInt(*room.SpaceID, 10), permission)
 	}
 
 	// For PM/Group PM types (type 0, 1), check recipient permissions

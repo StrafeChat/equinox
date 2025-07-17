@@ -11,8 +11,8 @@ import (
 	"github.com/StrafeChat/equinox/src/database/models"
 	"github.com/StrafeChat/equinox/src/events"
 	"github.com/StrafeChat/equinox/src/helpers"
-	"github.com/StrafeChat/equinox/src/repository"
 	"github.com/StrafeChat/equinox/src/types"
+	"github.com/StrafeChat/equinox/src/utils"
 	"github.com/gocql/gocql"
 	"github.com/gofiber/fiber/v3"
 )
@@ -58,11 +58,7 @@ func CreateSpaceRoom(c fiber.Ctx) error {
 	}
 
 	// Check if user has permission to manage channels
-	userIDStr := user.ID
-	spaceRolesRepo := repository.NewSpaceRolesRepository(database.Session)
-		memberRolesRepo := repository.NewSpaceMemberRolesRepository(*database.Session)
-
-	hasPermission, err := spaceRolesRepo.HasPermission(spaceID, userIDStr, "MANAGE_CHANNELS", memberRolesRepo)
+	hasPermission, err := utils.CheckPermissionFromContext(database.Session, user.ID, strconv.FormatInt(spaceID, 10), utils.MANAGE_CHANNELS)
 	if err != nil {
 		log.Printf("[CreateSpaceRoom] Error checking permissions: %v", err)
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
