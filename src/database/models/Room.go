@@ -15,16 +15,16 @@ var roomMeta = table.Metadata{
 var RoomTable = table.New(roomMeta)
 
 type Room struct {
-	ID            string    `db:"id" json:"id"`
-	Creator       *string   `db:"creator" json:"creator"`
-	Recipients    []string  `db:"recipients" json:"recipients"`
+	ID            int64     `db:"id" json:"id"`
+	Creator       *int64    `db:"creator" json:"creator"`
+	Recipients    []int64   `db:"recipients" json:"recipients"`
 	Type          int       `db:"type" json:"type"`
 	SpaceID       *int64    `db:"space_id" json:"space_id"`
-	ParentID      *string   `db:"parent_id" json:"parent_id"`
+	ParentID      *int64    `db:"parent_id" json:"parent_id"`
 	Name          *string   `db:"name" json:"name"`
 	Topic         *string   `db:"topic" json:"topic"`
 	Icon          *string   `db:"icon" json:"icon"`
-	LastMessageId *string   `db:"last_message_id" json:"last_message_id"`
+	LastMessageId *int64    `db:"last_message_id" json:"last_message_id"`
 	Position      *int      `db:"position" json:"position"`
 	CreatedAt     time.Time `db:"created_at" json:"created_at"`
 	UpdatedAt     time.Time `db:"updated_at" json:"updated_at"`

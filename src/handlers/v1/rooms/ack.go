@@ -3,6 +3,7 @@ package handlers_v1
 import (
 	"fmt"
 	"log"
+	"strconv"
 	"time"
 
 	"github.com/StrafeChat/equinox/src/database"
@@ -99,19 +100,20 @@ func AddUnreadMessage(roomID string, messageID string, senderID string) error {
 
 	// Add unread entry for each recipient except the sender and online users
 	for _, recipientID := range room.Recipients {
-		if recipientID == senderID {
+		recipientIDStr := strconv.FormatInt(recipientID, 10)
+		if recipientIDStr == senderID {
 			continue
 		}
 
 		// Check if user is online via Redis
-		onlineStatus, err := database.Rdb.Get(fmt.Sprintf("user:%s:online", recipientID)).Result()
+		onlineStatus, err := database.Rdb.Get(fmt.Sprintf("user:%s:online", recipientIDStr)).Result()
 		if err == nil && onlineStatus == "true" {
 			// Skip creating unread entry for online users
 			continue
 		}
 
 		unread := models.MessageUnread{
-			UserID:    recipientID,
+			UserID:    recipientIDStr,
 			RoomID:    roomID,
 			MessageID: messageID,
 			CreatedAt: time.Now(),
@@ -120,7 +122,7 @@ func AddUnreadMessage(roomID string, messageID string, senderID string) error {
 		if err := models.MessageUnreadTable.InsertQuery(*database.Session).
 			BindStruct(unread).
 			Exec(); err != nil {
-			log.Printf("AddUnreadMessage: Failed to add unread message for user %s: %v", recipientID, err)
+			log.Printf("AddUnreadMessage: Failed to add unread message for user %s: %v", recipientIDStr, err)
 		}
 	}
 

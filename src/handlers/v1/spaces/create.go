@@ -3,6 +3,7 @@ package spaces
 import (
 	"fmt"
 	"log"
+	"strconv"
 	"time"
 
 	"github.com/StrafeChat/equinox/src/database"
@@ -22,14 +23,19 @@ type CreateSpaceInput struct {
 }
 
 // createDefaultRoomsAndSections creates the default rooms and sections for a new space
-func createDefaultRoomsAndSections(spaceID int64, userID string) error {
+func createDefaultRoomsAndSections(spaceID int64, userID string) ([]models.Room, error) {
 	now := time.Now()
+	userIDInt64, err := strconv.ParseInt(userID, 10, 64)
+	if err != nil {
+		return nil, fmt.Errorf("invalid user ID: %v", err)
+	}
 
 	// Create Text Rooms section
+	textRoomsSectionID := helpers.GenerateRoomID().Int64()
 	textRoomsSection := models.Room{
-		ID:         helpers.GenerateRoomID().String(),
-		Creator:    &userID,
-		Recipients: []string{},
+		ID:         textRoomsSectionID,
+		Creator:    &userIDInt64,
+		Recipients: []int64{},
 		Type:       types.RoomTypeSpaceSection,
 		SpaceID:    &spaceID,
 		Name:       helpers.StringPtr("Text Rooms"),
@@ -39,10 +45,11 @@ func createDefaultRoomsAndSections(spaceID int64, userID string) error {
 	}
 
 	// Create Voice Rooms section
+	voiceRoomsSectionID := helpers.GenerateRoomID().Int64()
 	voiceRoomsSection := models.Room{
-		ID:         helpers.GenerateRoomID().String(),
-		Creator:    &userID,
-		Recipients: []string{},
+		ID:         voiceRoomsSectionID,
+		Creator:    &userIDInt64,
+		Recipients: []int64{},
 		Type:       types.RoomTypeSpaceSection,
 		SpaceID:    &spaceID,
 		Name:       helpers.StringPtr("Voice Rooms"),
@@ -53,12 +60,12 @@ func createDefaultRoomsAndSections(spaceID int64, userID string) error {
 
 	// Create General text room
 	generalTextRoom := models.Room{
-		ID:         helpers.GenerateRoomID().String(),
-		Creator:    &userID,
-		Recipients: []string{},
+		ID:         helpers.GenerateRoomID().Int64(),
+		Creator:    &userIDInt64,
+		Recipients: []int64{},
 		Type:       types.RoomTypeTextRoom,
 		SpaceID:    &spaceID,
-		ParentID:   &textRoomsSection.ID,
+		ParentID:   &textRoomsSectionID,
 		Name:       helpers.StringPtr("General"),
 		Topic:      helpers.StringPtr("General text room"),
 		CreatedAt:  now,
@@ -67,12 +74,12 @@ func createDefaultRoomsAndSections(spaceID int64, userID string) error {
 
 	// Create General voice room
 	generalVoiceRoom := models.Room{
-		ID:         helpers.GenerateRoomID().String(),
-		Creator:    &userID,
-		Recipients: []string{},
+		ID:         helpers.GenerateRoomID().Int64(),
+		Creator:    &userIDInt64,
+		Recipients: []int64{},
 		Type:       types.RoomTypeVoiceRoom,
 		SpaceID:    &spaceID,
-		ParentID:   &voiceRoomsSection.ID,
+		ParentID:   &voiceRoomsSectionID,
 		Name:       helpers.StringPtr("General"),
 		Topic:      helpers.StringPtr("General voice room"),
 		CreatedAt:  now,
@@ -85,11 +92,11 @@ func createDefaultRoomsAndSections(spaceID int64, userID string) error {
 		query := models.RoomTable.InsertBuilder().Query(*database.Session).BindStruct(room)
 		if err := query.ExecRelease(); err != nil {
 			log.Printf("Failed to create default room %s: %v", *room.Name, err)
-			return err
+			return nil, err
 		}
 	}
 
-	return nil
+	return rooms, nil
 }
 
 func CreateSpace(c fiber.Ctx) error {
@@ -210,9 +217,81 @@ func CreateSpace(c fiber.Ctx) error {
 	}
 
 	// Create default rooms and sections
-	if err := createDefaultRoomsAndSections(spaceID, user.ID); err != nil {
+	createdRooms, err := createDefaultRoomsAndSections(spaceID, user.ID)
+	if err != nil {
 		log.Printf("Failed to create default rooms and sections: %v", err)
 		// Continue anyway, this is not critical for space creation
+		createdRooms = []models.Room{}
+	}
+
+	// Use the created rooms directly
+	rooms := createdRooms
+	log.Printf("Using %d created rooms for space %d", len(rooms), spaceID)
+
+	// Convert rooms to event format
+	roomsData := make([]map[string]interface{}, len(rooms))
+	for i, room := range rooms {
+		// Convert int64 IDs to strings for JSON
+		var creatorStr *string
+		if room.Creator != nil {
+			creatorStrVal := strconv.FormatInt(*room.Creator, 10)
+			creatorStr = &creatorStrVal
+		}
+		
+		var parentIDStr *string
+		if room.ParentID != nil {
+			parentIDStrVal := strconv.FormatInt(*room.ParentID, 10)
+			parentIDStr = &parentIDStrVal
+		}
+		
+		var lastMessageIDStr *string
+		if room.LastMessageId != nil {
+			lastMessageIDStrVal := strconv.FormatInt(*room.LastMessageId, 10)
+			lastMessageIDStr = &lastMessageIDStrVal
+		}
+		
+		// Convert recipients array
+		recipientsStr := make([]string, len(room.Recipients))
+		for j, recipient := range room.Recipients {
+			recipientsStr[j] = strconv.FormatInt(recipient, 10)
+		}
+		
+		roomsData[i] = map[string]interface{}{
+			"id":              strconv.FormatInt(room.ID, 10),
+			"creator":         creatorStr,
+			"recipients":      recipientsStr,
+			"type":            room.Type,
+			"space_id":        room.SpaceID,
+			"parent_id":       parentIDStr,
+			"name":            room.Name,
+			"topic":           room.Topic,
+			"last_message_id": lastMessageIDStr,
+			"position":        room.Position,
+			"created_at":      room.CreatedAt,
+			"updated_at":      room.UpdatedAt,
+		}
+	}
+
+	// Fetch space members for the event
+	var members []models.SpaceMember
+	memberQuery = qb.Select("*").From("space_members").Where(qb.Eq("space_id")).Query(*database.Session).Bind(spaceID)
+	if err := memberQuery.SelectRelease(&members); err != nil {
+		log.Printf("Failed to fetch space members: %v", err)
+		members = []models.SpaceMember{} // Continue with empty members array
+	}
+
+	// Convert members to event format
+	membersData := make([]map[string]interface{}, len(members))
+	for i, member := range members {
+		membersData[i] = map[string]interface{}{
+			"space_id":  member.SpaceID,
+			"user_id":   member.UserID,
+			"joined_at": member.JoinedAt,
+			"deaf":      member.Deaf,
+			"mute":      member.Mute,
+			"flags":     member.Flags,
+			"pending":   member.Pending,
+		}
 	}
 
 	// Publish space creation event to Redis for Stargate to broadcast
@@ -242,6 +321,8 @@ func CreateSpace(c fiber.Ctx) error {
 		"nsfw_level":                    space.NsfwLevel,
 		"created_at":                    space.CreatedAt,
 		"updated_at":                    space.UpdatedAt,
+		"rooms":                         roomsData,
+		"members":                       membersData,
 	}
 
 	if err := events.PublishSpaceCreateEvent(spaceEventData); err != nil {

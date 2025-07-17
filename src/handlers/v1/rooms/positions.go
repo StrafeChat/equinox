@@ -3,6 +3,7 @@ package handlers_v1
 import (
 	"encoding/json"
 	"log"
+	"strconv"
 	"time"
 
 	"github.com/StrafeChat/equinox/src/database"
@@ -136,7 +137,19 @@ func UpdateRoomPositions(c fiber.Ctx) error {
 		// Update parent_id if it was explicitly provided (including null for orphaning)
 		if shouldUpdateParentID {
 			log.Printf("UpdateRoomPositions: Updating parent_id for room %s from %v to %v", roomPos.RoomID, roomModel.ParentID, roomPos.ParentID)
-			roomModel.ParentID = roomPos.ParentID
+			if roomPos.ParentID != nil {
+				parentID, err := strconv.ParseInt(*roomPos.ParentID, 10, 64)
+				if err != nil {
+					log.Printf("UpdateRoomPositions: Invalid parent_id format for room %s: %v", roomPos.RoomID, err)
+					return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+						"message": "Invalid parent_id format",
+						"error":   err.Error(),
+					})
+				}
+				roomModel.ParentID = &parentID
+			} else {
+				roomModel.ParentID = nil
+			}
 		} else {
 			log.Printf("UpdateRoomPositions: No parent_id provided for room %s, keeping current: %v", roomPos.RoomID, roomModel.ParentID)
 		}
@@ -191,11 +204,11 @@ func UpdateRoomPositions(c fiber.Ctx) error {
 		} else {
 			// Include the actual updated data
 			updatedRoomPositions[i] = map[string]interface{}{
-				"room_id":  updatedRoom.ID,
+				"room_id":  strconv.FormatInt(updatedRoom.ID, 10),
 				"position": *updatedRoom.Position,
 			}
 			if updatedRoom.ParentID != nil {
-				updatedRoomPositions[i]["parent_id"] = *updatedRoom.ParentID
+				updatedRoomPositions[i]["parent_id"] = strconv.FormatInt(*updatedRoom.ParentID, 10)
 			} else {
 				updatedRoomPositions[i]["parent_id"] = nil
 			}
