@@ -1,6 +1,6 @@
 package models
 
-import "github.com/scylladb/gocqlx/v3/table"
+import "github.com/scylladb/gocqlx/v2/table"
 
 var relationshipBySenderMeta = table.Metadata{
 	Name:    "relationships_by_sender",

@@ -8,7 +8,7 @@ import (
 
 	"github.com/go-redis/redis"
 	"github.com/gocql/gocql"
-	"github.com/scylladb/gocqlx/v3"
+	"github.com/scylladb/gocqlx/v2"
 
 	"github.com/StrafeChat/equinox/src/database/models"
 )

@@ -1,7 +1,7 @@
 package models
 
 import (
-	"github.com/scylladb/gocqlx/v3/table"
+	"github.com/scylladb/gocqlx/v2/table"
 )
 
 var botbyTokenTableMeta = table.Metadata{

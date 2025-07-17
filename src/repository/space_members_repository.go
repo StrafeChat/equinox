@@ -6,8 +6,8 @@ import (
 	"time"
 
 	"github.com/gocql/gocql"
-	"github.com/scylladb/gocqlx/v3"
-	"github.com/scylladb/gocqlx/v3/qb"
+	"github.com/scylladb/gocqlx/v2"
+	"github.com/scylladb/gocqlx/v2/qb"
 
 	"github.com/StrafeChat/equinox/src/database/models"
 )
@@ -60,14 +60,23 @@ func (r *SpaceMembersRepository) IsMember(spaceID int64, userID string) (bool, e
 		return false, fmt.Errorf("database session not initialized")
 	}
 
-	var count int
-	query := r.session.Query("SELECT COUNT(*) FROM space_members WHERE space_id = ? AND user_id = ?", []string{})
-	if err := query.Bind(spaceID, userID).Scan(&count); err != nil {
+	// Try to get the member directly - more efficient than COUNT
+	var member models.SpaceMember
+	query := models.SpaceMemberTable.SelectBuilder().
+		Columns("space_id"). // Only select one column for efficiency
+		Where(qb.Eq("space_id"), qb.Eq("user_id")).
+		Query(*r.session)
+	
+	err := query.BindMap(qb.M{"space_id": spaceID, "user_id": userID}).GetRelease(&member)
+	if err != nil {
+		if err == gocql.ErrNotFound {
+			return false, nil
+		}
 		log.Printf("[IsMember] Error checking membership for user %s in space %d: %v", userID, spaceID, err)
 		return false, err
 	}
 
-	return count > 0, nil
+	return true, nil
 }
 
 func (r *SpaceMembersRepository) AddMember(spaceID int64, userID string) error {
@@ -142,30 +151,22 @@ func (r *SpaceMembersRepository) UpdateMember(spaceID int64, userID string, upda
 		return fmt.Errorf("no updates provided")
 	}
 
-	// Build update query manually to avoid gocqlx binding issues
-	var setParts []string
-	var values []interface{}
+	// Use gocqlx UpdateBuilder for proper query construction
+	updateBuilder := models.SpaceMemberTable.UpdateBuilder().
+		Where(qb.Eq("space_id"), qb.Eq("user_id"))
 	
-	// Build SET clauses and collect values
+	// Add SET clauses for each update field
 	for field, value := range updates {
-		setParts = append(setParts, field+" = ?")
-		values = append(values, value)
+		updateBuilder = updateBuilder.Set(field)
+		updates[field] = value // Ensure the value is in the updates map for binding
 	}
 	
-	// Add WHERE clause values
-	values = append(values, spaceID, userID)
+	// Add WHERE clause values to the updates map
+	updates["space_id"] = spaceID
+	updates["user_id"] = userID
 	
-	// Construct the full query
-	setClause := "SET " + setParts[0]
-	for i := 1; i < len(setParts); i++ {
-		setClause += ", " + setParts[i]
-	}
-	
-	cqlQuery := fmt.Sprintf("UPDATE space_members %s WHERE space_id = ? AND user_id = ?", setClause)
-	log.Printf("[UpdateMember] Executing query: %s with values: %v", cqlQuery, values)
-	
-	query := r.session.Query(cqlQuery, []string{})
-	if err := query.Bind(values...).ExecRelease(); err != nil {
+	query := updateBuilder.Query(*r.session)
+	if err := query.BindMap(updates).ExecRelease(); err != nil {
 		log.Printf("[UpdateMember] Error updating member %s in space %d: %v", userID, spaceID, err)
 		return err
 	}

@@ -11,7 +11,7 @@ import (
 	"github.com/StrafeChat/equinox/src/helpers"
 	"github.com/StrafeChat/equinox/src/types"
 	"github.com/gofiber/fiber/v3"
-	"github.com/scylladb/gocqlx/v3/qb"
+	"github.com/scylladb/gocqlx/v2/qb"
 )
 
 type AddMemberInput struct {

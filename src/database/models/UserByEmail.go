@@ -1,6 +1,6 @@
 package models
 
-import "github.com/scylladb/gocqlx/v3/table"
+import "github.com/scylladb/gocqlx/v2/table"
 
 var userByEmailTableMetadata = table.Metadata{
 	Name:    "users_by_email",

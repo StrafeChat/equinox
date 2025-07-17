@@ -5,7 +5,7 @@ import (
 
 	"github.com/StrafeChat/equinox/src/database/models"
 	"github.com/StrafeChat/equinox/src/repository"
-	"github.com/scylladb/gocqlx/v3/qb"
+	"github.com/scylladb/gocqlx/v2/qb"
 )
 
 // SpaceMemberWithRoles represents the old SpaceMember structure with roles field

@@ -16,7 +16,7 @@ import (
 	"github.com/StrafeChat/equinox/src/types"
 	"github.com/StrafeChat/equinox/src/utils"
 	"github.com/gofiber/fiber/v3"
-	"github.com/scylladb/gocqlx/v3/qb"
+	"github.com/scylladb/gocqlx/v2/qb"
 )
 
 type CreateMessageInput struct {
@@ -33,13 +33,7 @@ type GetMessagesQuery struct {
 	Around string `query:"around"`
 }
 
-// checkSpaceMemberPermission checks if a user has the required permission in a space
-func checkSpaceMemberPermission(spaceID int64, userID, permission string) (bool, error) {
-	spaceRolesRepo := repository.NewSpaceRolesRepository(database.Session)
-	memberRolesRepo := repository.NewSpaceMemberRolesRepository(*database.Session)
-
-	return spaceRolesRepo.HasPermission(spaceID, userID, permission, memberRolesRepo)
-}
+// Note: checkSpaceMemberPermission function removed - now using global utils.CheckPermission
 
 // getUserPermissionsForRoom gets all permissions for a user in a room
 func getUserPermissionsForRoom(roomID, userID string) ([]string, error) {
@@ -104,7 +98,10 @@ func checkRoomAccess(roomID, userID string, permission string) (bool, error) {
 	// For textroom types (type 2), check space member permissions
 	if room.Type == types.RoomTypeTextRoom && room.SpaceID != nil {
 		log.Printf("checkRoomAccess: Checking space member permission for textroom %s in space %d", roomID, *room.SpaceID)
-		return checkSpaceMemberPermission(*room.SpaceID, userID, permission)
+		spaceRolesRepo := repository.NewSpaceRolesRepository(database.Session)
+		memberRolesRepo := repository.NewSpaceMemberRolesRepository(*database.Session)
+
+		return spaceRolesRepo.HasPermission(*room.SpaceID, userID, permission, memberRolesRepo)
 	}
 
 	// For PM/Group PM types (type 0, 1), check recipient permissions

@@ -13,7 +13,7 @@ import (
 	"github.com/StrafeChat/equinox/src/repository"
 	"github.com/StrafeChat/equinox/src/types"
 	"github.com/gofiber/fiber/v3"
-	"github.com/scylladb/gocqlx/v3/qb"
+	"github.com/scylladb/gocqlx/v2/qb"
 )
 
 type CreateSpaceInput struct {
@@ -58,6 +58,10 @@ func createDefaultRoomsAndSections(spaceID int64, userID string) ([]models.Room,
 		UpdatedAt:  now,
 	}
 
+	// Convert section IDs to strings for ParentID
+	textRoomsSectionIDStr := strconv.FormatInt(textRoomsSectionID, 10)
+	voiceRoomsSectionIDStr := strconv.FormatInt(voiceRoomsSectionID, 10)
+
 	// Create General text room
 	generalTextRoom := models.Room{
 		ID:         helpers.GenerateRoomID().Int64(),
@@ -65,7 +69,7 @@ func createDefaultRoomsAndSections(spaceID int64, userID string) ([]models.Room,
 		Recipients: []int64{},
 		Type:       types.RoomTypeTextRoom,
 		SpaceID:    &spaceID,
-		ParentID:   &textRoomsSectionID,
+		ParentID:   &textRoomsSectionIDStr,
 		Name:       helpers.StringPtr("General"),
 		Topic:      helpers.StringPtr("General text room"),
 		CreatedAt:  now,
@@ -79,7 +83,7 @@ func createDefaultRoomsAndSections(spaceID int64, userID string) ([]models.Room,
 		Recipients: []int64{},
 		Type:       types.RoomTypeVoiceRoom,
 		SpaceID:    &spaceID,
-		ParentID:   &voiceRoomsSectionID,
+		ParentID:   &voiceRoomsSectionIDStr,
 		Name:       helpers.StringPtr("General"),
 		Topic:      helpers.StringPtr("General voice room"),
 		CreatedAt:  now,
@@ -240,8 +244,7 @@ func CreateSpace(c fiber.Ctx) error {
 		
 		var parentIDStr *string
 		if room.ParentID != nil {
-			parentIDStrVal := strconv.FormatInt(*room.ParentID, 10)
-			parentIDStr = &parentIDStrVal
+			parentIDStr = room.ParentID
 		}
 		
 		var lastMessageIDStr *string

@@ -6,11 +6,10 @@ import (
 	"time"
 
 	"github.com/gocql/gocql"
-	"github.com/scylladb/gocqlx/v3"
-	"github.com/scylladb/gocqlx/v3/qb"
+	"github.com/scylladb/gocqlx/v2"
+	"github.com/scylladb/gocqlx/v2/qb"
 
 	"github.com/StrafeChat/equinox/src/database/models"
-	"github.com/StrafeChat/equinox/src/utils"
 )
 
 type SpaceRolesRepository struct {
@@ -114,7 +113,7 @@ func (r *SpaceRolesRepository) UpdateRole(spaceID int64, roleID string, updates 
 	updateBuilder := qb.Update("space_roles")
 	var fields []string
 	var values []interface{}
-	
+
 	// Collect fields and values in the same order
 	for field, value := range updates {
 		fields = append(fields, field)
@@ -164,9 +163,63 @@ func (r *SpaceRolesRepository) DeleteRole(spaceID int64, roleID string, memberRo
 	return nil
 }
 
+// getDefaultEveryonePermissions returns the default permissions for @everyone role
+func getDefaultEveryonePermissions() []string {
+	return []string{
+		"VIEW_CHANNELS",
+		"SEND_MESSAGES",
+		"READ_MESSAGE_HISTORY",
+		"ADD_REACTIONS",
+		"ATTACH_FILES",
+		"EMBED_LINKS",
+		"CONNECT",
+		"SPEAK",
+		"USE_VOICE_ACTIVATION",
+	}
+}
+
+// hasPermission checks if a user has a specific permission
+func hasPermission(userPermissions []string, permission string) bool {
+	// Administrator has all permissions
+	for _, perm := range userPermissions {
+		if perm == "ADMINISTRATOR" {
+			return true
+		}
+	}
+
+	// Check for specific permission
+	for _, perm := range userPermissions {
+		if perm == permission {
+			return true
+		}
+	}
+
+	return false
+}
+
+// calculatePermissions calculates the final permissions for a user based on their roles
+func calculatePermissions(rolePermissions [][]string) []string {
+	permissionSet := make(map[string]bool)
+
+	// Combine all permissions from all roles
+	for _, rolePerms := range rolePermissions {
+		for _, perm := range rolePerms {
+			permissionSet[perm] = true
+		}
+	}
+
+	// Convert map to slice
+	permissions := make([]string, 0, len(permissionSet))
+	for perm := range permissionSet {
+		permissions = append(permissions, perm)
+	}
+
+	return permissions
+}
+
 // CreateDefaultEveryoneRole creates the default @everyone role for a space
 func (r *SpaceRolesRepository) CreateDefaultEveryoneRole(spaceID int64) error {
-	defaultPermissions := utils.GetDefaultEveryonePermissions()
+	defaultPermissions := getDefaultEveryonePermissions()
 	color := "#99aab5"
 	now := time.Now()
 	role := models.SpaceRole{
@@ -237,7 +290,7 @@ func (r *SpaceRolesRepository) CalculateMemberPermissions(spaceID int64, userID 
 	}
 
 	// Calculate combined permissions
-	return utils.CalculatePermissions(rolePermissions), nil
+	return calculatePermissions(rolePermissions), nil
 }
 
 // HasPermission checks if a member has a specific permission using the new role system
@@ -247,7 +300,7 @@ func (r *SpaceRolesRepository) HasPermission(spaceID int64, userID, permission s
 		return false, err
 	}
 
-	return utils.HasPermission(permissions, permission), nil
+	return hasPermission(permissions, permission), nil
 }
 
 // Note: Role assignment methods have been moved to SpaceMemberRolesRepository

@@ -9,9 +9,10 @@ import (
 	"github.com/StrafeChat/equinox/src/database"
 	"github.com/StrafeChat/equinox/src/database/models"
 	"github.com/StrafeChat/equinox/src/types"
+	"github.com/StrafeChat/equinox/src/utils"
 	"github.com/gofiber/fiber/v3"
-	"github.com/scylladb/gocqlx/v3"
-	"github.com/scylladb/gocqlx/v3/qb"
+	"github.com/scylladb/gocqlx/v2"
+	"github.com/scylladb/gocqlx/v2/qb"
 )
 
 type UpdatePositionsInput struct {
@@ -42,6 +43,30 @@ func UpdateRoomPositions(c fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
 			"message": "No room positions provided",
 		})
+	}
+
+	// Get space_id from the first room (all rooms should be in the same space)
+	var spaceID *int64
+	if len(input.RoomPositions) > 0 {
+		var firstRoom types.Room
+		firstRoomQ := models.RoomTable.SelectQuery(*database.Session)
+		if err := firstRoomQ.BindMap(map[string]interface{}{
+			"id": input.RoomPositions[0].RoomID,
+		}).Exec(); err != nil {
+			log.Printf("UpdateRoomPositions: Failed to execute room query for space_id: %v", err)
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+				"message": "Failed to fetch room for space validation",
+				"error":   err.Error(),
+			})
+		}
+		if err := firstRoomQ.Get(&firstRoom); err != nil {
+			log.Printf("UpdateRoomPositions: First room not found: %v", err)
+			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
+				"message": "Room not found: " + input.RoomPositions[0].RoomID,
+				"error":   err.Error(),
+			})
+		}
+		spaceID = firstRoom.SpaceID
 	}
 
 	// Validate that user has permission to update all rooms
@@ -77,7 +102,7 @@ func UpdateRoomPositions(c fiber.Ctx) error {
 		// Check if user has permission to manage channels in the space
 		if room.SpaceID != nil {
 			// Check if user has MANAGE_CHANNELS permission in the space
-			hasPermission, err := checkSpaceMemberPermission(*room.SpaceID, user.ID, "MANAGE_CHANNELS")
+			hasPermission, err := utils.CheckPermissionFromContext(database.Session, user.ID, strconv.FormatInt(*room.SpaceID, 10), utils.MANAGE_CHANNELS)
 			if err != nil {
 				log.Printf("UpdateRoomPositions: Failed to check permissions for user %s in space %d: %v", user.ID, *room.SpaceID, err)
 				return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
@@ -137,19 +162,7 @@ func UpdateRoomPositions(c fiber.Ctx) error {
 		// Update parent_id if it was explicitly provided (including null for orphaning)
 		if shouldUpdateParentID {
 			log.Printf("UpdateRoomPositions: Updating parent_id for room %s from %v to %v", roomPos.RoomID, roomModel.ParentID, roomPos.ParentID)
-			if roomPos.ParentID != nil {
-				parentID, err := strconv.ParseInt(*roomPos.ParentID, 10, 64)
-				if err != nil {
-					log.Printf("UpdateRoomPositions: Invalid parent_id format for room %s: %v", roomPos.RoomID, err)
-					return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-						"message": "Invalid parent_id format",
-						"error":   err.Error(),
-					})
-				}
-				roomModel.ParentID = &parentID
-			} else {
-				roomModel.ParentID = nil
-			}
+			roomModel.ParentID = roomPos.ParentID
 		} else {
 			log.Printf("UpdateRoomPositions: No parent_id provided for room %s, keeping current: %v", roomPos.RoomID, roomModel.ParentID)
 		}
@@ -208,7 +221,7 @@ func UpdateRoomPositions(c fiber.Ctx) error {
 				"position": *updatedRoom.Position,
 			}
 			if updatedRoom.ParentID != nil {
-				updatedRoomPositions[i]["parent_id"] = strconv.FormatInt(*updatedRoom.ParentID, 10)
+				updatedRoomPositions[i]["parent_id"] = *updatedRoom.ParentID
 			} else {
 				updatedRoomPositions[i]["parent_id"] = nil
 			}
@@ -224,6 +237,11 @@ func UpdateRoomPositions(c fiber.Ctx) error {
 			"updated_by":     user.ID,
 			"timestamp":      time.Now().Unix(),
 		},
+	}
+
+	// Add space_id if available
+	if spaceID != nil {
+		eventData["data"].(map[string]interface{})["space_id"] = strconv.FormatInt(*spaceID, 10)
 	}
 
 	eventBytes, err := json.Marshal(eventData)

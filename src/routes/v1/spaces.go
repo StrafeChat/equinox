@@ -41,6 +41,9 @@ func SetupSpacesRoutes(versionRouter *fiber.Group) {
 	router.Post("/:id/invites", spaces.CreateInvite)
 	router.Delete("/:id/invites/:inviteId", spaces.DeleteInvite)
 
+	// Space Rooms Routes
+	router.Post("/:id/rooms", spaces.CreateSpaceRoom)
+
 	// Permission checking route
 	router.Get("/:id/permissions/:permission", spaces.CheckUserPermission)
 

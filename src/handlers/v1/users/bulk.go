@@ -4,7 +4,7 @@ import (
 	"github.com/StrafeChat/equinox/src/database"
 	"github.com/StrafeChat/equinox/src/database/models"
 	"github.com/gofiber/fiber/v3"
-	"github.com/scylladb/gocqlx/v3/qb"
+	"github.com/scylladb/gocqlx/v2/qb"
 )
 
 // BulkUserRequest defines the structure for the bulk user request body

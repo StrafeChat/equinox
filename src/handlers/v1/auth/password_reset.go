@@ -17,7 +17,7 @@ import (
 	"github.com/gofiber/fiber/v3"
 	"github.com/mssola/user_agent"
 	"github.com/resend/resend-go/v2"
-	"github.com/scylladb/gocqlx/v3/qb"
+	"github.com/scylladb/gocqlx/v2/qb"
 	"golang.org/x/crypto/bcrypt"
 
 	"github.com/StrafeChat/equinox/src/database"

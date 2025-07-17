@@ -10,7 +10,7 @@ import (
 	"github.com/StrafeChat/equinox/src/events"
 	"github.com/StrafeChat/equinox/src/repository"
 	"github.com/gofiber/fiber/v3"
-	"github.com/scylladb/gocqlx/v3/qb"
+	"github.com/scylladb/gocqlx/v2/qb"
 )
 
 // SpaceMemberResponse represents a space member with user details

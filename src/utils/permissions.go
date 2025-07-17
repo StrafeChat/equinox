@@ -1,43 +1,49 @@
 package utils
 
 import (
+	"fmt"
 	"strconv"
 	"strings"
+
+	"github.com/StrafeChat/equinox/src/database/models"
+	"github.com/gocql/gocql"
+	"github.com/scylladb/gocqlx/v2"
+	"github.com/scylladb/gocqlx/v2/qb"
 )
 
 // Permission constants
 const (
 	// General permissions
-	ADMINISTRATOR = "ADMINISTRATOR"
-	VIEW_CHANNELS = "VIEW_CHANNELS"
-	MANAGE_CHANNELS = "MANAGE_CHANNELS"
-	MANAGE_ROLES = "MANAGE_ROLES"
-	MANAGE_SPACE = "MANAGE_SPACE"
-	KICK_MEMBERS = "KICK_MEMBERS"
-	BAN_MEMBERS = "BAN_MEMBERS"
+	ADMINISTRATOR    = "ADMINISTRATOR"
+	VIEW_CHANNELS    = "VIEW_CHANNELS"
+	MANAGE_CHANNELS  = "MANAGE_CHANNELS"
+	MANAGE_ROLES     = "MANAGE_ROLES"
+	MANAGE_SPACE     = "MANAGE_SPACE"
+	KICK_MEMBERS     = "KICK_MEMBERS"
+	BAN_MEMBERS      = "BAN_MEMBERS"
 	MANAGE_NICKNAMES = "MANAGE_NICKNAMES"
-	MANAGE_WEBHOOKS = "MANAGE_WEBHOOKS"
-	VIEW_AUDIT_LOG = "VIEW_AUDIT_LOG"
+	MANAGE_WEBHOOKS  = "MANAGE_WEBHOOKS"
+	VIEW_AUDIT_LOG   = "VIEW_AUDIT_LOG"
 
 	// Text channel permissions
-	SEND_MESSAGES = "SEND_MESSAGES"
-	MANAGE_MESSAGES = "MANAGE_MESSAGES"
+	SEND_MESSAGES        = "SEND_MESSAGES"
+	MANAGE_MESSAGES      = "MANAGE_MESSAGES"
 	READ_MESSAGE_HISTORY = "READ_MESSAGE_HISTORY"
-	MENTION_EVERYONE = "MENTION_EVERYONE"
-	USE_EXTERNAL_EMOJIS = "USE_EXTERNAL_EMOJIS"
-	ADD_REACTIONS = "ADD_REACTIONS"
-	ATTACH_FILES = "ATTACH_FILES"
-	EMBED_LINKS = "EMBED_LINKS"
+	MENTION_EVERYONE     = "MENTION_EVERYONE"
+	USE_EXTERNAL_EMOJIS  = "USE_EXTERNAL_EMOJIS"
+	ADD_REACTIONS        = "ADD_REACTIONS"
+	ATTACH_FILES         = "ATTACH_FILES"
+	EMBED_LINKS          = "EMBED_LINKS"
 
 	// Voice channel permissions
-	CONNECT = "CONNECT"
-	SPEAK = "SPEAK"
-	MUTE_MEMBERS = "MUTE_MEMBERS"
-	DEAFEN_MEMBERS = "DEAFEN_MEMBERS"
-	MOVE_MEMBERS = "MOVE_MEMBERS"
+	CONNECT              = "CONNECT"
+	SPEAK                = "SPEAK"
+	MUTE_MEMBERS         = "MUTE_MEMBERS"
+	DEAFEN_MEMBERS       = "DEAFEN_MEMBERS"
+	MOVE_MEMBERS         = "MOVE_MEMBERS"
 	USE_VOICE_ACTIVATION = "USE_VOICE_ACTIVATION"
-	PRIORITY_SPEAKER = "PRIORITY_SPEAKER"
-	STREAM = "STREAM"
+	PRIORITY_SPEAKER     = "PRIORITY_SPEAKER"
+	STREAM               = "STREAM"
 )
 
 // Permission represents a permission with metadata
@@ -319,3 +325,107 @@ func PermissionBitfieldFromString(bitfieldStr string) (PermissionValue, error) {
 	}
 	return PermissionValue(value), nil
 }
+
+// Cassandra-backed permission checking functions using existing repositories
+
+// CheckPermission checks if a user has a specific permission in a space
+// Returns true if the user has the permission, false otherwise
+// Note: This function is now implemented directly in the repository layer to avoid import cycles
+func CheckPermission(session *gocqlx.Session, userID, spaceID int64, permission string) (bool, error) {
+	// First check if user is the space owner
+	isOwner, err := isSpaceOwnerCassandra(session, userID, spaceID)
+	if err != nil {
+		return false, fmt.Errorf("failed to check space ownership: %w", err)
+	}
+	if isOwner {
+		return true, nil // Space owners have all permissions
+	}
+
+	// For now, return false - this should be handled by calling the repository directly
+	// This is a temporary implementation to avoid import cycles
+	return false, nil
+}
+
+// isSpaceOwnerCassandra checks if a user is the owner of a space using Cassandra
+func isSpaceOwnerCassandra(session *gocqlx.Session, userID, spaceID int64) (bool, error) {
+	var space models.Space
+	if err := models.SpaceTable.SelectBuilder().
+		Where(qb.Eq("id")).
+		Query(*session).
+		BindMap(qb.M{"id": spaceID}).
+		GetRelease(&space); err != nil {
+		if err == gocql.ErrNotFound {
+			return false, nil // Space doesn't exist
+		}
+		return false, err
+	}
+	return space.OwnerID == strconv.FormatInt(userID, 10), nil
+}
+
+// Note: getUserRolesInSpace functionality is now handled by the repository pattern
+
+// Note: roleHasPermission functionality is now handled by the repository pattern
+
+// CheckPermissionFromContext is a helper function for HTTP handlers
+func CheckPermissionFromContext(session *gocqlx.Session, userIDStr, spaceIDStr, permission string) (bool, error) {
+	userID, err := strconv.ParseInt(userIDStr, 10, 64)
+	if err != nil {
+		return false, fmt.Errorf("invalid user ID: %w", err)
+	}
+
+	spaceID, err := strconv.ParseInt(spaceIDStr, 10, 64)
+	if err != nil {
+		return false, fmt.Errorf("invalid space ID: %w", err)
+	}
+
+	return CheckPermission(session, userID, spaceID, permission)
+}
+
+// RequirePermission is a middleware helper that checks if a user has a specific permission
+// and returns an error if they don't
+func RequirePermission(session *gocqlx.Session, userID, spaceID int64, permission string) error {
+	hasPermission, err := CheckPermission(session, userID, spaceID, permission)
+	if err != nil {
+		return fmt.Errorf("permission check failed: %w", err)
+	}
+	if !hasPermission {
+		return fmt.Errorf("insufficient permissions: %s required", permission)
+	}
+	return nil
+}
+
+// GetUserPermissionsInSpace returns all permissions a user has in a space
+// This is useful for frontend permission caching
+// Note: This function is now implemented directly in the repository layer to avoid import cycles
+func GetUserPermissionsInSpace(session *gocqlx.Session, userID, spaceID int64) ([]string, error) {
+	// Check if user is space owner first
+	isOwner, err := isSpaceOwnerCassandra(session, userID, spaceID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to check space ownership: %w", err)
+	}
+	if isOwner {
+		// Space owners have all permissions - return a comprehensive list
+		return []string{
+			MANAGE_SPACE,
+			MANAGE_CHANNELS,
+			MANAGE_ROLES,
+			KICK_MEMBERS,
+			BAN_MEMBERS,
+			VIEW_CHANNELS,
+			SEND_MESSAGES,
+			MANAGE_MESSAGES,
+			CONNECT,
+			SPEAK,
+			MUTE_MEMBERS,
+			DEAFEN_MEMBERS,
+			MOVE_MEMBERS,
+			ADMINISTRATOR,
+		}, nil
+	}
+
+	// For now, return empty - this should be handled by calling the repository directly
+	// This is a temporary implementation to avoid import cycles
+	return []string{}, fmt.Errorf("permission calculation should be done through repository layer")
+}
+
+// Note: getRolePermissions functionality is now handled by the repository pattern

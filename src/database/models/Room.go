@@ -3,7 +3,7 @@ package models
 import (
 	"time"
 
-	"github.com/scylladb/gocqlx/v3/table"
+	"github.com/scylladb/gocqlx/v2/table"
 )
 
 var roomMeta = table.Metadata{
@@ -20,7 +20,7 @@ type Room struct {
 	Recipients    []int64   `db:"recipients" json:"recipients"`
 	Type          int       `db:"type" json:"type"`
 	SpaceID       *int64    `db:"space_id" json:"space_id"`
-	ParentID      *int64    `db:"parent_id" json:"parent_id"`
+	ParentID      *string   `db:"parent_id" json:"parent_id"`
 	Name          *string   `db:"name" json:"name"`
 	Topic         *string   `db:"topic" json:"topic"`
 	Icon          *string   `db:"icon" json:"icon"`

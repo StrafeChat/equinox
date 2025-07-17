@@ -9,7 +9,7 @@ import (
 	"github.com/StrafeChat/equinox/src/database/models"
 	"github.com/gocql/gocql"
 	"github.com/gofiber/fiber/v3"
-	"github.com/scylladb/gocqlx/v3/qb"
+	"github.com/scylladb/gocqlx/v2/qb"
 )
 
 func VerifyAuth() fiber.Handler {

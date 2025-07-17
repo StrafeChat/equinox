@@ -13,8 +13,36 @@ import (
 	"github.com/StrafeChat/equinox/src/helpers"
 	"github.com/StrafeChat/equinox/src/types"
 	"github.com/gocql/gocql"
-	"github.com/scylladb/gocqlx/v3/qb"
+	"github.com/scylladb/gocqlx/v2/qb"
 )
+
+// PublishEvent publishes an event to the specified Redis channel
+func PublishEvent(eventType string, eventData string) error {
+	var channel string
+	switch {
+	case strings.Contains(eventType, "ROOM"):
+		channel = "ROOM_EVENTS"
+	case strings.Contains(eventType, "SPACE"):
+		channel = "SPACE_EVENTS"
+	case strings.Contains(eventType, "USER"):
+		channel = "USER_EVENTS"
+	case strings.Contains(eventType, "RELATIONSHIP"):
+		channel = "RELATIONSHIP_EVENTS"
+	case strings.Contains(eventType, "VOICE"):
+		channel = "VOICE_EVENTS"
+	case strings.Contains(eventType, "FILE"):
+		channel = "FILE_EVENTS"
+	default:
+		channel = "ROOM_EVENTS" // Default to ROOM_EVENTS for backward compatibility
+	}
+
+	if err := database.Rdb.Publish(channel, eventData).Err(); err != nil {
+		return fmt.Errorf("failed to publish %s event to %s: %v", eventType, channel, err)
+	}
+
+	log.Printf("Published %s event to %s channel", eventType, channel)
+	return nil
+}
 
 // RoomEvent represents a room-related event from Redis
 type RoomEvent struct {
@@ -67,6 +95,10 @@ func StartRoomEventListener() {
 		case "ROOM_POSITIONS_UPDATE":
 			log.Printf("[StartRoomEventListener] Handling ROOM_POSITIONS_UPDATE event")
 			go handleRoomPositionsUpdate(event)
+		case "ROOM_CREATE":
+			// ROOM_CREATE events are published by Equinox for Stargate to handle
+			// Equinox should not process its own published events
+			log.Printf("[StartRoomEventListener] Ignoring ROOM_CREATE event (handled by Stargate)")
 		default:
 			log.Printf("[StartRoomEventListener] Unknown room event type: %s", event.Type)
 		}

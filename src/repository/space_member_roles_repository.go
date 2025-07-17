@@ -5,8 +5,8 @@ import (
 	"time"
 
 	"github.com/StrafeChat/equinox/src/database/models"
-	"github.com/scylladb/gocqlx/v3"
-	"github.com/scylladb/gocqlx/v3/qb"
+	"github.com/scylladb/gocqlx/v2"
+	"github.com/scylladb/gocqlx/v2/qb"
 )
 
 type SpaceMemberRolesRepository struct {
