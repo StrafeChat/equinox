@@ -27,6 +27,10 @@ func SetupUsersRoutes(verisonRouter *fiber.Group) {
 	router.Patch("/@me/status", handlers_v1_users.UpdateStatus)
 	router.Patch("/@me/profile", handlers_v1_users.UpdateProfile)
 
+	// Mutual data routes
+	router.Get("/:id/mutual-friends", handlers_v1_users.GetMutualFriends)
+	router.Get("/:id/mutual-spaces", handlers_v1_users.GetMutualSpaces)
+
 	// Session management routes
 	router.Get("/@me/sessions", handlers_v1_auth.GetUserSessions)
 	router.Delete("/@me/sessions/:token", handlers_v1_auth.RevokeSession)

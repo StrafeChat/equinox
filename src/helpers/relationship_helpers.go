@@ -59,6 +59,22 @@ func GetUserByID(userId int64) (models.User, error) {
 	return user, err
 }
 
+// GetUserByIDString retrieves a user by their ID (string format)
+func GetUserByIDString(userId string) (models.User, error) {
+	var user models.User
+	userQuery := models.UserTable.SelectBuilder().
+		Columns("*").
+		Where(qb.Eq("id")).
+		Limit(1).
+		Query(*database.Session).
+		BindMap(qb.M{
+			"id": userId,
+		})
+
+	err := userQuery.GetRelease(&user)
+	return user, err
+}
+
 // CheckExistingRelationship checks for an existing relationship between users
 func CheckExistingRelationship(userId, targetUserId string) (bool, error) {
 	// First check if the users are already friends by checking their relationships arrays
