@@ -330,7 +330,6 @@ func PermissionBitfieldFromString(bitfieldStr string) (PermissionValue, error) {
 
 // CheckPermission checks if a user has a specific permission in a space
 // Returns true if the user has the permission, false otherwise
-// Note: This function is now implemented directly in the repository layer to avoid import cycles
 func CheckPermission(session *gocqlx.Session, userID, spaceID int64, permission string) (bool, error) {
 	// First check if user is the space owner
 	isOwner, err := isSpaceOwnerCassandra(session, userID, spaceID)
@@ -341,9 +340,13 @@ func CheckPermission(session *gocqlx.Session, userID, spaceID int64, permission 
 		return true, nil // Space owners have all permissions
 	}
 
-	// For now, return false - this should be handled by calling the repository directly
-	// This is a temporary implementation to avoid import cycles
-	return false, nil
+	// Get user permissions by calculating from their roles
+	permissions, err := getUserPermissionsFromRoles(session, userID, spaceID)
+	if err != nil {
+		return false, fmt.Errorf("failed to get user permissions: %w", err)
+	}
+
+	return HasPermission(permissions, permission), nil
 }
 
 // isSpaceOwnerCassandra checks if a user is the owner of a space using Cassandra
@@ -396,7 +399,6 @@ func RequirePermission(session *gocqlx.Session, userID, spaceID int64, permissio
 
 // GetUserPermissionsInSpace returns all permissions a user has in a space
 // This is useful for frontend permission caching
-// Note: This function is now implemented directly in the repository layer to avoid import cycles
 func GetUserPermissionsInSpace(session *gocqlx.Session, userID, spaceID int64) ([]string, error) {
 	// Check if user is space owner first
 	isOwner, err := isSpaceOwnerCassandra(session, userID, spaceID)
@@ -414,6 +416,7 @@ func GetUserPermissionsInSpace(session *gocqlx.Session, userID, spaceID int64) (
 			VIEW_CHANNELS,
 			SEND_MESSAGES,
 			MANAGE_MESSAGES,
+			READ_MESSAGE_HISTORY,
 			CONNECT,
 			SPEAK,
 			MUTE_MEMBERS,
@@ -423,9 +426,55 @@ func GetUserPermissionsInSpace(session *gocqlx.Session, userID, spaceID int64) (
 		}, nil
 	}
 
-	// For now, return empty - this should be handled by calling the repository directly
-	// This is a temporary implementation to avoid import cycles
-	return []string{}, fmt.Errorf("permission calculation should be done through repository layer")
+	// Get user permissions by calculating from their roles
+	return getUserPermissionsFromRoles(session, userID, spaceID)
+}
+
+// getUserPermissionsFromRoles calculates user permissions from their roles in a space
+func getUserPermissionsFromRoles(session *gocqlx.Session, userID, spaceID int64) ([]string, error) {
+	// Get member roles for the user
+	var memberRoles []models.SpaceMemberRole
+	if err := models.SpaceMemberRoleTable.SelectBuilder().
+		Where(qb.Eq("space_id"), qb.Eq("user_id")).
+		Query(*session).
+		BindMap(qb.M{"space_id": spaceID, "user_id": strconv.FormatInt(userID, 10)}).
+		SelectRelease(&memberRoles); err != nil {
+		// If no roles found, user only has @everyone permissions
+		memberRoles = []models.SpaceMemberRole{}
+	}
+
+	// Get @everyone role permissions
+	var everyoneRole models.SpaceRole
+	if err := models.SpaceRoleTable.SelectBuilder().
+		Where(qb.Eq("space_id"), qb.Eq("name")).
+		Query(*session).
+		BindMap(qb.M{"space_id": spaceID, "name": "@everyone"}).
+		GetRelease(&everyoneRole); err != nil {
+		// If @everyone role doesn't exist, use default permissions
+		return GetDefaultEveryonePermissions(), nil
+	}
+
+	// Start with @everyone permissions
+	var allRolePermissions [][]string
+	allRolePermissions = append(allRolePermissions, everyoneRole.Permissions)
+
+	// Apply permissions from each role
+	for _, memberRole := range memberRoles {
+		var role models.SpaceRole
+		if err := models.SpaceRoleTable.SelectBuilder().
+			Where(qb.Eq("space_id"), qb.Eq("id")).
+			Query(*session).
+			BindMap(qb.M{"space_id": spaceID, "id": memberRole.RoleID}).
+			GetRelease(&role); err != nil {
+			continue // Skip if role not found
+		}
+
+		// Add role permissions to the list
+		allRolePermissions = append(allRolePermissions, role.Permissions)
+	}
+
+	// Calculate final permissions by combining all role permissions
+	return CalculatePermissions(allRolePermissions), nil
 }
 
 // Note: getRolePermissions functionality is now handled by the repository pattern
