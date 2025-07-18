@@ -279,33 +279,55 @@ func UpdateRole(c fiber.Ctx) error {
 		})
 	}
 
-	// Don't allow editing @everyone role name
-	if roleID == "@everyone" && req.Name != nil {
+	// Only allow editing @everyone role, and only permissions
+	if roleID != "@everyone" {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-			"error": "Cannot change @everyone role name",
+			"error": "Only @everyone role can be edited",
 		})
 	}
 
-	// Build updates map
+	// For @everyone role, get current role to validate that non-permission fields aren't being changed
+	rolesRepo := repository.NewSpaceRolesRepository(database.Session)
+	currentRole, err := rolesRepo.GetRole(spaceID, roleID)
+	if err != nil {
+		log.Printf("Error getting current role: %v", err)
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"error": "Failed to get current role",
+		})
+	}
+
+	// For @everyone role, only allow permission changes - validate that other fields match current values
+	if req.Name != nil && *req.Name != currentRole.Name {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"error": "Only permissions can be modified for @everyone role",
+		})
+	}
+	if req.Color != nil && (currentRole.Color == nil || *req.Color != *currentRole.Color) {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"error": "Only permissions can be modified for @everyone role",
+		})
+	}
+	if req.Position != nil && *req.Position != currentRole.Position {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"error": "Only permissions can be modified for @everyone role",
+		})
+	}
+	if req.Mentionable != nil && *req.Mentionable != currentRole.Mentionable {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"error": "Only permissions can be modified for @everyone role",
+		})
+	}
+	if req.Hoist != nil && *req.Hoist != currentRole.Hoist {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"error": "Only permissions can be modified for @everyone role",
+		})
+	}
+
+	// Build updates map - only permissions for @everyone role
 	updates := make(map[string]interface{})
-	if req.Name != nil {
-		updates["name"] = *req.Name
-	}
-	if req.Color != nil {
-		updates["color"] = *req.Color
-	}
 	if req.Permissions != nil {
 		permissions := utils.PermissionsFromMap(req.Permissions)
 		updates["permissions"] = permissions
-	}
-	if req.Position != nil {
-		updates["position"] = *req.Position
-	}
-	if req.Mentionable != nil {
-		updates["mentionable"] = *req.Mentionable
-	}
-	if req.Hoist != nil {
-		updates["hoist"] = *req.Hoist
 	}
 
 	if len(updates) == 0 {
@@ -317,7 +339,6 @@ func UpdateRole(c fiber.Ctx) error {
 	updates["updated_at"] = time.Now()
 
 	// Update role
-	rolesRepo := repository.NewSpaceRolesRepository(database.Session)
 	if err := rolesRepo.UpdateRole(spaceID, roleID, updates); err != nil {
 		log.Printf("Error updating role: %v", err)
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{

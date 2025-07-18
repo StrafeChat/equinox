@@ -842,10 +842,11 @@ func UpdateRoom(c fiber.Ctx) error {
 
 	log.Printf("UpdateRoom: Room found - type=%d, creator=%v, recipients=%v", room.Type, room.Creator, room.Recipients)
 
-	// Check if room is a group PM or space room/section for position updates
-	if room.Type != types.RoomTypeGroupPM && input.Position == nil {
+	// Check if room type allows updates
+	// Allow updates for Group PMs, Text Rooms, and Voice Rooms
+	if room.Type != types.RoomTypeGroupPM && room.Type != types.RoomTypeTextRoom && room.Type != types.RoomTypeVoiceRoom && input.Position == nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-			"message": "Can only update group PM settings",
+			"message": "Can only update group PM, text room, or voice room settings",
 		})
 	}
 
@@ -856,25 +857,50 @@ func UpdateRoom(c fiber.Ctx) error {
 		})
 	}
 
-	// Check if user is the owner or a member
-	userInRoom := false
-	for _, recipient := range room.Recipients {
-		if recipient == user.ID {
-			userInRoom = true
-			break
+	// Check permissions based on room type
+	if room.Type == types.RoomTypeGroupPM {
+		// For group PMs, check if user is in recipients and is the creator
+		userInRoom := false
+		for _, recipient := range room.Recipients {
+			if recipient == user.ID {
+				userInRoom = true
+				break
+			}
 		}
-	}
-	if !userInRoom {
-		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
-			"message": "You are not a member of this room",
-		})
-	}
+		if !userInRoom {
+			return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
+				"message": "You are not a member of this room",
+			})
+		}
 
-	// Only the owner can update room settings
-	if room.Creator == nil || *room.Creator != user.ID {
-		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
-			"message": "Only the room owner can update settings",
-		})
+		// Only the creator can update group PM settings
+		if room.Creator == nil || *room.Creator != user.ID {
+			return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
+				"message": "Only the room owner can update settings",
+			})
+		}
+	} else if room.Type == types.RoomTypeTextRoom || room.Type == types.RoomTypeVoiceRoom {
+		// For space rooms, check space permissions
+		if room.SpaceID == nil {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+				"message": "Space room must have a space ID",
+			})
+		}
+
+		// Check if user has MANAGE_CHANNELS permission in the space
+		hasPermission, err := checkRoomAccess(roomID, user.ID, "MANAGE_CHANNELS")
+		if err != nil {
+			log.Printf("UpdateRoom: Failed to check permissions: %v", err)
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+				"message": "Failed to check permissions",
+				"error":   err.Error(),
+			})
+		}
+		if !hasPermission {
+			return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
+				"message": "You don't have permission to manage channels in this space",
+			})
+		}
 	}
 
 	// Check if there are fields to update
@@ -974,36 +1000,38 @@ func UpdateRoom(c fiber.Ctx) error {
 	}
 	log.Printf("UpdateRoom: Event published to Redis successfully")
 
-	// Create system messages for room updates
-	if input.Name != nil {
-		systemData := helpers.SystemMessageData{
-			Type:     helpers.RoomNameChanged,
-			ActorID:  &user.ID,
-			NewValue: input.Name,
+	// Create system messages for room updates (only for Group PMs, not for Text/Voice rooms)
+	if room.Type == types.RoomTypeGroupPM {
+		if input.Name != nil {
+			systemData := helpers.SystemMessageData{
+				Type:     helpers.RoomNameChanged,
+				ActorID:  &user.ID,
+				NewValue: input.Name,
+			}
+			if err := helpers.CreateSystemMessage(roomID, helpers.RoomNameChanged, systemData); err != nil {
+				log.Printf("UpdateRoom: Failed to create system message for name change: %v", err)
+			}
 		}
-		if err := helpers.CreateSystemMessage(roomID, helpers.RoomNameChanged, systemData); err != nil {
-			log.Printf("UpdateRoom: Failed to create system message for name change: %v", err)
-		}
-	}
 
-	if input.Topic != nil {
-		systemData := helpers.SystemMessageData{
-			Type:     helpers.RoomTopicChanged,
-			ActorID:  &user.ID,
-			NewValue: input.Topic,
+		if input.Topic != nil {
+			systemData := helpers.SystemMessageData{
+				Type:     helpers.RoomTopicChanged,
+				ActorID:  &user.ID,
+				NewValue: input.Topic,
+			}
+			if err := helpers.CreateSystemMessage(roomID, helpers.RoomTopicChanged, systemData); err != nil {
+				log.Printf("UpdateRoom: Failed to create system message for topic change: %v", err)
+			}
 		}
-		if err := helpers.CreateSystemMessage(roomID, helpers.RoomTopicChanged, systemData); err != nil {
-			log.Printf("UpdateRoom: Failed to create system message for topic change: %v", err)
-		}
-	}
 
-	if input.Icon != nil {
-		systemData := helpers.SystemMessageData{
-			Type:    helpers.RoomIconChanged,
-			ActorID: &user.ID,
-		}
-		if err := helpers.CreateSystemMessage(roomID, helpers.RoomIconChanged, systemData); err != nil {
-			log.Printf("UpdateRoom: Failed to create system message for icon change: %v", err)
+		if input.Icon != nil {
+			systemData := helpers.SystemMessageData{
+				Type:    helpers.RoomIconChanged,
+				ActorID: &user.ID,
+			}
+			if err := helpers.CreateSystemMessage(roomID, helpers.RoomIconChanged, systemData); err != nil {
+				log.Printf("UpdateRoom: Failed to create system message for icon change: %v", err)
+			}
 		}
 	}
 

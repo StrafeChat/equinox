@@ -446,12 +446,14 @@ func getUserPermissionsFromRoles(session *gocqlx.Session, userID, spaceID int64)
 	// Get @everyone role permissions
 	var everyoneRole models.SpaceRole
 	if err := models.SpaceRoleTable.SelectBuilder().
-		Where(qb.Eq("space_id"), qb.Eq("name")).
+		Where(qb.Eq("space_id"), qb.Eq("role_id")).
 		Query(*session).
-		BindMap(qb.M{"space_id": spaceID, "name": "@everyone"}).
+		BindMap(qb.M{"space_id": spaceID, "role_id": "@everyone"}).
 		GetRelease(&everyoneRole); err != nil {
-		// If @everyone role doesn't exist, use default permissions
-		return GetDefaultEveryonePermissions(), nil
+		// If @everyone role doesn't exist, return empty permissions instead of defaults
+		// This prevents users from getting default permissions when @everyone role is missing
+		fmt.Printf("Warning: @everyone role not found for space %d, returning empty permissions\n", spaceID)
+		return []string{}, nil
 	}
 
 	// Start with @everyone permissions
