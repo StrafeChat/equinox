@@ -57,12 +57,37 @@ func migrateSpaceRolesIfNeeded() error {
 
 	log.Printf("Found %d space roles with array permissions to migrate", len(existingRoles))
 
-	// Create backup table
-	if err := Session.ExecStmt(`CREATE TABLE IF NOT EXISTS space_roles_backup AS SELECT * FROM space_roles`); err != nil {
+	// Create backup table with proper schema
+	if err := Session.ExecStmt(`CREATE TABLE IF NOT EXISTS space_roles_backup (
+		space_id bigint,
+		role_id text,
+		name text,
+		color text,
+		permissions list<text>,
+		position int,
+		mentionable boolean,
+		hoist boolean,
+		created_at timestamp,
+		updated_at timestamp,
+		PRIMARY KEY (space_id, role_id)
+	);`); err != nil {
 		log.Printf("Failed to create backup table: %v", err)
 		return err
 	}
-	log.Println("Created backup table: space_roles_backup")
+
+	// Copy existing data to backup table
+	for _, role := range existingRoles {
+		backupQuery := qb.Insert("space_roles_backup").Columns(
+			"space_id", "role_id", "name", "color", "permissions",
+			"position", "mentionable", "hoist", "created_at", "updated_at",
+		).Query(*Session)
+
+		if err := backupQuery.BindStruct(&role).ExecRelease(); err != nil {
+			log.Printf("Failed to backup role %s in space %d: %v", role.RoleID, role.SpaceID, err)
+			return err
+		}
+	}
+	log.Printf("Created backup table and copied %d roles: space_roles_backup", len(existingRoles))
 
 	// Drop and recreate table with correct schema
 	if err := Session.ExecStmt(`DROP TABLE IF EXISTS space_roles`); err != nil {

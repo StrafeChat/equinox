@@ -19,21 +19,36 @@ To a bitmap format (int64) where each permission is represented by a bit flag.
 
 ## Running the Migration
 
-### Option 1: Standalone Migration Command
+### Automatic Migration (Recommended)
+
+The migration now runs automatically when the equinox application starts up. Simply start the application:
+
+```bash
+cd equinox
+go run src/main.go
+# or
+./bin/equinox.exe
+```
+
+The migration will run during startup and log its progress.
+
+### Manual Migration Options
+
+#### Option 1: Standalone Migration Command
 
 ```bash
 cd equinox
 go run src/cmd/migrate_permissions.go
 ```
 
-### Option 2: As Part of Full Migration
+#### Option 2: As Part of Full Migration
 
 ```bash
 cd equinox
 go run -c "database.MigrateAllSchemas()"
 ```
 
-### Option 3: Programmatically
+#### Option 3: Programmatically
 
 ```go
 import "github.com/StrafeChat/equinox/src/database"
