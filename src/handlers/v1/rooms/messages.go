@@ -12,6 +12,7 @@ import (
 	"github.com/StrafeChat/equinox/src/database"
 	"github.com/StrafeChat/equinox/src/database/models"
 	"github.com/StrafeChat/equinox/src/helpers"
+	"github.com/StrafeChat/equinox/src/repository"
 	"github.com/StrafeChat/equinox/src/types"
 	"github.com/StrafeChat/equinox/src/utils"
 	"github.com/gofiber/fiber/v3"
@@ -53,16 +54,12 @@ func getUserPermissionsForRoom(roomID, userID string) ([]string, error) {
 	}
 	roomQuery.Release()
 
-	// For textroom types (type 2), get space member permissions
-	if room.Type == types.RoomTypeTextRoom && room.SpaceID != nil {
-		userIDInt, err := strconv.ParseInt(userID, 10, 64)
+	// For space rooms (text, voice, sections), use the new room permission override system
+	if (room.Type == types.RoomTypeTextRoom || room.Type == types.RoomTypeVoiceRoom || room.Type == types.RoomTypeSpaceSection) && room.SpaceID != nil {
+		roomPermRepo := repository.NewRoomPermissionsRepository(database.Session)
+		permissions, err := roomPermRepo.CalculateUserPermissionsInRoom(roomID, userID, *room.SpaceID)
 		if err != nil {
-			log.Printf("getUserPermissionsForRoom: Invalid user ID: %v", err)
-			return []string{}, nil
-		}
-		permissions, err := utils.GetUserPermissionsInSpace(database.Session, userIDInt, *room.SpaceID)
-		if err != nil {
-			log.Printf("getUserPermissionsForRoom: Failed to get space permissions: %v", err)
+			log.Printf("getUserPermissionsForRoom: Failed to calculate room permissions: %v", err)
 			return []string{}, nil
 		}
 		return permissions, nil
@@ -96,10 +93,11 @@ func checkRoomAccess(roomID, userID string, permission string) (bool, error) {
 	}
 	roomQuery.Release()
 
-	// For textroom types (type 2), check space member permissions
-	if room.Type == types.RoomTypeTextRoom && room.SpaceID != nil {
-		log.Printf("checkRoomAccess: Checking space member permission for textroom %s in space %d", roomID, *room.SpaceID)
-		return utils.CheckPermissionFromContext(database.Session, userID, strconv.FormatInt(*room.SpaceID, 10), permission)
+	// For space rooms (text, voice, sections), check permissions using room override system
+	if (room.Type == types.RoomTypeTextRoom || room.Type == types.RoomTypeVoiceRoom || room.Type == types.RoomTypeSpaceSection) && room.SpaceID != nil {
+		log.Printf("checkRoomAccess: Checking room permission %s for room %s in space %d", permission, roomID, *room.SpaceID)
+		roomPermRepo := repository.NewRoomPermissionsRepository(database.Session)
+		return roomPermRepo.HasPermissionInRoom(roomID, userID, permission, *room.SpaceID)
 	}
 
 	// For PM/Group PM types (type 0, 1), check recipient permissions

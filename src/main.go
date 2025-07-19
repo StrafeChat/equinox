@@ -55,6 +55,16 @@ func main() {
 		log.Printf("Failed to migrate users schema: %v", err)
 	}
 
+	// // Run migration to change space_roles permissions column from list<text> to bigint
+	// if err := database.MigrateSpaceRolesPermissionsSchema(); err != nil {
+	// 	log.Printf("Failed to migrate space roles permissions schema: %v", err)
+	// }
+
+	// Run data migration to convert existing permissions from string arrays to bitmaps
+	if err := database.MigrateSpaceRolesPermissionsData(); err != nil {
+		log.Printf("Failed to migrate space roles permissions data: %v", err)
+	}
+
 	// Start the password reset cleanup task
 	helpers.ScheduleCleanupTask()
 

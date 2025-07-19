@@ -19,7 +19,7 @@ type SpaceRole struct {
 	RoleID      string    `db:"role_id" json:"role_id"`
 	Name        string    `db:"name" json:"name"`
 	Color       *string   `db:"color" json:"color"`
-	Permissions []string  `db:"permissions" json:"permissions"`
+	Permissions int64     `db:"permissions" json:"permissions"`
 	Position    int       `db:"position" json:"position"`
 	Mentionable bool      `db:"mentionable" json:"mentionable"`
 	Hoist       bool      `db:"hoist" json:"hoist"`
@@ -34,7 +34,7 @@ func (sr *SpaceRole) SchemaDefinition() []string {
 			role_id text,
 			name text,
 			color text,
-			permissions list<text>,
+			permissions bigint,
 			position int,
 			mentionable boolean,
 			hoist boolean,
@@ -48,4 +48,27 @@ func (sr *SpaceRole) SchemaDefinition() []string {
 // GetTableMeta returns the table metadata for space roles
 func (sr *SpaceRole) GetTableMeta() table.Metadata {
 	return spaceRoleMeta
+}
+
+// GetPermissionsBitmap returns the permissions bitmap
+func (sr *SpaceRole) GetPermissionsBitmap() int64 {
+	return sr.Permissions
+}
+
+// SetPermissionsBitmap sets the permissions bitmap
+func (sr *SpaceRole) SetPermissionsBitmap(bitmap int64) {
+	sr.Permissions = bitmap
+}
+
+// HasPermissionsBitmap checks if the role has a permissions bitmap set
+func (sr *SpaceRole) HasPermissionsBitmap() bool {
+	return true // Always true since permissions is now always an int64
+}
+
+// GetPermissionsAsStrings returns permissions as string array by converting from bitmap
+// Note: This method will be enhanced with bitmap conversion in the handlers layer to avoid import cycles
+func (sr *SpaceRole) GetPermissionsAsStrings() []string {
+	// This will be handled by utils functions to avoid import cycles
+	// For now, return empty array as placeholder
+	return []string{}
 }

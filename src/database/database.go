@@ -72,6 +72,8 @@ func CreateSchema() error {
 		&models.Bot{},
 		&models.User{},
 		&models.Room{},
+		&models.RoomRolePermissions{},
+		&models.RoomMemberPermissions{},
 		&models.Session{},
 		&models.Message{},
 		&models.Space{},

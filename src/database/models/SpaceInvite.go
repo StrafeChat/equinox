@@ -26,7 +26,7 @@ var spaceInviteBySpaceMeta = table.Metadata{
 	Name:    "space_invites_by_space",
 	Columns: []string{"space_id", "id", "code", "inviter_id", "max_uses", "uses", "expires_at", "created_at"},
 	PartKey: []string{"space_id"},
-	SortKey: []string{"created_at"},
+	SortKey: []string{"created_at", "id"},
 }
 
 var SpaceInviteBySpaceTable = table.New(spaceInviteBySpaceMeta)

@@ -2,6 +2,7 @@ package utils
 
 import (
 	"fmt"
+	"reflect"
 	"strconv"
 	"strings"
 
@@ -15,7 +16,7 @@ import (
 const (
 	// General permissions
 	ADMINISTRATOR    = "ADMINISTRATOR"
-	VIEW_CHANNELS    = "VIEW_CHANNELS"
+	VIEW_ROOMS       = "VIEW_ROOMS"
 	MANAGE_CHANNELS  = "MANAGE_CHANNELS"
 	MANAGE_ROLES     = "MANAGE_ROLES"
 	MANAGE_SPACE     = "MANAGE_SPACE"
@@ -44,6 +45,9 @@ const (
 	USE_VOICE_ACTIVATION = "USE_VOICE_ACTIVATION"
 	PRIORITY_SPEAKER     = "PRIORITY_SPEAKER"
 	STREAM               = "STREAM"
+
+	// Room-specific permissions
+	VIEW_ROOM = "VIEW_ROOM"
 )
 
 // Permission represents a permission with metadata
@@ -59,7 +63,7 @@ func GetAllPermissions() []Permission {
 	return []Permission{
 		// General permissions
 		{ADMINISTRATOR, "Administrator", "All permissions", "general"},
-		{VIEW_CHANNELS, "View Channels", "View channels", "general"},
+		{VIEW_ROOMS, "View Rooms", "Allow members to view rooms in this space.", "general"},
 		{MANAGE_CHANNELS, "Manage Channels", "Create, edit, and delete channels", "general"},
 		{MANAGE_ROLES, "Manage Roles", "Create, edit, and delete roles", "general"},
 		{MANAGE_SPACE, "Manage Space", "Edit space settings", "general"},
@@ -91,10 +95,50 @@ func GetAllPermissions() []Permission {
 	}
 }
 
+// GetRoomOverridePermissions returns permissions available for room overrides
+func GetRoomOverridePermissions() []Permission {
+	return []Permission{
+		// General permissions
+		{ADMINISTRATOR, "Administrator", "All permissions", "general"},
+		{VIEW_ROOMS, "VIEW_ROOMS", "VIEW_ROOMS", "general"},
+		{MANAGE_CHANNELS, "Manage Channels", "Create, edit, and delete channels", "general"},
+		{MANAGE_ROLES, "Manage Roles", "Create, edit, and delete roles", "general"},
+		{MANAGE_SPACE, "Manage Space", "Edit space settings", "general"},
+		{KICK_MEMBERS, "Kick Members", "Remove members from space", "general"},
+		{BAN_MEMBERS, "Ban Members", "Ban members from space", "general"},
+		{MANAGE_NICKNAMES, "Manage Nicknames", "Change other members' nicknames", "general"},
+		{MANAGE_WEBHOOKS, "Manage Webhooks", "Create, edit, and delete webhooks", "general"},
+		{VIEW_AUDIT_LOG, "View Audit Log", "View space audit log", "general"},
+
+		// Text channel permissions
+		{SEND_MESSAGES, "Send Messages", "Send messages in text channels", "text"},
+		{MANAGE_MESSAGES, "Manage Messages", "Delete and edit messages", "text"},
+		{READ_MESSAGE_HISTORY, "Read Message History", "Read previous messages", "text"},
+		{MENTION_EVERYONE, "Mention @everyone", "Use @everyone and @here mentions", "text"},
+		{USE_EXTERNAL_EMOJIS, "Use External Emojis", "Use emojis from other spaces", "text"},
+		{ADD_REACTIONS, "Add Reactions", "Add reactions to messages", "text"},
+		{ATTACH_FILES, "Attach Files", "Upload files and media", "text"},
+		{EMBED_LINKS, "Embed Links", "Links sent will be embedded", "text"},
+
+		// Voice channel permissions
+		{CONNECT, "Connect", "Connect to voice channels", "voice"},
+		{SPEAK, "Speak", "Speak in voice channels", "voice"},
+		{MUTE_MEMBERS, "Mute Members", "Mute members in voice channels", "voice"},
+		{DEAFEN_MEMBERS, "Deafen Members", "Deafen members in voice channels", "voice"},
+		{MOVE_MEMBERS, "Move Members", "Move members between voice channels", "voice"},
+		{USE_VOICE_ACTIVATION, "Use Voice Activation", "Use voice activation in voice channels", "voice"},
+		{PRIORITY_SPEAKER, "Priority Speaker", "Priority speaker in voice channels", "voice"},
+		{STREAM, "Stream", "Stream in voice channels", "voice"},
+
+		// Room-specific permissions
+		{VIEW_ROOM, "View Room", "View and access this room", "room"},
+	}
+}
+
 // GetDefaultEveryonePermissions returns the default permissions for @everyone role
 func GetDefaultEveryonePermissions() []string {
 	return []string{
-		VIEW_CHANNELS,
+		VIEW_ROOMS,
 		SEND_MESSAGES,
 		READ_MESSAGE_HISTORY,
 		ADD_REACTIONS,
@@ -193,20 +237,31 @@ type PermissionValue int64
 const (
 	PermissionAdministrator PermissionValue = 1 << iota
 	PermissionViewChannels
+	PermissionViewRoom // Moved here to maintain compatibility
 	PermissionManageChannels
 	PermissionManageRoles
 	PermissionManageSpace
 	PermissionKickMembers
 	PermissionBanMembers
+	PermissionManageNicknames
+	PermissionManageWebhooks
+	PermissionViewAuditLog
 	PermissionSendMessages
 	PermissionManageMessages
 	PermissionReadMessageHistory
 	PermissionMentionEveryone
+	PermissionUseExternalEmojis
+	PermissionAddReactions
+	PermissionAttachFiles
+	PermissionEmbedLinks
 	PermissionConnect
 	PermissionSpeak
 	PermissionMuteMembers
 	PermissionDeafenMembers
 	PermissionMoveMembers
+	PermissionUseVoiceActivation
+	PermissionPrioritySpeaker
+	PermissionStream
 )
 
 // PermissionsToBitfield converts permission strings to a bitfield
@@ -217,7 +272,7 @@ func PermissionsToBitfield(permissions []string) PermissionValue {
 		switch perm {
 		case ADMINISTRATOR:
 			bitfield |= PermissionAdministrator
-		case VIEW_CHANNELS:
+		case VIEW_ROOMS:
 			bitfield |= PermissionViewChannels
 		case MANAGE_CHANNELS:
 			bitfield |= PermissionManageChannels
@@ -229,6 +284,12 @@ func PermissionsToBitfield(permissions []string) PermissionValue {
 			bitfield |= PermissionKickMembers
 		case BAN_MEMBERS:
 			bitfield |= PermissionBanMembers
+		case MANAGE_NICKNAMES:
+			bitfield |= PermissionManageNicknames
+		case MANAGE_WEBHOOKS:
+			bitfield |= PermissionManageWebhooks
+		case VIEW_AUDIT_LOG:
+			bitfield |= PermissionViewAuditLog
 		case SEND_MESSAGES:
 			bitfield |= PermissionSendMessages
 		case MANAGE_MESSAGES:
@@ -237,6 +298,14 @@ func PermissionsToBitfield(permissions []string) PermissionValue {
 			bitfield |= PermissionReadMessageHistory
 		case MENTION_EVERYONE:
 			bitfield |= PermissionMentionEveryone
+		case USE_EXTERNAL_EMOJIS:
+			bitfield |= PermissionUseExternalEmojis
+		case ADD_REACTIONS:
+			bitfield |= PermissionAddReactions
+		case ATTACH_FILES:
+			bitfield |= PermissionAttachFiles
+		case EMBED_LINKS:
+			bitfield |= PermissionEmbedLinks
 		case CONNECT:
 			bitfield |= PermissionConnect
 		case SPEAK:
@@ -247,6 +316,14 @@ func PermissionsToBitfield(permissions []string) PermissionValue {
 			bitfield |= PermissionDeafenMembers
 		case MOVE_MEMBERS:
 			bitfield |= PermissionMoveMembers
+		case USE_VOICE_ACTIVATION:
+			bitfield |= PermissionUseVoiceActivation
+		case PRIORITY_SPEAKER:
+			bitfield |= PermissionPrioritySpeaker
+		case STREAM:
+			bitfield |= PermissionStream
+		case VIEW_ROOM:
+			bitfield |= PermissionViewRoom
 		}
 	}
 
@@ -261,7 +338,7 @@ func BitfieldToPermissions(bitfield PermissionValue) []string {
 		permissions = append(permissions, ADMINISTRATOR)
 	}
 	if bitfield&PermissionViewChannels != 0 {
-		permissions = append(permissions, VIEW_CHANNELS)
+		permissions = append(permissions, VIEW_ROOMS)
 	}
 	if bitfield&PermissionManageChannels != 0 {
 		permissions = append(permissions, MANAGE_CHANNELS)
@@ -278,6 +355,15 @@ func BitfieldToPermissions(bitfield PermissionValue) []string {
 	if bitfield&PermissionBanMembers != 0 {
 		permissions = append(permissions, BAN_MEMBERS)
 	}
+	if bitfield&PermissionManageNicknames != 0 {
+		permissions = append(permissions, MANAGE_NICKNAMES)
+	}
+	if bitfield&PermissionManageWebhooks != 0 {
+		permissions = append(permissions, MANAGE_WEBHOOKS)
+	}
+	if bitfield&PermissionViewAuditLog != 0 {
+		permissions = append(permissions, VIEW_AUDIT_LOG)
+	}
 	if bitfield&PermissionSendMessages != 0 {
 		permissions = append(permissions, SEND_MESSAGES)
 	}
@@ -289,6 +375,18 @@ func BitfieldToPermissions(bitfield PermissionValue) []string {
 	}
 	if bitfield&PermissionMentionEveryone != 0 {
 		permissions = append(permissions, MENTION_EVERYONE)
+	}
+	if bitfield&PermissionUseExternalEmojis != 0 {
+		permissions = append(permissions, USE_EXTERNAL_EMOJIS)
+	}
+	if bitfield&PermissionAddReactions != 0 {
+		permissions = append(permissions, ADD_REACTIONS)
+	}
+	if bitfield&PermissionAttachFiles != 0 {
+		permissions = append(permissions, ATTACH_FILES)
+	}
+	if bitfield&PermissionEmbedLinks != 0 {
+		permissions = append(permissions, EMBED_LINKS)
 	}
 	if bitfield&PermissionConnect != 0 {
 		permissions = append(permissions, CONNECT)
@@ -304,6 +402,18 @@ func BitfieldToPermissions(bitfield PermissionValue) []string {
 	}
 	if bitfield&PermissionMoveMembers != 0 {
 		permissions = append(permissions, MOVE_MEMBERS)
+	}
+	if bitfield&PermissionUseVoiceActivation != 0 {
+		permissions = append(permissions, USE_VOICE_ACTIVATION)
+	}
+	if bitfield&PermissionPrioritySpeaker != 0 {
+		permissions = append(permissions, PRIORITY_SPEAKER)
+	}
+	if bitfield&PermissionStream != 0 {
+		permissions = append(permissions, STREAM)
+	}
+	if bitfield&PermissionViewRoom != 0 {
+		permissions = append(permissions, VIEW_ROOM)
 	}
 
 	return permissions
@@ -413,7 +523,7 @@ func GetUserPermissionsInSpace(session *gocqlx.Session, userID, spaceID int64) (
 			MANAGE_ROLES,
 			KICK_MEMBERS,
 			BAN_MEMBERS,
-			VIEW_CHANNELS,
+			VIEW_ROOMS,
 			SEND_MESSAGES,
 			MANAGE_MESSAGES,
 			READ_MESSAGE_HISTORY,
@@ -458,7 +568,7 @@ func getUserPermissionsFromRoles(session *gocqlx.Session, userID, spaceID int64)
 
 	// Start with @everyone permissions
 	var allRolePermissions [][]string
-	allRolePermissions = append(allRolePermissions, everyoneRole.Permissions)
+	allRolePermissions = append(allRolePermissions, GetRolePermissionsAsStrings(&everyoneRole))
 
 	// Apply permissions from each role
 	for _, memberRole := range memberRoles {
@@ -472,11 +582,71 @@ func getUserPermissionsFromRoles(session *gocqlx.Session, userID, spaceID int64)
 		}
 
 		// Add role permissions to the list
-		allRolePermissions = append(allRolePermissions, role.Permissions)
+		allRolePermissions = append(allRolePermissions, GetRolePermissionsAsStrings(&role))
 	}
 
 	// Calculate final permissions by combining all role permissions
 	return CalculatePermissions(allRolePermissions), nil
+}
+
+// SpaceRole helper functions to avoid import cycles
+
+// GetRolePermissionsAsStrings returns permissions as string array by converting from bitmap
+func GetRolePermissionsAsStrings(role interface{}) []string {
+	// Type assertion to access the bitmap
+	type roleWithBitmap interface {
+		GetPermissionsBitmap() int64
+	}
+
+	if r, ok := role.(roleWithBitmap); ok {
+		// Convert bitmap to permissions
+		bitmap := r.GetPermissionsBitmap()
+		return BitfieldToPermissions(PermissionValue(bitmap))
+	}
+
+	// Fallback: try to access Permissions field directly using reflection
+	v := reflect.ValueOf(role)
+	if v.Kind() == reflect.Ptr {
+		v = v.Elem()
+	}
+	if v.Kind() == reflect.Struct {
+		permField := v.FieldByName("Permissions")
+		if permField.IsValid() && permField.Kind() == reflect.Int64 {
+			bitmap := permField.Int()
+			return BitfieldToPermissions(PermissionValue(bitmap))
+		}
+	}
+
+	// Fallback for unknown types
+	return []string{}
+}
+
+// SetRolePermissionsFromStrings sets permissions bitmap from string array
+func SetRolePermissionsFromStrings(role interface{}, permissions []string) {
+	// Type assertion to set the bitmap
+	type roleWithBitmapSetter interface {
+		SetPermissionsBitmap(int64)
+	}
+
+	if r, ok := role.(roleWithBitmapSetter); ok {
+		// Set the bitmap
+		bitmap := int64(PermissionsToBitfield(permissions))
+		r.SetPermissionsBitmap(bitmap)
+		return
+	}
+
+	// Fallback: set permissions directly on the struct using reflection
+	v := reflect.ValueOf(role)
+	if v.Kind() == reflect.Ptr {
+		v = v.Elem()
+	}
+	if v.Kind() == reflect.Struct {
+		permField := v.FieldByName("Permissions")
+		if permField.IsValid() && permField.CanSet() && permField.Kind() == reflect.Int64 {
+			bitmap := int64(PermissionsToBitfield(permissions))
+			permField.SetInt(bitmap)
+		}
+	}
 }
 
 // Note: getRolePermissions functionality is now handled by the repository pattern

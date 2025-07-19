@@ -63,7 +63,7 @@ func GetUserRooms(c fiber.Ctx) error {
 		log.Printf("Error fetching user's spaces: %v", err)
 		// Don't fail the request, just skip space rooms
 	} else {
-		// For each space, get all rooms and check VIEW_CHANNELS permission
+		// For each space, get all rooms and check VIEW_ROOMS permission
 		for _, membership := range spaceMemberships {
 			spaceIDStr := strconv.FormatInt(membership.SpaceID, 10)
 
@@ -79,13 +79,13 @@ func GetUserRooms(c fiber.Ctx) error {
 				continue
 			}
 
-			// Check VIEW_CHANNELS permission for each room
+			// Check VIEW_ROOMS permission for each room
 			for _, spaceRoom := range spaceRooms {
 				// Only check permission for text/voice rooms, not sections
 				if spaceRoom.Type == types.RoomTypeTextRoom || spaceRoom.Type == types.RoomTypeVoiceRoom {
-					hasPermission, err := utils.CheckPermissionFromContext(database.Session, user.ID, spaceIDStr, utils.VIEW_CHANNELS)
+					hasPermission, err := utils.CheckPermissionFromContext(database.Session, user.ID, spaceIDStr, utils.VIEW_ROOMS)
 					if err != nil {
-						log.Printf("Error checking VIEW_CHANNELS permission for room %d in space %s: %v", spaceRoom.ID, spaceIDStr, err)
+						log.Printf("Error checking VIEW_ROOMS permission for room %d in space %s: %v", spaceRoom.ID, spaceIDStr, err)
 						continue
 					}
 					if hasPermission {

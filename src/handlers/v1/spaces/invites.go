@@ -91,10 +91,12 @@ func CreateInvite(c fiber.Ctx) error {
 
 	body := new(CreateInviteInput)
 	if err := c.Bind().Body(body); err != nil {
+		log.Printf("Failed to parse request body: %v", err)
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
 			"error": "Invalid request body",
 		})
 	}
+	log.Printf("Parsed request body: MaxUses=%v, ExpiresIn=%v", body.MaxUses, body.ExpiresIn)
 
 	// Generate unique invite code
 	var code string
@@ -127,6 +129,7 @@ func CreateInvite(c fiber.Ctx) error {
 	// Create invite
 	inviteID := uuid.New().String()
 	createdAt := time.Now()
+	log.Printf("Generated invite ID: %s, expires_at: %v", inviteID, expiresAt)
 
 	invite := models.SpaceInvite{
 		ID:        inviteID,
@@ -140,13 +143,16 @@ func CreateInvite(c fiber.Ctx) error {
 	}
 
 	// Insert into main table
-	insertQuery := qb.Insert("space_invites").Columns("id", "space_id", "code", "inviter_id", "max_uses", "uses", "expires_at", "created_at").Query(*database.Session)
-	if err := insertQuery.Bind(invite.ID, invite.SpaceID, invite.Code, invite.InviterID, invite.MaxUses, invite.Uses, invite.ExpiresAt, invite.CreatedAt).Exec(); err != nil {
-		log.Printf("Failed to create invite: %v", err)
+	log.Printf("Creating invite with ID: %s, SpaceID: %d, Code: %s", invite.ID, invite.SpaceID, invite.Code)
+	log.Printf("Database session status: %v", database.Session != nil)
+	if err := models.SpaceInviteTable.InsertQuery(*database.Session).BindStruct(invite).ExecRelease(); err != nil {
+		log.Printf("Failed to create invite in main table - Error: %v, Type: %T", err, err)
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 			"error": "Failed to create invite",
+			"details": err.Error(),
 		})
 	}
+	log.Printf("Successfully inserted invite into main table")
 
 	// Insert into by_code table
 	inviteByCode := models.SpaceInviteByCode{
@@ -160,13 +166,14 @@ func CreateInvite(c fiber.Ctx) error {
 		CreatedAt: invite.CreatedAt,
 	}
 
-	insertByCodeQuery := qb.Insert("space_invites_by_code").Columns("code", "id", "space_id", "inviter_id", "max_uses", "uses", "expires_at", "created_at").Query(*database.Session)
-	if err := insertByCodeQuery.Bind(inviteByCode.Code, inviteByCode.ID, inviteByCode.SpaceID, inviteByCode.InviterID, inviteByCode.MaxUses, inviteByCode.Uses, inviteByCode.ExpiresAt, inviteByCode.CreatedAt).Exec(); err != nil {
-		log.Printf("Failed to create invite by code: %v", err)
+	if err := models.SpaceInviteByCodeTable.InsertQuery(*database.Session).BindStruct(inviteByCode).ExecRelease(); err != nil {
+		log.Printf("Failed to create invite by code - Error: %v, Type: %T", err, err)
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 			"error": "Failed to create invite",
+			"details": err.Error(),
 		})
 	}
+	log.Printf("Successfully inserted invite into by_code table")
 
 	// Insert into by_space table
 	inviteBySpace := models.SpaceInviteBySpace{
@@ -180,13 +187,14 @@ func CreateInvite(c fiber.Ctx) error {
 		CreatedAt: invite.CreatedAt,
 	}
 
-	insertBySpaceQuery := qb.Insert("space_invites_by_space").Columns("space_id", "id", "code", "inviter_id", "max_uses", "uses", "expires_at", "created_at").Query(*database.Session)
-	if err := insertBySpaceQuery.Bind(inviteBySpace.SpaceID, inviteBySpace.ID, inviteBySpace.Code, inviteBySpace.InviterID, inviteBySpace.MaxUses, inviteBySpace.Uses, inviteBySpace.ExpiresAt, inviteBySpace.CreatedAt).Exec(); err != nil {
-		log.Printf("Failed to create invite by space: %v", err)
+	if err := models.SpaceInviteBySpaceTable.InsertQuery(*database.Session).BindStruct(inviteBySpace).ExecRelease(); err != nil {
+		log.Printf("Failed to create invite by space - Error: %v, Type: %T", err, err)
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 			"error": "Failed to create invite",
+			"details": err.Error(),
 		})
 	}
+	log.Printf("Successfully inserted invite into by_space table")
 
 	// Get inviter info
 	var inviterInfo InviterInfo
@@ -252,6 +260,7 @@ func GetSpaceInvites(c fiber.Ctx) error {
 	}
 
 	// Get all invites for the space
+	log.Printf("Getting invites for space ID: %d", spaceID)
 	var invites []models.SpaceInviteBySpace
 	invitesQuery := qb.Select("space_invites_by_space").Where(qb.Eq("space_id")).Query(*database.Session)
 	if err := invitesQuery.Bind(spaceID).Select(&invites); err != nil {
@@ -260,6 +269,7 @@ func GetSpaceInvites(c fiber.Ctx) error {
 			"error": "Failed to get invites",
 		})
 	}
+	log.Printf("Found %d invites for space %d", len(invites), spaceID)
 
 	// Convert to response format and get inviter info
 	var responses []InviteResponse

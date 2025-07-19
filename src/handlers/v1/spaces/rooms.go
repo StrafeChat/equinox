@@ -19,8 +19,8 @@ import (
 
 type CreateSpaceRoomInput struct {
 	Name         string   `json:"name" validate:"required,min=1,max=100"`
-	Type         int      `json:"type" validate:"required,oneof=2 3"` // 2 = Text Room, 3 = Voice Room
-	ParentID     *string  `json:"parent_id,omitempty"`                // Section ID if room belongs to a section
+	Type         int      `json:"type" validate:"required,oneof=2 3 4"` // 2 = Text Room, 3 = Voice Room, 4 = Space Section
+	ParentID     *string  `json:"parent_id,omitempty"`                  // Section ID if room belongs to a section
 	Topic        *string  `json:"topic,omitempty" validate:"omitempty,max=1024"`
 	IsPrivate    bool     `json:"is_private,omitempty"`
 	AllowedRoles []string `json:"allowed_roles,omitempty"` // Role IDs that can access this private room
@@ -44,9 +44,9 @@ func CreateSpaceRoom(c fiber.Ctx) error {
 		})
 	}
 
-	if body.Type != types.RoomTypeTextRoom && body.Type != types.RoomTypeVoiceRoom {
+	if body.Type != types.RoomTypeTextRoom && body.Type != types.RoomTypeVoiceRoom && body.Type != types.RoomTypeSpaceSection {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-			"error": "Invalid room type. Must be 2 (Text Room) or 3 (Voice Room)",
+			"error": "Invalid room type. Must be 2 (Text Room), 3 (Voice Room), or 4 (Space Section)",
 		})
 	}
 
@@ -194,8 +194,8 @@ func getNextRoomPosition(spaceID int64, parentID *string) (int, error) {
 		var parentIDResult *string
 		var roomType int
 		for iter.Scan(&position, &parentIDResult, &roomType) {
-			// Filter for rooms with no parent and correct type
-			if parentIDResult == nil && (roomType == types.RoomTypeTextRoom || roomType == types.RoomTypeVoiceRoom) {
+			// Filter for rooms with no parent and correct type (including sections)
+			if parentIDResult == nil && (roomType == types.RoomTypeTextRoom || roomType == types.RoomTypeVoiceRoom || roomType == types.RoomTypeSpaceSection) {
 				if position != nil && *position > maxPosition {
 					maxPosition = *position
 				}

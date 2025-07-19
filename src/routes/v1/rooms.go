@@ -11,6 +11,19 @@ func SetupRoomsRoutes(verisonRouter *fiber.Group) {
 
 	router.Use(middleware.VerifyAuth())
 
+	// Room positions route (must come before /:id route)
+	router.Patch("/positions", handlers_v1.UpdateRoomPositions)
+
+	// Permission override routes (must come before /:id routes to avoid conflicts)
+	router.Get("/:roomId/permissions", handlers_v1.GetRoomPermissionOverrides)
+	router.Post("/:roomId/permissions/roles", handlers_v1.SetRolePermissionOverrides)
+	router.Post("/:roomId/permissions/members", handlers_v1.SetMemberPermissionOverrides)
+	router.Put("/:roomId/permissions/roles/:roleId/:permissionId", handlers_v1.UpdateRolePermissionOverride)
+	router.Put("/:roomId/permissions/members/:userId/:permissionId", handlers_v1.UpdateMemberPermissionOverride)
+	router.Delete("/:roomId/permissions/roles/:roleId", handlers_v1.DeleteRolePermissionOverrides)
+	router.Delete("/:roomId/permissions/members/:userId", handlers_v1.DeleteMemberPermissionOverrides)
+
+	// Message routes
 	router.Post("/:id/messages", handlers_v1.CreateMessage)
 	router.Get("/:id/messages", handlers_v1.GetRoomMessages)
 	router.Delete("/:roomID/messages/:messageID", handlers_v1.DeleteMessage)
@@ -18,9 +31,6 @@ func SetupRoomsRoutes(verisonRouter *fiber.Group) {
 	router.Get("/:id/unreads", handlers_v1.GetUnreadMessages)
 	router.Post("/:id/ack", handlers_v1.AcknowledgeMessages)
 	router.Post("/:id/typing", handlers_v1.HandleTypingIndicator)
-
-	// Room positions route (must come before /:id route)
-	router.Patch("/positions", handlers_v1.UpdateRoomPositions)
 
 	// Room management routes
 	router.Patch("/:id", handlers_v1.UpdateRoom)

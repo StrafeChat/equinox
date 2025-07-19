@@ -55,7 +55,8 @@ type PermissionResponse struct {
 // Helper functions
 func convertRoleToResponse(role *models.SpaceRole) RoleResponse {
 	permissionsMap := make(map[string]interface{})
-	for _, perm := range role.Permissions {
+	// Use the new helper function that prefers bitmap over legacy permissions
+	for _, perm := range utils.GetRolePermissionsAsStrings(role) {
 		permissionsMap[perm] = true
 	}
 	return RoleResponse{
@@ -205,13 +206,15 @@ func CreateRole(c fiber.Ctx) error {
 		RoleID:      roleID,
 		Name:        body.Name,
 		Color:       body.Color,
-		Permissions: permissions,
 		Position:    maxPosition + 1,
 		Mentionable: mentionable,
 		Hoist:       hoist,
 		CreatedAt:   now,
 		UpdatedAt:   now,
 	}
+
+	// Set permissions using the new bitmap system
+	utils.SetRolePermissionsFromStrings(&role, permissions)
 
 	// Insert role
 	if err := rolesRepo.CreateRole(role); err != nil {
@@ -226,7 +229,7 @@ func CreateRole(c fiber.Ctx) error {
 		"role_id":     roleID,
 		"name":        role.Name,
 		"color":       role.Color,
-		"permissions": role.Permissions,
+		"permissions": utils.GetRolePermissionsAsStrings(&role),
 		"position":    role.Position,
 		"mentionable": role.Mentionable,
 		"hoist":       role.Hoist,
@@ -279,13 +282,6 @@ func UpdateRole(c fiber.Ctx) error {
 		})
 	}
 
-	// Only allow editing @everyone role, and only permissions
-	if roleID != "@everyone" {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-			"error": "Only @everyone role can be edited",
-		})
-	}
-
 	// For @everyone role, get current role to validate that non-permission fields aren't being changed
 	rolesRepo := repository.NewSpaceRolesRepository(database.Session)
 	currentRole, err := rolesRepo.GetRole(spaceID, roleID)
@@ -327,7 +323,9 @@ func UpdateRole(c fiber.Ctx) error {
 	updates := make(map[string]interface{})
 	if req.Permissions != nil {
 		permissions := utils.PermissionsFromMap(req.Permissions)
-		updates["permissions"] = permissions
+		// Convert permissions to bitmap and store in permissions column
+		bitmap := int64(utils.PermissionsToBitfield(permissions))
+		updates["permissions"] = bitmap
 	}
 
 	if len(updates) == 0 {
@@ -360,7 +358,7 @@ func UpdateRole(c fiber.Ctx) error {
 		"role_id":     updatedRole.RoleID,
 		"name":        updatedRole.Name,
 		"color":       updatedRole.Color,
-		"permissions": updatedRole.Permissions,
+		"permissions": utils.GetRolePermissionsAsStrings(updatedRole),
 		"position":    updatedRole.Position,
 		"mentionable": updatedRole.Mentionable,
 		"hoist":       updatedRole.Hoist,

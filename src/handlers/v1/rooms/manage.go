@@ -34,7 +34,7 @@ type UpdateRoomInput struct {
 	Position *int    `json:"position,omitempty"`
 }
 
-// DeleteRoom deletes a PM group (only by creator, unless they left)
+// DeleteRoom deletes a room (group PMs or space rooms with proper permissions)
 func DeleteRoom(c fiber.Ctx) error {
 	user := c.Locals("user").(models.User)
 	roomID := c.Params("id")
@@ -48,13 +48,13 @@ func DeleteRoom(c fiber.Ctx) error {
 	}
 
 	// Get the room details
-	log.Printf("RemoveMember: Fetching room details for roomID=%s", roomID)
+	log.Printf("DeleteRoom: Fetching room details for roomID=%s", roomID)
 	var room types.Room
 	roomQ := models.RoomTable.SelectQuery(*database.Session)
 	if err := roomQ.BindMap(map[string]interface{}{
 		"id": roomID,
 	}).Exec(); err != nil {
-		log.Printf("RemoveMember: Failed to execute room query: %v", err)
+		log.Printf("DeleteRoom: Failed to execute room query: %v", err)
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 			"message": "Failed to fetch room",
 			"error":   err.Error(),
@@ -62,7 +62,7 @@ func DeleteRoom(c fiber.Ctx) error {
 	}
 
 	if err := roomQ.Get(&room); err != nil {
-		log.Printf("RemoveMember: Room not found: %v", err)
+		log.Printf("DeleteRoom: Room not found: %v", err)
 		roomQ.Release()
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
 			"message": "Room not found",
@@ -70,81 +70,93 @@ func DeleteRoom(c fiber.Ctx) error {
 		})
 	}
 	roomQ.Release()
-	log.Printf("RemoveMember: Room found - type=%d, creator=%v, recipients=%v", room.Type, room.Creator, room.Recipients)
+	log.Printf("DeleteRoom: Room found - type=%d, creator=%v, recipients=%v", room.Type, room.Creator, room.Recipients)
 
-	// Only allow deletion of group PMs
-	if room.Type != types.RoomTypeGroupPM {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-			"message": "Only group PMs can be deleted",
-		})
-	}
-
-	// Check if user has permission to delete
-	// Only the creator can delete, unless they left the group
-	if room.Creator != nil && *room.Creator == user.ID {
-		// Creator can always delete
-	} else {
-		// Check if the creator left the group
-		if room.Creator != nil {
-			// Check if creator is still in recipients
-			creatorInGroup := false
-			for _, recipientID := range room.Recipients {
-				if recipientID == *room.Creator {
-					creatorInGroup = true
-					break
+	// Check permissions based on room type
+	if room.Type == types.RoomTypeGroupPM {
+		// Group PM deletion logic (existing)
+		// Check if user has permission to delete
+		// Only the creator can delete, unless they left the group
+		if room.Creator != nil && *room.Creator == user.ID {
+			// Creator can always delete
+		} else {
+			// Check if the creator left the group
+			if room.Creator != nil {
+				// Check if creator is still in recipients
+				creatorInGroup := false
+				for _, recipientID := range room.Recipients {
+					if recipientID == *room.Creator {
+						creatorInGroup = true
+						break
+					}
 				}
+				if creatorInGroup {
+					return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
+						"message": "Only the group creator can delete this room",
+					})
+				}
+				// Creator left, any remaining member can delete
 			}
-			if creatorInGroup {
-				return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
-					"message": "Only the group creator can delete this room",
-				})
+		}
+
+		// Check if user is in the room
+		userInRoom := false
+		for _, recipientID := range room.Recipients {
+			if recipientID == user.ID {
+				userInRoom = true
+				break
 			}
-			// Creator left, any remaining member can delete
+		}
+		if !userInRoom {
+			return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
+				"message": "You are not a member of this room",
+			})
+		}
+	} else if room.Type == types.RoomTypeTextRoom || room.Type == types.RoomTypeVoiceRoom || room.Type == types.RoomTypeSpaceSection {
+		// Space room deletion logic - check MANAGE_CHANNELS permission
+		hasPermission, err := checkRoomManagePermission(roomID, user.ID)
+		if err != nil {
+			log.Printf("DeleteRoom: Failed to check manage permission: %v", err)
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+				"message": "Failed to check permissions",
+				"error":   err.Error(),
+			})
+		}
+		if !hasPermission {
+			return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
+				"message": "You don't have permission to delete this room",
+			})
+		}
+	} else {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"message": "This room type cannot be deleted",
+		})
+	}
+
+	// Delete room data based on type
+	if room.Type == types.RoomTypeGroupPM {
+		// Delete all room recipients for group PMs
+		deleteRecipientsQ := models.RoomRecipientByUserTable.DeleteQuery(*database.Session)
+		if err := deleteRecipientsQ.BindMap(map[string]interface{}{
+			"room_id": roomID,
+		}).ExecRelease(); err != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+				"message": "Failed to delete room recipients",
+				"error":   err.Error(),
+			})
 		}
 	}
 
-	// Check if user is in the room
-	userInRoom := false
-	for _, recipientID := range room.Recipients {
-		if recipientID == user.ID {
-			userInRoom = true
-			break
-		}
-	}
-	if !userInRoom {
-		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
-			"message": "You are not a member of this room",
-		})
-	}
-
-	// Delete all room recipients
-	deleteRecipientsQ := models.RoomRecipientByUserTable.DeleteQuery(*database.Session)
-	if err := deleteRecipientsQ.BindMap(map[string]interface{}{
-		"room_id": roomID,
-	}).ExecRelease(); err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-			"message": "Failed to delete room recipients",
-			"error":   err.Error(),
-		})
-	}
-
-	// Delete the room
-	deleteRoomQ := models.RoomTable.DeleteQuery(*database.Session)
-	if err := deleteRoomQ.BindMap(map[string]interface{}{
-		"id": roomID,
-	}).ExecRelease(); err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-			"message": "Failed to delete room",
-			"error":   err.Error(),
-		})
-	}
-
-	// Publish room deletion event to Redis
+	// Publish room deletion event to Redis BEFORE deleting the room
+	// Include room type and space_id for proper broadcasting
 	eventData := map[string]interface{}{
 		"type": "ROOM_DELETE",
 		"data": map[string]interface{}{
 			"room_id":    roomID,
 			"deleted_by": user.ID,
+			"room_type":  room.Type,
+			"space_id":   room.SpaceID,
+			"recipients": room.Recipients,
 		},
 	}
 
@@ -159,6 +171,17 @@ func DeleteRoom(c fiber.Ctx) error {
 	if err := database.Rdb.Publish("ROOM_EVENTS", string(eventBytes)).Err(); err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 			"message": "Failed to publish room deletion event",
+			"error":   err.Error(),
+		})
+	}
+
+	// Delete the room AFTER publishing the event
+	deleteRoomQ := models.RoomTable.DeleteQuery(*database.Session)
+	if err := deleteRoomQ.BindMap(map[string]interface{}{
+		"id": roomID,
+	}).ExecRelease(); err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"message": "Failed to delete room",
 			"error":   err.Error(),
 		})
 	}

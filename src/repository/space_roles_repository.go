@@ -10,6 +10,7 @@ import (
 	"github.com/scylladb/gocqlx/v2/qb"
 
 	"github.com/StrafeChat/equinox/src/database/models"
+	"github.com/StrafeChat/equinox/src/utils"
 )
 
 type SpaceRolesRepository struct {
@@ -166,7 +167,7 @@ func (r *SpaceRolesRepository) DeleteRole(spaceID int64, roleID string, memberRo
 // getDefaultEveryonePermissions returns the default permissions for @everyone role
 func getDefaultEveryonePermissions() []string {
 	return []string{
-		"VIEW_CHANNELS",
+		"VIEW_ROOMS",
 		"SEND_MESSAGES",
 		"READ_MESSAGE_HISTORY",
 		"ADD_REACTIONS",
@@ -227,13 +228,14 @@ func (r *SpaceRolesRepository) CreateDefaultEveryoneRole(spaceID int64) error {
 		RoleID:      "@everyone",
 		Name:        "@everyone",
 		Color:       &color,
-		Permissions: defaultPermissions,
 		Position:    0,     // Lowest position
 		Mentionable: false, // Not mentionable
 		Hoist:       false, // Not hoisted
 		CreatedAt:   now,
 		UpdatedAt:   now,
 	}
+	// Set permissions using the new bitmap system
+	utils.SetRolePermissionsFromStrings(&role, defaultPermissions)
 	return r.CreateRole(role)
 }
 
@@ -283,10 +285,10 @@ func (r *SpaceRolesRepository) CalculateMemberPermissions(spaceID int64, userID 
 		return nil, err
 	}
 
-	// Extract permissions from all roles
+	// Extract permissions from all roles using the new bitmap system
 	var rolePermissions [][]string
 	for _, role := range memberRoles {
-		rolePermissions = append(rolePermissions, role.Permissions)
+		rolePermissions = append(rolePermissions, utils.GetRolePermissionsAsStrings(&role))
 	}
 
 	// Calculate combined permissions

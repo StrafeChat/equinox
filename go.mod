@@ -16,7 +16,6 @@ require (
 	github.com/mssola/user_agent v0.6.0
 	github.com/resend/resend-go/v2 v2.21.0
 	github.com/scylladb/gocqlx/v2 v2.8.0
-	github.com/scylladb/gocqlx/v3 v3.0.2
 	github.com/valyala/fasthttp v1.64.0
 	golang.org/x/crypto v0.40.0
 )
