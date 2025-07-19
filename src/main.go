@@ -32,14 +32,14 @@ func main() {
 	database.InitDB()
 	defer database.Session.Close()
 
-	/*_ Run database migrations _*/
-	log.Println("Running database migrations...")
-	if err := database.MigratePermissionsToBitmap(); err != nil {
-		log.Printf("Permissions migration failed: %v", err)
-		// Don't panic - the app can still run if migration fails
-	} else {
-		log.Println("Permissions migration completed successfully")
-	}
+	// /*_ Run database migrations _*/
+	// log.Println("Running database migrations...")
+	// if err := database.MigratePermissionsToBitmap(); err != nil {
+	// 	log.Printf("Permissions migration failed: %v", err)
+	// 	// Don't panic - the app can still run if migration fails
+	// } else {
+	// 	log.Println("Permissions migration completed successfully")
+	// }
 
 	/*_ Initialize Livekit Connection _*/
 	portal.InitPortal()
