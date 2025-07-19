@@ -35,36 +35,6 @@ func main() {
 	/*_ Initialize Livekit Connection _*/
 	portal.InitPortal()
 
-	// Run migration to update message_attachment UDT
-	if err := database.MigrateMessageAttachmentSchema(); err != nil {
-		log.Printf("Failed to migrate message_attachment schema: %v", err)
-	}
-
-	// Run migration to add width and height columns to files table
-	if err := database.MigrateFileSchema(); err != nil {
-		log.Printf("Failed to migrate files schema: %v", err)
-	}
-
-	// Run migration to add missing columns to rooms table
-	if err := database.MigrateRoomSchema(); err != nil {
-		log.Printf("Failed to migrate rooms schema: %v", err)
-	}
-
-	// Run migration to add missing columns to users table
-	if err := database.MigrateUserSchema(); err != nil {
-		log.Printf("Failed to migrate users schema: %v", err)
-	}
-
-	// // Run migration to change space_roles permissions column from list<text> to bigint
-	// if err := database.MigrateSpaceRolesPermissionsSchema(); err != nil {
-	// 	log.Printf("Failed to migrate space roles permissions schema: %v", err)
-	// }
-
-	// Run data migration to convert existing permissions from string arrays to bitmaps
-	if err := database.MigrateSpaceRolesPermissionsData(); err != nil {
-		log.Printf("Failed to migrate space roles permissions data: %v", err)
-	}
-
 	// Start the password reset cleanup task
 	helpers.ScheduleCleanupTask()
 

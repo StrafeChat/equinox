@@ -140,4 +140,38 @@ func MigrateSpaceIDSchema() error {
 	return nil
 }
 
+// MigrateAllSchemas runs all available migrations
+func MigrateAllSchemas() error {
+	log.Println("Running all database schema migrations...")
+
+	// Run individual migrations
+	if err := MigrateRoomSchema(); err != nil {
+		return err
+	}
+
+	if err := MigrateVerificationTokensSchema(); err != nil {
+		return err
+	}
+
+	if err := MigrateMessageAttachmentSchema(); err != nil {
+		return err
+	}
+
+	if err := MigrateFileSchema(); err != nil {
+		return err
+	}
+
+	if err := MigrateUserSchema(); err != nil {
+		return err
+	}
+
+	// Run permissions migration
+	if err := MigratePermissionsToBitmap(); err != nil {
+		return err
+	}
+
+	log.Println("All schema migrations completed successfully")
+	return nil
+}
+
 // MigrateMessageSchema creates the new message types and updates the messages table
