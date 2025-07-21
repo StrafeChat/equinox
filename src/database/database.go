@@ -97,6 +97,11 @@ func CreateSchema() error {
 		&models.RelationshipBySender{},
 		&models.RelationshipByRecipient{},
 		&models.UserByUsernameAndDiscriminator{},
+		&models.E2EEIdentityKey{},
+		&models.E2EEPreKey{},
+		&models.E2EESignedPreKey{},
+		&models.E2EESession{},
+		&models.E2EEGroupSession{},
 	}
 	// indexes := []interface{}{
 	// 	&indexes.RoomRecipientByUser{},
