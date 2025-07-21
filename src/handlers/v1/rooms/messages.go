@@ -654,7 +654,7 @@ func GetRoomMessages(c fiber.Ctx) error {
 				if msg.AuthorID != nil {
 					senderID = *msg.AuthorID
 				}
-				
+
 				if senderID != "" {
 					decryptedContent, decryptionErr = getE2EEService().DecryptMessage(user.ID, senderID, *msg.Content)
 					if decryptionErr != nil {
@@ -816,7 +816,7 @@ func CreateMessage(c fiber.Ctx) error {
 	var isEncrypted bool
 	if room.Type == types.RoomTypePM || room.Type == types.RoomTypeGroupPM {
 		log.Printf("CreateMessage: Attempting E2EE encryption for room type %d", room.Type)
-		
+
 		if room.Type == types.RoomTypePM {
 			// Direct message encryption - get recipient ID from room recipients
 			var roomRecipients []models.RoomRecipientByUser
@@ -838,7 +838,7 @@ func CreateMessage(c fiber.Ctx) error {
 						break
 					}
 				}
-				
+
 				if recipientID != "" {
 					encryptedContent, err := getE2EEService().EncryptMessage(user.ID, recipientID, body.Content)
 					if err != nil {
@@ -898,10 +898,15 @@ func CreateMessage(c fiber.Ctx) error {
 		log.Printf("CreateMessage: Failed to add unread entries: %v", err)
 	}
 
-	// Handle message references (replies)
+	// Handle message references (replies) - limit to 5 max
 	if len(body.MessageReferences) > 0 {
-		log.Printf("CreateMessage: Processing %d message references", len(body.MessageReferences))
+		log.Printf("CreateMessage: Processing message references (max 5)")
+		// Truncate to max 5 references if needed
+		if len(body.MessageReferences) > 5 {
+			body.MessageReferences = body.MessageReferences[:5]
+		}
 		message.MessageReferences = &body.MessageReferences
+		log.Printf("CreateMessage: Added %d message references", len(body.MessageReferences))
 	}
 
 	// Handle attachments
