@@ -7,16 +7,18 @@ import (
 )
 
 // E2EEIdentityKey stores the long-term identity key for each user
+// Note: Private keys should NEVER be stored on the server in production
 type E2EEIdentityKey struct {
 	UserID    string    `db:"user_id" json:"user_id"`
 	PublicKey []byte    `db:"public_key" json:"public_key"`
+	KeyType   string    `db:"key_type" json:"key_type"` // "ed25519" for identity keys
 	CreatedAt time.Time `db:"created_at" json:"created_at"`
 	UpdatedAt time.Time `db:"updated_at" json:"updated_at"`
 }
 
 var identityKeyMeta = table.Metadata{
 	Name:    "e2ee_identity_keys",
-	Columns: []string{"user_id", "public_key", "created_at", "updated_at"},
+	Columns: []string{"user_id", "public_key", "key_type", "created_at", "updated_at"},
 	PartKey: []string{"user_id"},
 }
 
@@ -63,13 +65,15 @@ type E2EESession struct {
 	UserID       string    `db:"user_id" json:"user_id"`
 	RecipientID  string    `db:"recipient_id" json:"recipient_id"`
 	SessionData  []byte    `db:"session_data" json:"session_data"`
+	SessionVersion uint32  `db:"session_version" json:"session_version"`
+	ProtocolVersion string `db:"protocol_version" json:"protocol_version"` // "signal_v1"
 	CreatedAt    time.Time `db:"created_at" json:"created_at"`
 	UpdatedAt    time.Time `db:"updated_at" json:"updated_at"`
 }
 
 var e2eeSessionMeta = table.Metadata{
 	Name:    "e2ee_sessions",
-	Columns: []string{"user_id", "recipient_id", "session_data", "created_at", "updated_at"},
+	Columns: []string{"user_id", "recipient_id", "session_data", "session_version", "protocol_version", "created_at", "updated_at"},
 	PartKey: []string{"user_id"},
 	SortKey: []string{"recipient_id"},
 }
@@ -102,6 +106,7 @@ func (e *E2EEIdentityKey) SchemaDefinition() []string {
 		`CREATE TABLE IF NOT EXISTS e2ee_identity_keys (
 			user_id text PRIMARY KEY,
 			public_key blob,
+			key_type text,
 			created_at timestamp,
 			updated_at timestamp
 		);`,
@@ -140,6 +145,8 @@ func (e *E2EESession) SchemaDefinition() []string {
 			user_id text,
 			recipient_id text,
 			session_data blob,
+			session_version int,
+			protocol_version text,
 			created_at timestamp,
 			updated_at timestamp,
 			PRIMARY KEY (user_id, recipient_id)

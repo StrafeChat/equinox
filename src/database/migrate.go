@@ -174,4 +174,19 @@ func MigrateAllSchemas() error {
 	return nil
 }
 
+// MigrateE2EESchema adds missing columns to E2EE tables
+func MigrateE2EESchema() error {
+	log.Println("Migrating E2EE tables schema...")
+
+	// Try to add key_type column to e2ee_identity_keys if it doesn't exist
+	if err := Session.ExecStmt(`ALTER TABLE e2ee_identity_keys ADD key_type text`); err != nil {
+		log.Printf("key_type column might already exist in e2ee_identity_keys: %v", err)
+	} else {
+		log.Println("Added key_type column to e2ee_identity_keys table")
+	}
+
+	log.Println("E2EE tables migration completed")
+	return nil
+}
+
 // MigrateMessageSchema creates the new message types and updates the messages table

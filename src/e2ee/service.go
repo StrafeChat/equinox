@@ -35,10 +35,11 @@ func (s *E2EEService) InitializeUserKeys(userID string) error {
 		return fmt.Errorf("failed to generate identity key: %w", err)
 	}
 
-	// Store identity key
+	// Store identity key (public key only - private key should be stored securely on client)
 	identityKey := &models.E2EEIdentityKey{
 		UserID:    userID,
 		PublicKey: identityKeyPair.PublicKey,
+		KeyType:   "ed25519",
 		CreatedAt: time.Now(),
 		UpdatedAt: time.Now(),
 	}
@@ -139,7 +140,8 @@ func (s *E2EEService) GetPreKeyBundle(userID string) (*PreKeyBundle, error) {
 }
 
 // CreateSession creates a new E2EE session between two users
-func (s *E2EEService) CreateSession(senderID, recipientID string) error {
+// Note: In production, the identity private key should be provided securely from the client
+func (s *E2EEService) CreateSession(senderID, recipientID string, senderIdentityPrivateKey []byte) error {
 	// Get sender's identity key
 	var senderIdentity models.E2EEIdentityKey
 	if err := s.session.Query(models.E2EEIdentityKeyTable.Get()).BindMap(qb.M{"user_id": senderID}).GetRelease(&senderIdentity); err != nil {
@@ -152,52 +154,53 @@ func (s *E2EEService) CreateSession(senderID, recipientID string) error {
 		return fmt.Errorf("failed to get recipient prekey bundle: %w", err)
 	}
 
-	// Create identity key pair from stored key (simplified)
-	identityKeyPair := &IdentityKeyPair{
-		PublicKey: senderIdentity.PublicKey,
-		// Note: In a real implementation, you'd need to securely store and retrieve the private key
-		// For this demo, we'll generate a new one (not recommended for production)
-		PrivateKey: make([]byte, 64),
+	// Verify the signed prekey signature before proceeding
+	if !VerifyPreKeySignature(bundle.IdentityKey, bundle.SignedPreKey, bundle.Signature) {
+		return fmt.Errorf("invalid signed prekey signature for recipient %s", recipientID)
 	}
-	rand.Read(identityKeyPair.PrivateKey)
 
-	// Initialize session
+	// Create identity key pair with provided private key
+	identityKeyPair := &IdentityKeyPair{
+		PublicKey:  senderIdentity.PublicKey,
+		PrivateKey: senderIdentityPrivateKey,
+	}
+
+	// Initialize session using proper X3DH
 	sessionState, err := InitializeSession(bundle, identityKeyPair)
 	if err != nil {
 		return fmt.Errorf("failed to initialize session: %w", err)
 	}
 
 	// Serialize and store session
-	sessionData := sessionState.Serialize()
+	sessionData, err := sessionState.Serialize()
+	if err != nil {
+		return fmt.Errorf("failed to serialize session: %w", err)
+	}
+
 	session := &models.E2EESession{
-		UserID:      senderID,
-		RecipientID: recipientID,
-		SessionData: sessionData,
-		CreatedAt:   time.Now(),
-		UpdatedAt:   time.Now(),
+		UserID:          senderID,
+		RecipientID:     recipientID,
+		SessionData:     sessionData,
+		SessionVersion:  1,
+		ProtocolVersion: "signal_v1",
+		CreatedAt:       time.Now(),
+		UpdatedAt:       time.Now(),
 	}
 
 	if err := s.session.Query(models.E2EESessionTable.Insert()).BindStruct(session).ExecRelease(); err != nil {
 		return fmt.Errorf("failed to store session: %w", err)
 	}
 
-	log.Printf("Created E2EE session between %s and %s", senderID, recipientID)
+	log.Printf("Created E2EE session between %s and %s using X3DH", senderID, recipientID)
 	return nil
 }
 
-// EncryptMessage encrypts a message for a specific recipient
+// EncryptMessage encrypts a message for a specific recipient using Double Ratchet
 func (s *E2EEService) EncryptMessage(senderID, recipientID, plaintext string) (string, error) {
 	// Get session
 	var sessionModel models.E2EESession
 	if err := s.session.Query(models.E2EESessionTable.Get()).BindMap(qb.M{"user_id": senderID, "recipient_id": recipientID}).GetRelease(&sessionModel); err != nil {
-		// If no session exists, create one
-		if err := s.CreateSession(senderID, recipientID); err != nil {
-			return "", fmt.Errorf("failed to create session: %w", err)
-		}
-		// Retry getting the session
-		if err := s.session.Query(models.E2EESessionTable.Get()).BindMap(qb.M{"user_id": senderID, "recipient_id": recipientID}).GetRelease(&sessionModel); err != nil {
-			return "", fmt.Errorf("failed to get session after creation: %w", err)
-		}
+		return "", fmt.Errorf("no session found between %s and %s. Session must be created first", senderID, recipientID)
 	}
 
 	// Deserialize session state
@@ -212,19 +215,24 @@ func (s *E2EEService) EncryptMessage(senderID, recipientID, plaintext string) (s
 		return "", fmt.Errorf("failed to encrypt message: %w", err)
 	}
 
-	// Update session state in database
-	updatedSessionData := sessionState.Serialize()
-	updateQuery := qb.Update("e2ee_sessions").Set("session_data", "updated_at").Where(qb.Eq("user_id"), qb.Eq("recipient_id")).Query(*s.session)
+	// Update session state in database with version increment
+	updatedSessionData, err := sessionState.Serialize()
+	if err != nil {
+		return "", fmt.Errorf("failed to serialize updated session: %w", err)
+	}
+
+	updateQuery := qb.Update("e2ee_sessions").Set("session_data", "session_version", "updated_at").Where(qb.Eq("user_id"), qb.Eq("recipient_id")).Query(*s.session)
 	if err := updateQuery.BindMap(qb.M{
-		"user_id":      senderID,
-		"recipient_id": recipientID,
-		"session_data": updatedSessionData,
-		"updated_at":   time.Now(),
+		"user_id":        senderID,
+		"recipient_id":   recipientID,
+		"session_data":   updatedSessionData,
+		"session_version": sessionModel.SessionVersion + 1,
+		"updated_at":     time.Now(),
 	}).ExecRelease(); err != nil {
 		return "", fmt.Errorf("failed to update session: %w", err)
 	}
 
-	// Encode ciphertext as base64 for transmission
+	// Return encrypted message as string (binary data)
 	return string(ciphertext), nil
 }
 
@@ -248,14 +256,19 @@ func (s *E2EEService) DecryptMessage(recipientID, senderID, ciphertext string) (
 		return "", fmt.Errorf("failed to decrypt message: %w", err)
 	}
 
-	// Update session state in database
-	updatedSessionData := sessionState.Serialize()
-	updateQuery := qb.Update("e2ee_sessions").Set("session_data", "updated_at").Where(qb.Eq("user_id"), qb.Eq("recipient_id")).Query(*s.session)
+	// Update session state in database with version increment
+	updatedSessionData, err := sessionState.Serialize()
+	if err != nil {
+		return "", fmt.Errorf("failed to serialize updated session: %w", err)
+	}
+
+	updateQuery := qb.Update("e2ee_sessions").Set("session_data", "session_version", "updated_at").Where(qb.Eq("user_id"), qb.Eq("recipient_id")).Query(*s.session)
 	if err := updateQuery.BindMap(qb.M{
-		"user_id":      recipientID,
-		"recipient_id": senderID,
-		"session_data": updatedSessionData,
-		"updated_at":   time.Now(),
+		"user_id":        recipientID,
+		"recipient_id":   senderID,
+		"session_data":   updatedSessionData,
+		"session_version": sessionModel.SessionVersion + 1,
+		"updated_at":     time.Now(),
 	}).ExecRelease(); err != nil {
 		return "", fmt.Errorf("failed to update session: %w", err)
 	}

@@ -811,65 +811,28 @@ func CreateMessage(c fiber.Ctx) error {
 		})
 	}
 
-	// Handle E2EE encryption for PM and GROUP_PM rooms
+	// Handle E2EE encryption for GROUP_PM rooms only (direct PMs are not encrypted)
 	var finalContent string
 	var isEncrypted bool
-	if room.Type == types.RoomTypePM || room.Type == types.RoomTypeGroupPM {
-		log.Printf("CreateMessage: Attempting E2EE encryption for room type %d", room.Type)
-
-		if room.Type == types.RoomTypePM {
-			// Direct message encryption - get recipient ID from room recipients
-			var roomRecipients []models.RoomRecipientByUser
-			if err := models.RoomRecipientByUserTable.SelectBuilder().
-				Columns("user_id", "room_id").
-				Where(qb.Eq("room_id")).
-				Query(*database.Session).
-				BindMap(qb.M{
-					"room_id": roomID,
-				}).SelectRelease(&roomRecipients); err != nil {
-				log.Printf("CreateMessage: Failed to get room recipients: %v", err)
-				finalContent = body.Content
-				isEncrypted = false
-			} else {
-				recipientID := ""
-				for _, recipient := range roomRecipients {
-					if recipient.UserId != user.ID {
-						recipientID = recipient.UserId
-						break
-					}
-				}
-
-				if recipientID != "" {
-					encryptedContent, err := getE2EEService().EncryptMessage(user.ID, recipientID, body.Content)
-					if err != nil {
-						log.Printf("CreateMessage: E2EE encryption failed, sending as plaintext: %v", err)
-						finalContent = body.Content
-						isEncrypted = false
-					} else {
-						finalContent = encryptedContent
-						isEncrypted = true
-						log.Printf("CreateMessage: Successfully encrypted direct message")
-					}
-				} else {
-					finalContent = body.Content
-					isEncrypted = false
-				}
-			}
+	if room.Type == types.RoomTypeGroupPM {
+		log.Printf("CreateMessage: Attempting E2EE encryption for group PM (room type %d)", room.Type)
+		
+		// Group message encryption
+		encryptedContent, err := getE2EEService().EncryptGroupMessage(roomID, user.ID, body.Content)
+		if err != nil {
+			log.Printf("CreateMessage: Group E2EE encryption failed, sending as plaintext: %v", err)
+			finalContent = body.Content
+			isEncrypted = false
 		} else {
-			// Group message encryption
-			encryptedContent, err := getE2EEService().EncryptGroupMessage(roomID, user.ID, body.Content)
-			if err != nil {
-				log.Printf("CreateMessage: Group E2EE encryption failed, sending as plaintext: %v", err)
-				finalContent = body.Content
-				isEncrypted = false
-			} else {
-				finalContent = encryptedContent
-				isEncrypted = true
-				log.Printf("CreateMessage: Successfully encrypted group message")
-			}
+			finalContent = encryptedContent
+			isEncrypted = true
+			log.Printf("CreateMessage: Successfully encrypted group message")
 		}
 	} else {
-		// No encryption for other room types
+		// No encryption for direct PMs and other room types
+		if room.Type == types.RoomTypePM {
+			log.Printf("CreateMessage: Direct PM detected (room type %d) - sending as plaintext (not encrypted)", room.Type)
+		}
 		finalContent = body.Content
 		isEncrypted = false
 	}

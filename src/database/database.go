@@ -54,6 +54,11 @@ func InitDB() error {
 		return err
 	}
 
+	// Run E2EE schema migration
+	if err := MigrateE2EESchema(); err != nil {
+		log.Printf("E2EE schema migration completed with warnings: %v", err)
+	}
+
 	/*_ Connect to Redis _*/
 	Rdb = redis.NewClient(&redis.Options{
 		Addr: os.Getenv("REDIS_HOST"),
