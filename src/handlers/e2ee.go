@@ -63,6 +63,20 @@ func getE2EEService() *e2ee.E2EEService {
 	return e2eeService
 }
 
+// ClientInitializeE2EERequest represents the client-side E2EE initialization request
+type ClientInitializeE2EERequest struct {
+	IdentityKey   []int `json:"identity_key"`
+	SignedPreKey  struct {
+		KeyID     int   `json:"key_id"`
+		PublicKey []int `json:"public_key"`
+		Signature []int `json:"signature"`
+	} `json:"signed_pre_key"`
+	PreKeys []struct {
+		KeyID     int   `json:"key_id"`
+		PublicKey []int `json:"public_key"`
+	} `json:"pre_keys"`
+}
+
 // InitializeE2EE initializes E2EE keys for a user
 func InitializeE2EE(c fiber.Ctx) error {
 	// Get user from context
@@ -73,7 +87,44 @@ func InitializeE2EE(c fiber.Ctx) error {
 		})
 	}
 
-	// Initialize E2EE keys
+	// Check if the request contains client-generated keys
+	var clientRequest ClientInitializeE2EERequest
+	if err := c.Bind().JSON(&clientRequest); err == nil && len(clientRequest.IdentityKey) > 0 {
+		// Client is providing keys, use them instead of generating on server
+		log.Printf("Initializing E2EE with client-provided keys for user %s", user.ID)
+		
+		// Convert client-provided keys to byte arrays
+		identityKey := make([]byte, len(clientRequest.IdentityKey))
+		for i, v := range clientRequest.IdentityKey {
+			identityKey[i] = byte(v)
+		}
+		
+		signedPreKey := make([]byte, len(clientRequest.SignedPreKey.PublicKey))
+		for i, v := range clientRequest.SignedPreKey.PublicKey {
+			signedPreKey[i] = byte(v)
+		}
+		
+		signature := make([]byte, len(clientRequest.SignedPreKey.Signature))
+		for i, v := range clientRequest.SignedPreKey.Signature {
+			signature[i] = byte(v)
+		}
+		
+		// Store client-provided keys
+		if err := getE2EEService().StoreClientProvidedKeys(user.ID, identityKey, signedPreKey, signature, clientRequest.SignedPreKey.KeyID, clientRequest.PreKeys); err != nil {
+			log.Printf("Failed to store client-provided E2EE keys for user %s: %v", user.ID, err)
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+				"error": "Failed to store client-provided E2EE keys",
+			})
+		}
+		
+		return c.JSON(fiber.Map{
+			"success": true,
+			"message": "Client-provided E2EE keys initialized successfully",
+		})
+	}
+
+	// No client-provided keys, generate on server (legacy approach)
+	log.Printf("No client-provided keys, generating E2EE keys on server for user %s", user.ID)
 	if err := getE2EEService().InitializeUserKeys(user.ID); err != nil {
 		log.Printf("Failed to initialize E2EE keys for user %s: %v", user.ID, err)
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{

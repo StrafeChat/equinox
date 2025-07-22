@@ -454,3 +454,59 @@ func (s *E2EEService) GetUserE2EEStatus(userID string) (bool, error) {
 	}
 	return true, nil
 }
+
+// StoreClientProvidedKeys stores E2EE keys provided by the client
+func (s *E2EEService) StoreClientProvidedKeys(userID string, identityKey, signedPreKey, signature []byte, signedPreKeyID int, preKeys []struct {
+	KeyID     int   `json:"key_id"`
+	PublicKey []int `json:"public_key"`
+}) error {
+	// Store identity key
+	identityKeyModel := &models.E2EEIdentityKey{
+		UserID:    userID,
+		PublicKey: identityKey,
+		KeyType:   "ed25519",
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	}
+
+	if err := s.session.Query(models.E2EEIdentityKeyTable.Insert()).BindStruct(identityKeyModel).ExecRelease(); err != nil {
+		return fmt.Errorf("failed to store identity key: %w", err)
+	}
+
+	// Store signed prekey
+	signedPreKeyModel := &models.E2EESignedPreKey{
+		UserID:    userID,
+		KeyID:     int32(signedPreKeyID),
+		PublicKey: signedPreKey,
+		Signature: signature,
+		CreatedAt: time.Now(),
+	}
+
+	if err := s.session.Query(models.E2EESignedPreKeyTable.Insert()).BindStruct(signedPreKeyModel).ExecRelease(); err != nil {
+		return fmt.Errorf("failed to store signed prekey: %w", err)
+	}
+
+	// Store one-time prekeys
+	for _, preKey := range preKeys {
+		// Convert int array to byte array
+		publicKey := make([]byte, len(preKey.PublicKey))
+		for i, v := range preKey.PublicKey {
+			publicKey[i] = byte(v)
+		}
+
+		preKeyModel := &models.E2EEPreKey{
+			UserID:    userID,
+			KeyID:     int32(preKey.KeyID),
+			PublicKey: publicKey,
+			Used:      false,
+			CreatedAt: time.Now(),
+		}
+
+		if err := s.session.Query(models.E2EEPreKeyTable.Insert()).BindStruct(preKeyModel).ExecRelease(); err != nil {
+			return fmt.Errorf("failed to store prekey %d: %w", preKey.KeyID, err)
+		}
+	}
+
+	log.Printf("Stored client-provided E2EE keys for user %s", userID)
+	return nil
+}
