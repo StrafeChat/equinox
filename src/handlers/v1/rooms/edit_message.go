@@ -3,7 +3,6 @@ package handlers_v1
 import (
 	"encoding/json"
 	"log"
-	"strings"
 	"time"
 
 	"github.com/StrafeChat/equinox/src/database"
@@ -77,40 +76,9 @@ func EditMessage(c fiber.Ctx) error {
 		})
 	}
 
-	// Validate E2EE content consistency
-	isOriginalE2EE := strings.HasPrefix(*message.Content, "E2EE:")
-	isNewE2EE := strings.HasPrefix(body.Content, "E2EE:")
-
-	// Prevent encryption state changes
-	if isOriginalE2EE && !isNewE2EE {
-		log.Printf("EditMessage: Attempt to change encrypted message to plain text for messageID=%s", messageID)
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-			"message": "Cannot change encrypted message to plain text",
-		})
-	}
-
-	if !isOriginalE2EE && isNewE2EE {
-		log.Printf("EditMessage: Attempt to change plain text message to encrypted for messageID=%s", messageID)
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-			"message": "Cannot change plain text message to encrypted",
-		})
-	}
-
-	// For E2EE messages, validate the format
-	if isNewE2EE {
-		parts := strings.Split(body.Content, ":")
-		if len(parts) < 3 {
-			log.Printf("EditMessage: Invalid E2EE format for messageID=%s", messageID)
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-				"message": "Invalid E2EE message format",
-			})
-		}
-		log.Printf("EditMessage: Processing E2EE encrypted edit for messageID=%s", messageID)
-	}
-
 	// Parse mentions from the new content
 	mentions := utils.ParseMentions(body.Content)
-	
+
 	// Check if user has permission to mention @everyone
 	canMentionEveryone := false
 	if mentions.MentionEveryone {
@@ -123,7 +91,7 @@ func EditMessage(c fiber.Ctx) error {
 		}
 		canMentionEveryone = utils.HasPermission(userPermissions, utils.MENTION_EVERYONE)
 	}
-	
+
 	// If user tries to mention @everyone without permission, remove it
 	if mentions.MentionEveryone && !canMentionEveryone {
 		mentions.MentionEveryone = false

@@ -16,5 +16,4 @@ func SetupRoutes(app *fiber.App) {
 	SetupPortalRoutes(versionRouter)
 	SetupSpacesRoutes(versionRouter)
 	SetupInvitesRoutes(versionRouter)
-	SetupE2EERoutes(versionRouter)
 }

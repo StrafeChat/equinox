@@ -11,7 +11,6 @@ import (
 
 	"github.com/StrafeChat/equinox/src/database"
 	"github.com/StrafeChat/equinox/src/database/models"
-	"github.com/StrafeChat/equinox/src/e2ee"
 	"github.com/StrafeChat/equinox/src/helpers"
 	"github.com/StrafeChat/equinox/src/repository"
 	"github.com/StrafeChat/equinox/src/types"
@@ -20,15 +19,7 @@ import (
 	"github.com/scylladb/gocqlx/v2/qb"
 )
 
-var e2eeService *e2ee.E2EEService
 
-// getE2EEService returns the E2EE service, initializing it if necessary
-func getE2EEService() *e2ee.E2EEService {
-	if e2eeService == nil {
-		e2eeService = e2ee.NewE2EEService()
-	}
-	return e2eeService
-}
 
 type CreateMessageInput struct {
 	Content           string   `json:"content"`
@@ -605,35 +596,9 @@ func GetRoomMessages(c fiber.Ctx) error {
 		authors = make(map[string]interface{})
 	}
 
-	// Get room details for E2EE decryption check
-	var room types.Room
-	roomQuery := models.RoomTable.SelectQuery(*database.Session)
-	if err := roomQuery.BindMap(map[string]interface{}{
-		"id": roomID,
-	}).Exec(); err != nil {
-		log.Printf("GetRoomMessages: Failed to fetch room: %v", err)
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-			"message": "Failed to fetch room details",
-		})
-	}
 
-	if err := roomQuery.Get(&room); err != nil {
-		roomQuery.Release()
-		log.Printf("GetRoomMessages: Failed to get room details: %v", err)
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-			"message": "Failed to get room details",
-		})
-	}
-	roomQuery.Release()
 
-	// Initialize E2EE service for decryption if needed
-	var e2eeService *e2ee.E2EEService
-	if room.Type == types.RoomTypePM || room.Type == types.RoomTypeGroupPM {
-		e2eeService = e2ee.NewE2EEService()
-		log.Printf("GetRoomMessages: E2EE service initialized for room type %d", room.Type)
-	}
-
-	// Convert messages to interface{} slice and add author details + process attachments + handle E2EE decryption
+	// Convert messages to interface{} slice and add author details + process attachments
 	messagesWithAuthors := make([]interface{}, len(fullMessages))
 	for i, msg := range fullMessages {
 		// Create a new map with the message data
@@ -643,45 +608,7 @@ func GetRoomMessages(c fiber.Ctx) error {
 		msgBytes, _ := json.Marshal(msg)
 		json.Unmarshal(msgBytes, &msgWithAuthor)
 
-		// Handle E2EE decryption for PM and GROUP_PM rooms
-		if e2eeService != nil && msg.Content != nil {
-			var decryptedContent string
-			var decryptionErr error
 
-			if room.Type == types.RoomTypePM {
-				// Direct message decryption - get sender ID
-				senderID := ""
-				if msg.AuthorID != nil {
-					senderID = *msg.AuthorID
-				}
-
-				if senderID != "" {
-					decryptedContent, decryptionErr = getE2EEService().DecryptMessage(user.ID, senderID, *msg.Content)
-					if decryptionErr != nil {
-						log.Printf("GetRoomMessages: E2EE decryption failed for direct message %s: %v", msg.ID, decryptionErr)
-						// Keep original content if decryption fails (might be plaintext)
-						decryptedContent = *msg.Content
-					} else {
-						log.Printf("GetRoomMessages: Successfully decrypted direct message %s", msg.ID)
-					}
-				} else {
-					decryptedContent = *msg.Content
-				}
-			} else {
-				// Group message decryption
-				decryptedContent, decryptionErr = getE2EEService().DecryptGroupMessage(roomID, *msg.Content)
-				if decryptionErr != nil {
-					log.Printf("GetRoomMessages: E2EE decryption failed for group message %s: %v", msg.ID, decryptionErr)
-					// Keep original content if decryption fails (might be plaintext)
-					decryptedContent = *msg.Content
-				} else {
-					log.Printf("GetRoomMessages: Successfully decrypted group message %s", msg.ID)
-				}
-			}
-
-			// Update content with decrypted version
-			msgWithAuthor["content"] = decryptedContent
-		}
 
 		// Add author details if available
 		if msg.AuthorID != nil && *msg.AuthorID != "" {
@@ -763,26 +690,7 @@ func CreateMessage(c fiber.Ctx) error {
 			"message": "You don't have permission to send messages in this room",
 		})
 	}
-	// Get room details for E2EE check
-	var room types.Room
-	roomQuery := models.RoomTable.SelectQuery(*database.Session)
-	if err := roomQuery.BindMap(map[string]interface{}{
-		"id": roomID,
-	}).Exec(); err != nil {
-		log.Printf("CreateMessage: Failed to fetch room: %v", err)
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-			"message": "Failed to fetch room details",
-		})
-	}
 
-	if err := roomQuery.Get(&room); err != nil {
-		roomQuery.Release()
-		log.Printf("CreateMessage: Failed to get room details: %v", err)
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-			"message": "Failed to get room details",
-		})
-	}
-	roomQuery.Release()
 
 	// Create message
 	messageID := helpers.GenerateMessageID().String()
@@ -811,31 +719,8 @@ func CreateMessage(c fiber.Ctx) error {
 		})
 	}
 
-	// Handle E2EE encryption for GROUP_PM rooms only (direct PMs are not encrypted)
-	var finalContent string
-	var isEncrypted bool
-	if room.Type == types.RoomTypeGroupPM {
-		log.Printf("CreateMessage: Attempting E2EE encryption for group PM (room type %d)", room.Type)
-		
-		// Group message encryption
-		encryptedContent, err := getE2EEService().EncryptGroupMessage(roomID, user.ID, body.Content)
-		if err != nil {
-			log.Printf("CreateMessage: Group E2EE encryption failed, sending as plaintext: %v", err)
-			finalContent = body.Content
-			isEncrypted = false
-		} else {
-			finalContent = encryptedContent
-			isEncrypted = true
-			log.Printf("CreateMessage: Successfully encrypted group message")
-		}
-	} else {
-		// No encryption for direct PMs and other room types
-		if room.Type == types.RoomTypePM {
-			log.Printf("CreateMessage: Direct PM detected (room type %d) - sending as plaintext (not encrypted)", room.Type)
-		}
-		finalContent = body.Content
-		isEncrypted = false
-	}
+	// Use content as-is without encryption
+	finalContent := body.Content
 
 	message := models.Message{
 		ID:              messageID,
@@ -851,10 +736,7 @@ func CreateMessage(c fiber.Ctx) error {
 		// UpdatedAt: createdAt,
 	}
 
-	// Add E2EE flag if encrypted
-	if isEncrypted {
-		log.Printf("CreateMessage: Message encrypted with E2EE")
-	}
+
 
 	// Add unread entry for all recipients except the sender and those who are online
 	if err := AddUnreadMessage(roomID, messageID, user.ID); err != nil {
