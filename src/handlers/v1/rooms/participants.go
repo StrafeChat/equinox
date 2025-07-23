@@ -5,14 +5,13 @@ import (
 
 	"github.com/StrafeChat/equinox/src/database"
 	"github.com/StrafeChat/equinox/src/database/models"
-	"github.com/StrafeChat/equinox/src/utils"
-	"github.com/scylladb/gocqlx/v2/qb"
-
 	"github.com/StrafeChat/equinox/src/portal"
+	"github.com/StrafeChat/equinox/src/utils"
 	"github.com/gofiber/fiber/v3"
+	"github.com/scylladb/gocqlx/v2/qb"
 )
 
-func JoinPost(c fiber.Ctx) error {
+func ParticipantsPost(c fiber.Ctx) error {
 	user := c.Locals("user").(models.User)
 	roomID := c.Params("id")
 
@@ -56,10 +55,9 @@ func JoinPost(c fiber.Ctx) error {
 		})
 	}
 
-	token := portal.GetJoinToken(roomID, user.ID)
+	participants := portal.GetParticipants(roomID)
 
-	// Handle the join room logic here
 	return c.Status(fiber.StatusOK).JSON(fiber.Map{
-		"token": token,
+		"participants": participants,
 	})
 }

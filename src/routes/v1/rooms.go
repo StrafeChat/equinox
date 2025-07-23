@@ -41,5 +41,5 @@ func SetupRoomsRoutes(verisonRouter *fiber.Group) {
 
 	// voice
 	router.Post("/join/:id", handlers_v1.JoinPost)
-
+	router.Post("/:id/participants", handlers_v1.ParticipantsPost)
 }
