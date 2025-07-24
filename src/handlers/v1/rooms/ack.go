@@ -1,7 +1,6 @@
 package handlers_v1
 
 import (
-	"fmt"
 	"log"
 	"strconv"
 	"time"
@@ -85,6 +84,37 @@ func AcknowledgeMessages(c fiber.Ctx) error {
 		}
 	}
 
+	// Also mark mention unreads as read
+	var mentionUnreads []models.MessageMentionUnread
+	if err := models.MessageMentionUnreadTable.SelectBuilder().
+		Where(qb.Eq("user_id"), qb.Eq("room_id")).
+		Query(*database.Session).
+		BindMap(qb.M{
+			"user_id": user.ID,
+			"room_id": roomID,
+		}).
+		SelectRelease(&mentionUnreads); err != nil {
+		log.Printf("AcknowledgeMessages: Failed to fetch mention unread messages: %v", err)
+		// Don't return error, just log it
+	} else {
+		// Delete each mention unread message individually
+		for _, mentionUnread := range mentionUnreads {
+			if err := models.MessageMentionUnreadTable.DeleteBuilder().
+				Where(qb.Eq("user_id"), qb.Eq("room_id"), qb.Eq("message_id")).
+				Query(*database.Session).
+				BindMap(qb.M{
+					"user_id":    user.ID,
+					"room_id":    roomID,
+					"message_id": mentionUnread.MessageID,
+				}).
+				ExecRelease(); err != nil {
+				log.Printf("AcknowledgeMessages: Failed to mark mention message %s as read: %v", mentionUnread.MessageID, err)
+				// Continue with other messages even if one fails
+				continue
+			}
+		}
+	}
+
 	return c.SendStatus(fiber.StatusOK)
 }
 
@@ -98,20 +128,15 @@ func AddUnreadMessage(roomID string, messageID string, senderID string) error {
 		return err
 	}
 
-	// Add unread entry for each recipient except the sender and online users
+	// Add unread entry for each recipient except the sender
 	for _, recipientID := range room.Recipients {
 		recipientIDStr := strconv.FormatInt(recipientID, 10)
 		if recipientIDStr == senderID {
 			continue
 		}
 
-		// Check if user is online via Redis
-		onlineStatus, err := database.Rdb.Get(fmt.Sprintf("user:%s:online", recipientIDStr)).Result()
-		if err == nil && onlineStatus == "true" {
-			// Skip creating unread entry for online users
-			continue
-		}
-
+		// Create unread entry for all recipients (including online users)
+		// This matches Discord behavior where unreads are shown even for online users
 		unread := models.MessageUnread{
 			UserID:    recipientIDStr,
 			RoomID:    roomID,
@@ -123,6 +148,29 @@ func AddUnreadMessage(roomID string, messageID string, senderID string) error {
 			BindStruct(unread).
 			Exec(); err != nil {
 			log.Printf("AddUnreadMessage: Failed to add unread message for user %s: %v", recipientIDStr, err)
+		}
+	}
+
+	return nil
+}
+
+// AddMentionUnreadMessage adds a message to the mention unread list for mentioned users
+func AddMentionUnreadMessage(roomID string, messageID string, mentionedUserIDs []string) error {
+	// Add mention unread entry for each mentioned user
+	for _, userID := range mentionedUserIDs {
+		// Create mention unread entry for all mentioned users (including online users)
+		// This matches Discord behavior where mention unreads are shown even for online users
+		mentionUnread := models.MessageMentionUnread{
+			UserID:    userID,
+			RoomID:    roomID,
+			MessageID: messageID,
+			CreatedAt: time.Now(),
+		}
+
+		if err := models.MessageMentionUnreadTable.InsertQuery(*database.Session).
+			BindStruct(mentionUnread).
+			Exec(); err != nil {
+			log.Printf("AddMentionUnreadMessage: Failed to add mention unread message for user %s: %v", userID, err)
 		}
 	}
 

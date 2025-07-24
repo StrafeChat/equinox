@@ -743,6 +743,13 @@ func CreateMessage(c fiber.Ctx) error {
 		log.Printf("CreateMessage: Failed to add unread entries: %v", err)
 	}
 
+	// Add mention unread entries for mentioned users
+	if mentionResult.UserMentions != nil && len(mentionResult.UserMentions) > 0 {
+		if err := AddMentionUnreadMessage(roomID, messageID, mentionResult.UserMentions); err != nil {
+			log.Printf("CreateMessage: Failed to add mention unread entries: %v", err)
+		}
+	}
+
 	// Handle message references (replies) - limit to 5 max
 	if len(body.MessageReferences) > 0 {
 		log.Printf("CreateMessage: Processing message references (max 5)")
