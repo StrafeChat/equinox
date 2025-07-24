@@ -5,7 +5,6 @@ import (
 	"os"
 
 	"github.com/StrafeChat/equinox/src/portal"
-	"github.com/valyala/fasthttp"
 	"github.com/valyala/fasthttp/fasthttpadaptor"
 
 	"github.com/gofiber/fiber/v3"
@@ -27,7 +26,7 @@ func SetupPortalRoutes(versionRouter *fiber.Group) {
 
 func processRequest(c fiber.Ctx) error {
 	request := &http.Request{}
-	fasthttpadaptor.ConvertRequest(c.Context().(*fasthttp.RequestCtx), request, true)
+	fasthttpadaptor.ConvertRequest(c.RequestCtx(), request, true)
 
 	ServeHTTP(request)
 
