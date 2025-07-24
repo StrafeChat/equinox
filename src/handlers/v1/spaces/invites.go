@@ -11,6 +11,7 @@ import (
 
 	"github.com/StrafeChat/equinox/src/database"
 	"github.com/StrafeChat/equinox/src/database/models"
+	"github.com/StrafeChat/equinox/src/events"
 	"github.com/gofiber/fiber/v3"
 	"github.com/google/uuid"
 	"github.com/scylladb/gocqlx/v2/qb"
@@ -468,6 +469,12 @@ func UseInvite(c fiber.Ctx) error {
 	updateUsesBySpaceQuery := qb.Update("space_invites_by_space").Set("uses").Where(qb.Eq("space_id"), qb.Eq("created_at"), qb.Eq("id")).Query(*database.Session)
 	if err := updateUsesBySpaceQuery.Bind(newUses, invite.SpaceID, invite.CreatedAt, invite.ID).Exec(); err != nil {
 		log.Printf("Failed to update invite uses by space: %v", err)
+	}
+
+	// Publish space member add event for real-time updates
+	if err := events.PublishSpaceMemberAddEvent(invite.SpaceID, user.ID, user.ID); err != nil {
+		log.Printf("Failed to publish space member add event: %v", err)
+		// Don't fail the request if event publishing fails
 	}
 
 	// Get space info to return

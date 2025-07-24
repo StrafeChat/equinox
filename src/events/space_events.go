@@ -89,10 +89,10 @@ func PublishSpaceMemberRoleUpdateEvent(spaceID int64, userID string, updatedBy s
 
 	// Create member role update event
 	memberRoleUpdateEvent := map[string]interface{}{
-		"type":       "SPACE_MEMBER_ROLE_UPDATE",
-		"space_id":   strconv.FormatInt(spaceID, 10),
-		"user_id":    userID,
-		"sender_id":  updatedBy,
+		"type":      "SPACE_MEMBER_ROLE_UPDATE",
+		"space_id":  strconv.FormatInt(spaceID, 10),
+		"user_id":   userID,
+		"sender_id": updatedBy,
 		"data": map[string]interface{}{
 			"roles": roles,
 		},
@@ -167,6 +167,62 @@ func PublishSpaceRoleDeleteEvent(spaceID int64, roleID string, deletedBy string)
 	}
 
 	log.Printf("[PublishSpaceRoleDeleteEvent] Successfully published role delete event for space %d, role %s", spaceID, roleID)
+	return nil
+}
+
+// PublishSpaceMemberAddEvent publishes a space member add event to Redis
+func PublishSpaceMemberAddEvent(spaceID int64, userID string, actionUserID string) error {
+	log.Printf("[PublishSpaceMemberAddEvent] Publishing member add event: SpaceID=%d, UserID=%s", spaceID, userID)
+
+	// Create member add event
+	memberAddEvent := map[string]interface{}{
+		"type":       "SPACE_MEMBER_ADD",
+		"space_id":   strconv.FormatInt(spaceID, 10),
+		"user_id":    userID,
+		"sender_id":  actionUserID,
+		"created_at": time.Now().Unix(),
+	}
+
+	eventBytes, err := json.Marshal(memberAddEvent)
+	if err != nil {
+		log.Printf("[PublishSpaceMemberAddEvent] Failed to marshal member add event: %v", err)
+		return err
+	}
+
+	if err := database.Rdb.Publish("SPACE_EVENTS", string(eventBytes)).Err(); err != nil {
+		log.Printf("[PublishSpaceMemberAddEvent] Failed to publish member add event: %v", err)
+		return err
+	}
+
+	log.Printf("[PublishSpaceMemberAddEvent] Successfully published member add event for space %d, user %s", spaceID, userID)
+	return nil
+}
+
+// PublishSpaceMemberLeaveEvent publishes a space member leave event to Redis
+func PublishSpaceMemberLeaveEvent(spaceID int64, userID string, actionUserID string) error {
+	log.Printf("[PublishSpaceMemberLeaveEvent] Publishing member leave event: SpaceID=%d, UserID=%s", spaceID, userID)
+
+	// Create member leave event
+	memberLeaveEvent := map[string]interface{}{
+		"type":       "SPACE_MEMBER_REMOVE",
+		"space_id":   strconv.FormatInt(spaceID, 10),
+		"user_id":    userID,
+		"sender_id":  actionUserID,
+		"created_at": time.Now().Unix(),
+	}
+
+	eventBytes, err := json.Marshal(memberLeaveEvent)
+	if err != nil {
+		log.Printf("[PublishSpaceMemberLeaveEvent] Failed to marshal member leave event: %v", err)
+		return err
+	}
+
+	if err := database.Rdb.Publish("SPACE_EVENTS", string(eventBytes)).Err(); err != nil {
+		log.Printf("[PublishSpaceMemberLeaveEvent] Failed to publish member leave event: %v", err)
+		return err
+	}
+
+	log.Printf("[PublishSpaceMemberLeaveEvent] Successfully published member leave event for space %d, user %s", spaceID, userID)
 	return nil
 }
 

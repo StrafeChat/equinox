@@ -127,14 +127,14 @@ func (r *SpaceMembersRepository) RemoveMember(spaceID int64, userID string) erro
 
 	// Remove from space_members table
 	query := models.SpaceMemberTable.DeleteBuilder().Where(qb.Eq("space_id"), qb.Eq("user_id")).Query(*r.session)
-	if err := query.Bind(spaceID, userID).ExecRelease(); err != nil {
+	if err := query.BindMap(qb.M{"space_id": spaceID, "user_id": userID}).ExecRelease(); err != nil {
 		log.Printf("[RemoveMember] Error removing member %s from space %d: %v", userID, spaceID, err)
 		return err
 	}
 
 	// Remove from space_members_by_user table
 	query2 := models.SpaceMembersByUserTable.DeleteBuilder().Where(qb.Eq("user_id"), qb.Eq("space_id")).Query(*r.session)
-	if err := query2.Bind(userID, spaceID).ExecRelease(); err != nil {
+	if err := query2.BindMap(qb.M{"user_id": userID, "space_id": spaceID}).ExecRelease(); err != nil {
 		log.Printf("[RemoveMember] Error removing member %s from space_members_by_user for space %d: %v", userID, spaceID, err)
 		// Continue anyway since the main record was deleted
 	}

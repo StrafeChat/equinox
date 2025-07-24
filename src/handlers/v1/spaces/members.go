@@ -9,6 +9,7 @@ import (
 	"github.com/StrafeChat/equinox/src/database/models"
 	"github.com/StrafeChat/equinox/src/events"
 	"github.com/StrafeChat/equinox/src/repository"
+	"github.com/StrafeChat/equinox/src/services"
 	"github.com/StrafeChat/equinox/src/utils"
 	"github.com/gofiber/fiber/v3"
 	"github.com/scylladb/gocqlx/v2/qb"
@@ -40,7 +41,8 @@ func GetSpaceMembers(c fiber.Ctx) error {
 	}
 
 	// Check if user is a member of the space
-	if !isSpaceMember(spaceID, user.ID) {
+	membershipService := services.NewSpaceMembershipService(database.Session)
+	if !membershipService.IsSpaceMember(spaceID, user.ID) {
 		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
 			"error": "You are not a member of this space",
 		})
@@ -153,7 +155,8 @@ func UpdateMemberRoles(c fiber.Ctx) error {
 	}
 
 	// Check if user is a member of the space
-	if !isSpaceMember(spaceID, user.ID) {
+	membershipService := services.NewSpaceMembershipService(database.Session)
+	if !membershipService.IsSpaceMember(spaceID, user.ID) {
 		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
 			"error": "You are not a member of this space",
 		})
@@ -244,7 +247,8 @@ func KickMember(c fiber.Ctx) error {
 	}
 
 	// Check if user is a member of the space
-	if !isSpaceMember(spaceID, user.ID) {
+	membershipService := services.NewSpaceMembershipService(database.Session)
+	if !membershipService.IsSpaceMember(spaceID, user.ID) {
 		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
 			"error": "You are not a member of this space",
 		})
@@ -265,7 +269,7 @@ func KickMember(c fiber.Ctx) error {
 	}
 
 	// Prevent kicking the space owner
-	if isSpaceOwner(spaceID, targetUserID) {
+	if membershipService.IsSpaceOwner(spaceID, targetUserID) {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
 			"error": "Cannot kick the space owner",
 		})
@@ -288,4 +292,71 @@ func KickMember(c fiber.Ctx) error {
 	return c.JSON(fiber.Map{
 		"message": "Member kicked successfully",
 	})
+}
+
+// LeaveSpace handles DELETE /spaces/:id/leave
+func LeaveSpace(c fiber.Ctx) error {
+	user := c.Locals("user").(models.User)
+	spaceIDStr := c.Params("id")
+
+	spaceID, err := strconv.ParseInt(spaceIDStr, 10, 64)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"error": "Invalid space ID",
+		})
+	}
+
+	// Check if user is a member of the space
+	membershipService := services.NewSpaceMembershipService(database.Session)
+
+	if !membershipService.IsSpaceMember(spaceID, user.ID) {
+		// Debug membership issue
+		membershipService.DebugSpaceMembership(spaceID, user.ID)
+		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
+			"error": "You are not a member of this space",
+		})
+	}
+
+	// Prevent space owner from leaving
+	if membershipService.IsSpaceOwner(spaceID, user.ID) {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"error": "Space owners cannot leave their space",
+		})
+	}
+
+	// Remove user from space
+	if err := removeMemberFromSpace(spaceID, user.ID, user.ID); err != nil {
+		log.Printf("Error leaving space: %v", err)
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"error": "Failed to leave space",
+		})
+	}
+
+	return c.JSON(fiber.Map{
+		"message": "Left space successfully",
+	})
+}
+
+// removeMemberFromSpace handles the actual removal logic for both kick and leave
+func removeMemberFromSpace(spaceID int64, targetUserID, actionUserID string) error {
+	// Remove from space_members table
+	membersRepo := repository.NewSpaceMembersRepository(database.Session)
+	if err := membersRepo.RemoveMember(spaceID, targetUserID); err != nil {
+		return err
+	}
+
+	// Remove member roles
+	memberRolesRepo := repository.NewSpaceMemberRolesRepository(*database.Session)
+	if err := memberRolesRepo.RemoveAllRolesFromMember(context.TODO(), spaceID, targetUserID); err != nil {
+		log.Printf("Error removing member roles: %v", err)
+		// Don't fail the entire operation if role removal fails
+	}
+
+	// Publish member leave event
+	if err := events.PublishSpaceMemberLeaveEvent(spaceID, targetUserID, actionUserID); err != nil {
+		log.Printf("Error publishing member leave event: %v", err)
+		// Don't fail the request if event publishing fails
+	}
+
+	return nil
 }

@@ -27,6 +27,7 @@ func SetupSpacesRoutes(versionRouter *fiber.Group) {
 	router.Get("/:id/members", spaces.GetSpaceMembers)
 	router.Patch("/:id/members/:userId/roles", spaces.UpdateMemberRoles)
 	router.Delete("/:id/members/:userId", spaces.KickMember)
+	router.Delete("/:id/leave", spaces.LeaveSpace)
 
 	// Space Roles Routes
 	router.Get("/:id/roles", spaces.GetSpaceRoles)

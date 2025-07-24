@@ -10,6 +10,7 @@ import (
 	"github.com/StrafeChat/equinox/src/events"
 	"github.com/StrafeChat/equinox/src/helpers"
 	"github.com/StrafeChat/equinox/src/repository"
+	"github.com/StrafeChat/equinox/src/services"
 	"github.com/StrafeChat/equinox/src/utils"
 	"github.com/gofiber/fiber/v3"
 )
@@ -73,25 +74,7 @@ func convertRoleToResponse(role *models.SpaceRole) RoleResponse {
 	}
 }
 
-func isSpaceMember(spaceID int64, userID string) bool {
-	membersRepo := repository.NewSpaceMembersRepository(database.Session)
-	isMember, err := membersRepo.IsMember(spaceID, userID)
-	if err != nil {
-		log.Printf("Error checking space membership: %v", err)
-		return false
-	}
-	return isMember
-}
 
-func isSpaceOwner(spaceID int64, userID string) bool {
-	spaceRepo := repository.NewSpaceRepository(database.Session)
-	space, err := spaceRepo.GetSpace(spaceID)
-	if err != nil {
-		log.Printf("Error getting space: %v", err)
-		return false
-	}
-	return space.OwnerID == userID
-}
 
 // Handler functions
 func GetSpaceRoles(c fiber.Ctx) error {
@@ -106,7 +89,8 @@ func GetSpaceRoles(c fiber.Ctx) error {
 	}
 
 	// Check if user is a member of the space
-	if !isSpaceMember(spaceID, user.ID) {
+	membershipService := services.NewSpaceMembershipService(database.Session)
+	if !membershipService.IsSpaceMember(spaceID, user.ID) {
 		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
 			"error": "You are not a member of this space",
 		})
@@ -574,7 +558,8 @@ func CheckUserPermission(c fiber.Ctx) error {
 	}
 
 	// Check if user is a member of the space
-	if !isSpaceMember(spaceID, user.ID) {
+	membershipService := services.NewSpaceMembershipService(database.Session)
+	if !membershipService.IsSpaceMember(spaceID, user.ID) {
 		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
 			"error": "You are not a member of this space",
 		})

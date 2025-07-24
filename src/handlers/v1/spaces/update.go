@@ -9,6 +9,7 @@ import (
 	"github.com/StrafeChat/equinox/src/database/models"
 	"github.com/StrafeChat/equinox/src/events"
 	"github.com/StrafeChat/equinox/src/repository"
+	"github.com/StrafeChat/equinox/src/services"
 	"github.com/gofiber/fiber/v3"
 )
 
@@ -32,7 +33,8 @@ func UpdateSpace(c fiber.Ctx) error {
 	}
 
 	// Check if user is the space owner
-	if !isSpaceOwner(spaceID, user.ID) {
+	membershipService := services.NewSpaceMembershipService(database.Session)
+	if !membershipService.IsSpaceOwner(spaceID, user.ID) {
 		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
 			"error": "Only space owners can update space settings",
 		})
