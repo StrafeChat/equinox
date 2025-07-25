@@ -15,7 +15,7 @@ var spaceMeta = table.Metadata{
 var SpaceTable = table.New(spaceMeta)
 
 type Space struct {
-	ID                          int64     `db:"id" json:"id"`
+	ID                          int64     `db:"id" json:"id,string"`
 	Name                        string    `db:"name" json:"name"`
 	NameAcronym                 string    `db:"name_acronym" json:"name_acronym"`
 	Description                 *string   `db:"description" json:"description,omitempty"`

@@ -15,7 +15,7 @@ var spaceRoleMeta = table.Metadata{
 var SpaceRoleTable = table.New(spaceRoleMeta)
 
 type SpaceRole struct {
-	SpaceID     int64     `db:"space_id" json:"space_id"`
+	SpaceID     int64     `db:"space_id" json:"space_id,string"`
 	RoleID      string    `db:"role_id" json:"role_id"`
 	Name        string    `db:"name" json:"name"`
 	Color       *string   `db:"color" json:"color"`

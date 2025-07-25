@@ -17,8 +17,8 @@ func GetUserSpaces(c fiber.Ctx) error {
 
 	// Get user's spaces from space_members_by_user table
 	var spaceMemberships []models.SpaceMembersByUser
-	query := models.SpaceMembersByUserTable.SelectBuilder().Where(qb.Eq("user_id")).Query(*database.Session).Bind(user.ID)
-	if err := query.SelectRelease(&spaceMemberships); err != nil {
+	query := models.SpaceMembersByUserTable.SelectBuilder().Where(qb.Eq("user_id")).Query(*database.Session)
+	if err := query.BindMap(qb.M{"user_id": user.ID}).SelectRelease(&spaceMemberships); err != nil {
 		log.Printf("Failed to get user spaces: %v", err)
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 			"error": "Failed to get user spaces",
@@ -29,8 +29,8 @@ func GetUserSpaces(c fiber.Ctx) error {
 	var spaces []types.Space
 	for _, membership := range spaceMemberships {
 		var space models.Space
-		spaceQuery := models.SpaceTable.SelectBuilder().Where(qb.Eq("id")).Query(*database.Session).Bind(membership.SpaceID)
-		if err := spaceQuery.GetRelease(&space); err != nil {
+		spaceQuery := models.SpaceTable.SelectBuilder().Where(qb.Eq("id")).Query(*database.Session)
+		if err := spaceQuery.BindMap(qb.M{"id": membership.SpaceID}).GetRelease(&space); err != nil {
 			log.Printf("Failed to get space details for space %d: %v", membership.SpaceID, err)
 			continue // Skip this space if we can't get its details
 		}
@@ -88,8 +88,8 @@ func GetSpace(c fiber.Ctx) error {
 
 	// Check if user is a member of this space
 	var spaceMember models.SpaceMember
-	memberQuery := models.SpaceMemberTable.SelectBuilder().Where(qb.Eq("space_id"), qb.Eq("user_id")).Query(*database.Session).Bind(spaceID, user.ID)
-	if err := memberQuery.GetRelease(&spaceMember); err != nil {
+	memberQuery := models.SpaceMemberTable.SelectBuilder().Where(qb.Eq("space_id"), qb.Eq("user_id")).Query(*database.Session)
+	if err := memberQuery.BindMap(qb.M{"space_id": spaceID, "user_id": user.ID}).GetRelease(&spaceMember); err != nil {
 		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
 			"error": "You are not a member of this space",
 		})
@@ -97,8 +97,8 @@ func GetSpace(c fiber.Ctx) error {
 
 	// Get space details
 	var space models.Space
-	spaceQuery := models.SpaceTable.SelectBuilder().Where(qb.Eq("id")).Query(*database.Session).Bind(spaceID)
-	if err := spaceQuery.GetRelease(&space); err != nil {
+	spaceQuery := models.SpaceTable.SelectBuilder().Where(qb.Eq("id")).Query(*database.Session)
+	if err := spaceQuery.BindMap(qb.M{"id": spaceID}).GetRelease(&space); err != nil {
 		log.Printf("Failed to get space details: %v", err)
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
 			"error": "Space not found",

@@ -54,6 +54,11 @@ func InitDB() error {
 		return err
 	}
 
+	// Run bot schema migration
+	if err := MigrateBotSchema(); err != nil {
+		log.Printf("Bot schema migration completed with warnings: %v", err)
+	}
+
 
 
 	/*_ Connect to Redis _*/

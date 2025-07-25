@@ -3,7 +3,7 @@ package types
 import "time"
 
 type Space struct {
-	ID                          int64     `json:"id"`
+	ID                          int64     `json:"id,string"`
 	Name                        string    `json:"name"`
 	NameAcronym                 string    `json:"name_acronym"`
 	Description                 *string   `json:"description,omitempty"`
@@ -31,7 +31,7 @@ type Space struct {
 }
 
 type SpaceMember struct {
-	SpaceID                    int64      `json:"space_id"`
+	SpaceID                    int64      `json:"space_id,string"`
 	UserID                     string     `json:"user_id"`
 	Nick                       *string    `json:"nick,omitempty"`
 	Avatar                     *string    `json:"avatar,omitempty"`

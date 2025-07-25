@@ -19,7 +19,7 @@ type Room struct {
 	Creator       *int64    `db:"creator" json:"creator"`
 	Recipients    []int64   `db:"recipients" json:"recipients"`
 	Type          int       `db:"type" json:"type"`
-	SpaceID       *int64    `db:"space_id" json:"space_id"`
+	SpaceID       *int64    `db:"space_id" json:"space_id,string"`
 	ParentID      *string   `db:"parent_id" json:"parent_id"`
 	Name          *string   `db:"name" json:"name"`
 	Topic         *string   `db:"topic" json:"topic"`

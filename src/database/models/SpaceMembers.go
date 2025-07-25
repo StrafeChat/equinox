@@ -15,7 +15,7 @@ var spaceMemberMeta = table.Metadata{
 var SpaceMemberTable = table.New(spaceMemberMeta)
 
 type SpaceMember struct {
-	SpaceID                    int64      `db:"space_id" json:"space_id"`
+	SpaceID                    int64      `db:"space_id" json:"space_id,string"`
 	UserID                     string     `db:"user_id" json:"user_id"`
 	Nick                       *string    `db:"nick" json:"nick,omitempty"`
 	Avatar                     *string    `db:"avatar" json:"avatar,omitempty"`
@@ -61,7 +61,7 @@ var SpaceMembersByUserTable = table.New(spaceMembersByUserMeta)
 
 type SpaceMembersByUser struct {
 	UserID   string    `db:"user_id" json:"user_id"`
-	SpaceID  int64     `db:"space_id" json:"space_id"`
+	SpaceID  int64     `db:"space_id" json:"space_id,string"`
 	JoinedAt time.Time `db:"joined_at" json:"joined_at"`
 }
 

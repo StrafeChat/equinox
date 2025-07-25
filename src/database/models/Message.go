@@ -148,7 +148,7 @@ type Message struct {
 	ID                string                    `db:"id" json:"id"`
 	Nonce             *string                   `db:"nonce" json:"nonce"`
 	RoomID            string                    `db:"room_id" json:"room_id"`
-	SpaceID           *int64                    `db:"space_id" json:"space_id"`
+	SpaceID           *int64                    `db:"space_id" json:"space_id,string"`
 	AuthorID          *string                   `db:"author_id" json:"author_id"`
 	Content           *string                   `db:"content" json:"content"`
 	Type              *int                      `db:"type" json:"type"`

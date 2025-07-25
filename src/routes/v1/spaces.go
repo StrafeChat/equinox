@@ -1,6 +1,7 @@
 package routes_v1
 
 import (
+	bots "github.com/StrafeChat/equinox/src/handlers/v1/bots"
 	spaces "github.com/StrafeChat/equinox/src/handlers/v1/spaces"
 	"github.com/StrafeChat/equinox/src/middleware"
 	"github.com/gofiber/fiber/v3"
@@ -44,6 +45,11 @@ func SetupSpacesRoutes(versionRouter *fiber.Group) {
 
 	// Space Rooms Routes
 	router.Post("/:id/rooms", spaces.CreateSpaceRoom)
+
+	// Space Bots Routes
+	router.Post("/:id/bots", bots.AddBotToSpace)
+	router.Delete("/:id/bots/:botId", bots.RemoveBotFromSpace)
+	router.Get("/:id/bots", bots.GetSpaceBots)
 
 	// Permission checking route
 	router.Get("/:id/permissions/:permission", spaces.CheckUserPermission)

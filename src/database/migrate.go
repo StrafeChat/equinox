@@ -114,6 +114,29 @@ func MigrateUserSchema() error {
 	return nil
 }
 
+// MigrateBotSchema adds missing columns to the bots table
+func MigrateBotSchema() error {
+	log.Println("Migrating bots table schema...")
+
+	// Try to add discoverable column if it doesn't exist
+	if err := Session.ExecStmt(`ALTER TABLE bots ADD discoverable boolean`); err != nil {
+		log.Printf("Discoverable column might already exist in bots table: %v", err)
+	}
+
+	// Try to add terms_of_service_url column if it doesn't exist
+	if err := Session.ExecStmt(`ALTER TABLE bots ADD terms_of_service_url text`); err != nil {
+		log.Printf("Terms of service URL column might already exist in bots table: %v", err)
+	}
+
+	// Try to add privacy_policy_url column if it doesn't exist
+	if err := Session.ExecStmt(`ALTER TABLE bots ADD privacy_policy_url text`); err != nil {
+		log.Printf("Privacy policy URL column might already exist in bots table: %v", err)
+	}
+
+	log.Println("Bots table migration completed")
+	return nil
+}
+
 // MigrateSpaceIDSchema migrates space_id from bigint to text
 // WARNING: This migration requires manual data conversion
 func MigrateSpaceIDSchema() error {
@@ -162,6 +185,10 @@ func MigrateAllSchemas() error {
 	}
 
 	if err := MigrateUserSchema(); err != nil {
+		return err
+	}
+
+	if err := MigrateBotSchema(); err != nil {
 		return err
 	}
 

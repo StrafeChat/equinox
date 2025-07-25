@@ -48,9 +48,9 @@ func (s *SpaceMembershipService) checkMembershipDirect(spaceID int64, userID str
 // checkMembershipByUser checks membership in space_members_by_user table
 func (s *SpaceMembershipService) checkMembershipByUser(spaceID int64, userID string) bool {
 	var count int
-	spaceIDStr := strconv.FormatInt(spaceID, 10)
+	// space_id is bigint in space_members_by_user table, not text
 	query := qb.Select("space_members_by_user").CountAll().Where(qb.Eq("user_id"), qb.Eq("space_id")).Query(*s.session)
-	if err := query.Bind(userID, spaceIDStr).GetRelease(&count); err != nil {
+	if err := query.Bind(userID, spaceID).GetRelease(&count); err != nil {
 		log.Printf("Error checking membership by user: %v", err)
 		return false
 	}
@@ -96,5 +96,15 @@ func (s *SpaceMembershipService) DebugSpaceMembership(spaceID int64, userID stri
 	}
 
 	log.Printf("[DEBUG] All space members: %v", members)
+	
+	// Check what spaces this user is actually a member of
+	var userSpaces []int64
+	userSpacesQuery := qb.Select("space_members_by_user").Columns("space_id").Where(qb.Eq("user_id")).Query(*s.session)
+	if err := userSpacesQuery.Bind(userID).SelectRelease(&userSpaces); err != nil {
+		log.Printf("[DEBUG] Error querying user spaces: %v", err)
+	} else {
+		log.Printf("[DEBUG] User %s is a member of spaces: %v", userID, userSpaces)
+	}
+	
 	log.Printf("[DEBUG] Final membership result: %t", directMember || userMember)
 }

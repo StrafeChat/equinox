@@ -16,7 +16,7 @@ var spaceMemberRoleMeta = table.Metadata{
 var SpaceMemberRoleTable = table.New(spaceMemberRoleMeta)
 
 type SpaceMemberRole struct {
-	SpaceID    int64     `db:"space_id" json:"space_id"`
+	SpaceID    int64     `db:"space_id" json:"space_id,string"`
 	UserID     string    `db:"user_id" json:"user_id"`
 	RoleID     string    `db:"role_id" json:"role_id"`
 	AssignedAt time.Time `db:"assigned_at" json:"assigned_at"`
@@ -47,7 +47,7 @@ var spaceMemberRolesByRoleMeta = table.Metadata{
 var SpaceMemberRolesByRoleTable = table.New(spaceMemberRolesByRoleMeta)
 
 type SpaceMemberRolesByRole struct {
-	SpaceID    int64     `db:"space_id" json:"space_id"`
+	SpaceID    int64     `db:"space_id" json:"space_id,string"`
 	RoleID     string    `db:"role_id" json:"role_id"`
 	UserID     string    `db:"user_id" json:"user_id"`
 	AssignedAt time.Time `db:"assigned_at" json:"assigned_at"`

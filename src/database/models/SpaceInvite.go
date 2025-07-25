@@ -33,7 +33,7 @@ var SpaceInviteBySpaceTable = table.New(spaceInviteBySpaceMeta)
 
 type SpaceInvite struct {
 	ID        string     `db:"id" json:"id"`
-	SpaceID   int64      `db:"space_id" json:"space_id"`
+	SpaceID   int64      `db:"space_id" json:"space_id,string"`
 	Code      string     `db:"code" json:"code"`
 	InviterID string     `db:"inviter_id" json:"inviter_id"`
 	MaxUses   *int       `db:"max_uses" json:"max_uses,omitempty"`
@@ -45,7 +45,7 @@ type SpaceInvite struct {
 type SpaceInviteByCode struct {
 	Code      string     `db:"code" json:"code"`
 	ID        string     `db:"id" json:"id"`
-	SpaceID   int64      `db:"space_id" json:"space_id"`
+	SpaceID   int64      `db:"space_id" json:"space_id,string"`
 	InviterID string     `db:"inviter_id" json:"inviter_id"`
 	MaxUses   *int       `db:"max_uses" json:"max_uses,omitempty"`
 	Uses      int        `db:"uses" json:"uses"`
@@ -54,7 +54,7 @@ type SpaceInviteByCode struct {
 }
 
 type SpaceInviteBySpace struct {
-	SpaceID   int64      `db:"space_id" json:"space_id"`
+	SpaceID   int64      `db:"space_id" json:"space_id,string"`
 	ID        string     `db:"id" json:"id"`
 	Code      string     `db:"code" json:"code"`
 	InviterID string     `db:"inviter_id" json:"inviter_id"`
