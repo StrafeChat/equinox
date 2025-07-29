@@ -25,9 +25,9 @@ var MessageUnreadTable = table.New(MessageUnreadMeta)
 func (m *MessageUnread) SchemaDefinition() []string {
 	return []string{
 		`CREATE TABLE IF NOT EXISTS message_unreads (
-			user_id bigint,
-			room_id bigint,
-			message_id bigint,
+			user_id text,
+			room_id text,
+			message_id text,
 			created_at timestamp,
 			PRIMARY KEY ((user_id, room_id), message_id)
 		) WITH CLUSTERING ORDER BY (message_id DESC);`,
