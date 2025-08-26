@@ -2,11 +2,14 @@ package portal
 
 import (
 	"context"
+	"encoding/json"
 	"log"
 	"os"
 	"slices"
+	"strings"
 	"time"
 
+	"github.com/StrafeChat/equinox/src/database"
 	"github.com/livekit/protocol/auth"
 	livekit "github.com/livekit/protocol/livekit"
 	lksdk "github.com/livekit/server-sdk-go/v2"
@@ -30,7 +33,99 @@ func InitPortal() error {
 	rooms = make(map[string]*livekit.Room)
 	participants = make(map[string][]string)
 
+	handler := &EventHandler{}
+	log.Print("Starting handler/listener")
+	go handler.StartListener()
+
 	return nil
+}
+
+type EventHandler struct{}
+
+func (h *EventHandler) StartListener() {
+	// subscribe to voice sync requests
+	pubsub := database.Rdb.Subscribe("VOICE_EVENTS")
+	defer pubsub.Close()
+
+	const numWorkers = 10
+	channel := make(chan []byte, 100)
+
+	for i := 0; i < numWorkers; i++ {
+		go h.eventWorker(channel)
+	}
+
+	ch := pubsub.Channel()
+	for msg := range ch {
+		log.Printf("Received Redis pub/sub message: Channel=%s, Payload=%s",
+			msg.Channel, msg.Payload)
+
+		payload := []byte(strings.TrimSpace(msg.Payload))
+
+		if len(payload) == 0 {
+			log.Printf("Received empty payload in pub/sub message")
+			continue
+		}
+
+		// Send event to worker pool for concurrent processing
+		select {
+		case channel <- payload:
+			// Event queued successfully
+		default:
+			log.Printf("Event queue full, processing synchronously")
+			h.processEvent(payload)
+		}
+	}
+}
+func (h *EventHandler) eventWorker(channel <-chan []byte) {
+	for payload := range channel {
+		h.processEvent(payload)
+	}
+}
+func (h *EventHandler) processEvent(payload []byte) {
+	var rawEvent map[string]interface{}
+	if err := json.Unmarshal(payload, &rawEvent); err != nil {
+		log.Printf("Error unmarshaling event (payload: %s): %v", string(payload), err)
+		return
+	}
+
+	eventType, ok := rawEvent["type"].(string)
+	if !ok || eventType == "" {
+		log.Printf("Received event with invalid or empty type: %+v", rawEvent)
+		return
+	}
+
+	switch eventType {
+	case "VOICE_SYNC":
+		d, ok := rawEvent["request"].(bool)
+		if !ok {
+			//log.Printf("Request field not found: %v", d)
+			return
+		}
+		if !d {
+			return // sync data not requested
+		}
+
+		log.Printf("Voice sync request received")
+		// send current voice data
+		voiceData := map[string]map[string][]string{
+			"rooms": participants,
+		}
+		log.Printf("%s", participants)
+		message, err := json.Marshal(struct {
+			Type string                         `json:"type"`
+			Data map[string]map[string][]string `json:"data"`
+		}{
+			Type: "VOICE_SYNC",
+			Data: voiceData,
+		})
+		if err != nil {
+			log.Printf("[VoiceSync] Failed to Marshal sync data: %v", err)
+			return
+		}
+		if err := database.Rdb.Publish("VOICE_EVENTS", string(message)).Err(); err != nil {
+			log.Printf("[VoiceSync] Failed to Publish sync data: %v", err)
+		}
+	}
 }
 
 func GetJoinToken(room, identity string) string {
