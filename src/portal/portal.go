@@ -6,7 +6,6 @@ import (
 	"log"
 	"os"
 	"slices"
-	"strings"
 	"time"
 
 	"github.com/StrafeChat/equinox/src/database"
@@ -33,98 +32,25 @@ func InitPortal() error {
 	rooms = make(map[string]*livekit.Room)
 	participants = make(map[string][]string)
 
-	handler := &EventHandler{}
-	log.Print("Starting handler/listener")
-	go handler.StartListener()
-
 	return nil
 }
 
-type EventHandler struct{}
+func UpdateRedis(room string) {
+	//ctx := context.Background()
 
-func (h *EventHandler) StartListener() {
-	// subscribe to voice sync requests
-	pubsub := database.Rdb.Subscribe("VOICE_EVENTS")
-	defer pubsub.Close()
-
-	const numWorkers = 10
-	channel := make(chan []byte, 100)
-
-	for i := 0; i < numWorkers; i++ {
-		go h.eventWorker(channel)
-	}
-
-	ch := pubsub.Channel()
-	for msg := range ch {
-		log.Printf("Received Redis pub/sub message: Channel=%s, Payload=%s",
-			msg.Channel, msg.Payload)
-
-		payload := []byte(strings.TrimSpace(msg.Payload))
-
-		if len(payload) == 0 {
-			log.Printf("Received empty payload in pub/sub message")
-			continue
-		}
-
-		// Send event to worker pool for concurrent processing
-		select {
-		case channel <- payload:
-			// Event queued successfully
-		default:
-			log.Printf("Event queue full, processing synchronously")
-			h.processEvent(payload)
-		}
-	}
-}
-func (h *EventHandler) eventWorker(channel <-chan []byte) {
-	for payload := range channel {
-		h.processEvent(payload)
-	}
-}
-func (h *EventHandler) processEvent(payload []byte) {
-	var rawEvent map[string]interface{}
-	if err := json.Unmarshal(payload, &rawEvent); err != nil {
-		log.Printf("Error unmarshaling event (payload: %s): %v", string(payload), err)
-		return
-	}
-
-	eventType, ok := rawEvent["type"].(string)
-	if !ok || eventType == "" {
-		log.Printf("Received event with invalid or empty type: %+v", rawEvent)
-		return
-	}
-
-	switch eventType {
-	case "VOICE_SYNC":
-		d, ok := rawEvent["request"].(bool)
-		if !ok {
-			//log.Printf("Request field not found: %v", d)
-			return
-		}
-		if !d {
-			return // sync data not requested
-		}
-
-		log.Printf("Voice sync request received")
-		// send current voice data
-		voiceData := map[string]map[string][]string{
-			"rooms": participants,
-		}
-		log.Printf("%s", participants)
-		message, err := json.Marshal(struct {
-			Type string                         `json:"type"`
-			Data map[string]map[string][]string `json:"data"`
-		}{
-			Type: "VOICE_SYNC",
-			Data: voiceData,
-		})
+	rdb := database.Rdb
+	if _, ok := rooms[room]; !ok { // room has been deleted
+		_, err := rdb.Del("lvroom:" + room).Result()
 		if err != nil {
-			log.Printf("[VoiceSync] Failed to Marshal sync data: %v", err)
-			return
+			log.Printf("[VoiceSync] Error removing room from key storage: %v; error: %v", room, err)
 		}
-		if err := database.Rdb.Publish("VOICE_EVENTS", string(message)).Err(); err != nil {
-			log.Printf("[VoiceSync] Failed to Publish sync data: %v", err)
-		}
+		return
+	}
+
+	marshaled, _ := json.Marshal(participants[room])
+	err := rdb.Set("lvroom:"+room, string(marshaled), 0)
+	if err != nil {
+		log.Printf("[VoiceSync] Error updating room %v: %v", room, err)
 	}
 }
 
@@ -152,11 +78,15 @@ func createRoom(room string) *livekit.Room {
 		EmptyTimeout:    10 * 60, // 10 minutes
 		MaxParticipants: 20,      // TODO: edit this?
 	})
+	UpdateRedis(room)
+
 	return r
 }
 func RoomClosed(room string) {
 	if _, ok := rooms[room]; !ok {
 		delete(rooms, room)
+
+		UpdateRedis(room)
 	}
 }
 
@@ -172,6 +102,8 @@ func RegisterJoin(room, participant string) {
 
 	p = append(p, participant)
 	participants[room] = p
+
+	UpdateRedis(room)
 }
 func RegisterLeave(room, participant string) {
 	p, ok := participants[room]
@@ -187,6 +119,8 @@ func RegisterLeave(room, participant string) {
 	}
 	p = append(p[:idx], p[idx+1:]...)
 	participants[room] = p
+
+	UpdateRedis(room)
 }
 func GetParticipants(room string) []string {
 	p, ok := participants[room]
