@@ -2,11 +2,13 @@ package portal
 
 import (
 	"context"
+	"encoding/json"
 	"log"
 	"os"
 	"slices"
 	"time"
 
+	"github.com/StrafeChat/equinox/src/database"
 	"github.com/livekit/protocol/auth"
 	livekit "github.com/livekit/protocol/livekit"
 	lksdk "github.com/livekit/server-sdk-go/v2"
@@ -33,6 +35,25 @@ func InitPortal() error {
 	return nil
 }
 
+func UpdateRedis(room string) {
+	//ctx := context.Background()
+
+	rdb := database.Rdb
+	if _, ok := rooms[room]; !ok { // room has been deleted
+		_, err := rdb.Del("lvroom:" + room).Result()
+		if err != nil {
+			log.Printf("[VoiceSync] Error removing room from key storage: %v; error: %v", room, err)
+		}
+		return
+	}
+
+	marshaled, _ := json.Marshal(participants[room])
+	err := rdb.Set("lvroom:"+room, string(marshaled), 0)
+	if err != nil {
+		log.Printf("[VoiceSync] Error updating room %v: %v", room, err)
+	}
+}
+
 func GetJoinToken(room, identity string) string {
 	at := auth.NewAccessToken(os.Getenv("LIVEKIT_API_KEY"), os.Getenv("LIVEKIT_API_SECRET"))
 	grant := &auth.VideoGrant{
@@ -57,11 +78,15 @@ func createRoom(room string) *livekit.Room {
 		EmptyTimeout:    10 * 60, // 10 minutes
 		MaxParticipants: 20,      // TODO: edit this?
 	})
+	UpdateRedis(room)
+
 	return r
 }
 func RoomClosed(room string) {
 	if _, ok := rooms[room]; !ok {
 		delete(rooms, room)
+
+		UpdateRedis(room)
 	}
 }
 
@@ -77,6 +102,8 @@ func RegisterJoin(room, participant string) {
 
 	p = append(p, participant)
 	participants[room] = p
+
+	UpdateRedis(room)
 }
 func RegisterLeave(room, participant string) {
 	p, ok := participants[room]
@@ -92,6 +119,8 @@ func RegisterLeave(room, participant string) {
 	}
 	p = append(p[:idx], p[idx+1:]...)
 	participants[room] = p
+
+	UpdateRedis(room)
 }
 func GetParticipants(room string) []string {
 	p, ok := participants[room]
