@@ -18,7 +18,7 @@ type Room struct {
 	Creator       *string   `json:"creator,omitempty"`   // null if DM, set if group
 	Recipients    []string  `json:"recipients"`          // array of user IDs
 	Type          int       `json:"type"`                // 0 = DM, 1 = Group DM, 2 = Text Room, 3 = Voice Room, 4 = Space Section
-	SpaceID       *int64    `json:"space_id,omitempty"`  // space ID for space rooms/sections
+	SpaceID       *int64    `json:"space_id,omitempty,string"`  // space ID for space rooms/sections
 	ParentID      *string   `json:"parent_id,omitempty"` // parent section ID if this room belongs to a section
 	Name          *string   `json:"name,omitempty"`      // optional name for group PMs
 	Topic         *string   `json:"topic,omitempty"`     // optional topic for group PMs

@@ -59,8 +59,6 @@ func InitDB() error {
 		log.Printf("Bot schema migration completed with warnings: %v", err)
 	}
 
-
-
 	/*_ Connect to Redis _*/
 	Rdb = redis.NewClient(&redis.Options{
 		Addr: os.Getenv("REDIS_HOST"),
@@ -97,6 +95,10 @@ func CreateSchema() error {
 		&models.Relationship{},
 		&models.MessagesByRoom{},
 		&models.MessageUnread{},
+		&models.MessageMentionUnread{},
+		&models.MessageReaction{},
+		&models.MessageReactionByMessage{},
+		&models.MessageReactionCount{},
 		&models.SessionByUser{},
 		&models.PasswordReset{},
 		&models.VerificationToken{},
@@ -104,7 +106,8 @@ func CreateSchema() error {
 		&models.RelationshipBySender{},
 		&models.RelationshipByRecipient{},
 		&models.UserByUsernameAndDiscriminator{},
-
+		&models.CustomEmoji{},
+		&models.CustomEmojiBySpace{},
 	}
 	// indexes := []interface{}{
 	// 	&indexes.RoomRecipientByUser{},

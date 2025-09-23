@@ -19,8 +19,6 @@ import (
 	"github.com/scylladb/gocqlx/v2/qb"
 )
 
-
-
 type CreateMessageInput struct {
 	Content           string   `json:"content"`
 	Nonce             string   `json:"nonce"`
@@ -171,6 +169,67 @@ func fetchAttachmentMetadata(attachmentID string) (map[string]interface{}, error
 
 	log.Printf("fetchAttachmentMetadata: Returning attachment data: %+v", attachmentData)
 	return attachmentData, nil
+}
+
+// fetchMessageReactions fetches reactions for multiple messages
+func fetchMessageReactions(messageIDs []string) (map[string]map[string]interface{}, error) {
+	if len(messageIDs) == 0 {
+		return make(map[string]map[string]interface{}), nil
+	}
+
+	log.Printf("fetchMessageReactions: Fetching reactions for %d messages", len(messageIDs))
+	messageReactions := make(map[string]map[string]interface{})
+
+	// Fetch reactions for each message
+	for _, messageID := range messageIDs {
+		log.Printf("fetchMessageReactions: Fetching reactions for message %s", messageID)
+
+		// Get all reactions for this message from message_reactions_by_message table
+		var reactions []models.MessageReactionByMessage
+		if err := models.MessageReactionByMessageTable.SelectBuilder().
+			Columns("emoji", "user_id").
+			Where(qb.Eq("message_id")).
+			Query(*database.Session).
+			BindMap(qb.M{"message_id": messageID}).
+			SelectRelease(&reactions); err != nil {
+			log.Printf("fetchMessageReactions: No reactions found for message %s: %v", messageID, err)
+			// If no reactions found, set empty map
+			messageReactions[messageID] = make(map[string]interface{})
+			continue
+		}
+
+		log.Printf("fetchMessageReactions: Found %d individual reactions for message %s", len(reactions), messageID)
+
+		// Aggregate reactions by emoji
+		emojiCounts := make(map[string]map[string]interface{})
+		for _, reaction := range reactions {
+			if _, exists := emojiCounts[reaction.Emoji]; !exists {
+				emojiCounts[reaction.Emoji] = map[string]interface{}{
+					"count": 0,
+					"users": []string{},
+				}
+			}
+
+			// Increment count
+			emojiCounts[reaction.Emoji]["count"] = emojiCounts[reaction.Emoji]["count"].(int) + 1
+
+			// Add user to users list
+			users := emojiCounts[reaction.Emoji]["users"].([]string)
+			users = append(users, reaction.UserID)
+			emojiCounts[reaction.Emoji]["users"] = users
+		}
+
+		// Convert to the expected type
+		formattedReactions := make(map[string]interface{})
+		for emoji, data := range emojiCounts {
+			formattedReactions[emoji] = data
+		}
+		messageReactions[messageID] = formattedReactions
+		log.Printf("fetchMessageReactions: Final reactions for message %s: %+v", messageID, emojiCounts)
+	}
+
+	log.Printf("fetchMessageReactions: Completed fetching reactions for %d messages", len(messageIDs))
+	return messageReactions, nil
 }
 
 // fetchMessagesFromIDs fetches full message details concurrently
@@ -596,9 +655,21 @@ func GetRoomMessages(c fiber.Ctx) error {
 		authors = make(map[string]interface{})
 	}
 
+	// Fetch reactions for all messages
+	messageIDs = make([]string, len(fullMessages))
+	for i, msg := range fullMessages {
+		messageIDs[i] = msg.ID
+	}
 
+	log.Printf("GetRoomMessages: Fetching reactions for %d messages", len(messageIDs))
+	messageReactions, reactionErr := fetchMessageReactions(messageIDs)
+	if reactionErr != nil {
+		log.Printf("GetRoomMessages: Failed to fetch reactions: %v", reactionErr)
+		// Continue without reactions rather than failing the entire request
+		messageReactions = make(map[string]map[string]interface{})
+	}
 
-	// Convert messages to interface{} slice and add author details + process attachments
+	// Convert messages to interface{} slice and add author details + process attachments + reactions
 	messagesWithAuthors := make([]interface{}, len(fullMessages))
 	for i, msg := range fullMessages {
 		// Create a new map with the message data
@@ -607,8 +678,6 @@ func GetRoomMessages(c fiber.Ctx) error {
 		// Copy all existing message fields
 		msgBytes, _ := json.Marshal(msg)
 		json.Unmarshal(msgBytes, &msgWithAuthor)
-
-
 
 		// Add author details if available
 		if msg.AuthorID != nil && *msg.AuthorID != "" {
@@ -635,6 +704,14 @@ func GetRoomMessages(c fiber.Ctx) error {
 		} else {
 			// Ensure attachments field is an empty array instead of null
 			msgWithAuthor["attachments"] = []interface{}{}
+		}
+
+		// Add reactions if available
+		if reactions, exists := messageReactions[msg.ID]; exists {
+			msgWithAuthor["reactions"] = reactions
+		} else {
+			// Ensure reactions field is an empty object instead of null
+			msgWithAuthor["reactions"] = make(map[string]interface{})
 		}
 
 		messagesWithAuthors[i] = msgWithAuthor
@@ -691,7 +768,6 @@ func CreateMessage(c fiber.Ctx) error {
 		})
 	}
 
-
 	// Create message
 	messageID := helpers.GenerateMessageID().String()
 	createdAt := time.Now()
@@ -735,8 +811,6 @@ func CreateMessage(c fiber.Ctx) error {
 		MentionEveryone: mentionResult.MentionEveryone && canMentionEveryone,
 		// UpdatedAt: createdAt,
 	}
-
-
 
 	// Add unread entry for all recipients except the sender and those who are online
 	if err := AddUnreadMessage(roomID, messageID, user.ID); err != nil {
@@ -866,10 +940,16 @@ func CreateMessage(c fiber.Ctx) error {
 		})
 	}
 
+	// Create response message with reactions
+	messageBytes, _ := json.Marshal(message)
+	messageMap := make(map[string]interface{})
+	json.Unmarshal(messageBytes, &messageMap)
+	messageMap["reactions"] = make(map[string]interface{})
+
 	// Publish message to Redis for Stargate
 	event := map[string]interface{}{
 		"type": "MESSAGE_CREATE",
-		"data": message,
+		"data": messageMap,
 	}
 
 	log.Printf("CreateMessage: Preparing to publish message event to Redis")
@@ -890,7 +970,7 @@ func CreateMessage(c fiber.Ctx) error {
 	}
 
 	log.Printf("CreateMessage: Successfully completed for messageID=%s", messageID)
-	return c.Status(fiber.StatusCreated).JSON(message)
+	return c.Status(fiber.StatusCreated).JSON(messageMap)
 }
 
 func DeleteMessage(c fiber.Ctx) error {

@@ -32,6 +32,11 @@ func SetupRoomsRoutes(verisonRouter *fiber.Group) {
 	router.Post("/:id/ack", handlers_v1.AcknowledgeMessages)
 	router.Post("/:id/typing", handlers_v1.HandleTypingIndicator)
 
+	// Message reaction routes
+	router.Post("/:room_id/messages/:message_id/reactions", handlers_v1.AddReaction)
+	router.Delete("/:room_id/messages/:message_id/reactions/:emoji", handlers_v1.RemoveReaction)
+	router.Get("/:room_id/messages/:message_id/reactions", handlers_v1.GetMessageReactions)
+
 	// Room management routes
 	router.Patch("/:id", handlers_v1.UpdateRoom)
 	router.Delete("/:id", handlers_v1.DeleteRoom)

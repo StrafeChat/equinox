@@ -197,6 +197,8 @@ func MigrateAllSchemas() error {
 		return err
 	}
 
+
+
 	log.Println("All schema migrations completed successfully")
 	return nil
 }

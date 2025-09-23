@@ -51,6 +51,12 @@ func SetupSpacesRoutes(versionRouter *fiber.Group) {
 	router.Delete("/:id/bots/:botId", bots.RemoveBotFromSpace)
 	router.Get("/:id/bots", bots.GetSpaceBots)
 
+	// Custom Emoji Routes
+	router.Get("/:id/emojis", spaces.GetSpaceEmojis)
+	router.Post("/:id/emojis", spaces.CreateCustomEmoji)
+	router.Get("/:id/emojis/:shortcode", spaces.GetCustomEmoji)
+	router.Delete("/:id/emojis/:shortcode", spaces.DeleteCustomEmoji)
+
 	// Permission checking route
 	router.Get("/:id/permissions/:permission", spaces.CheckUserPermission)
 

@@ -24,6 +24,7 @@ const (
 	BAN_MEMBERS      = "BAN_MEMBERS"
 	MANAGE_NICKNAMES = "MANAGE_NICKNAMES"
 	MANAGE_WEBHOOKS  = "MANAGE_WEBHOOKS"
+	MANAGE_EMOJIS    = "MANAGE_EMOJIS"
 	VIEW_AUDIT_LOG   = "VIEW_AUDIT_LOG"
 
 	// Text channel permissions
@@ -71,6 +72,7 @@ func GetAllPermissions() []Permission {
 		{BAN_MEMBERS, "Ban Members", "Ban members from space", "general"},
 		{MANAGE_NICKNAMES, "Manage Nicknames", "Change other members' nicknames", "general"},
 		{MANAGE_WEBHOOKS, "Manage Webhooks", "Create, edit, and delete webhooks", "general"},
+		{MANAGE_EMOJIS, "Manage Emojis", "Create, edit, and delete custom emojis", "general"},
 		{VIEW_AUDIT_LOG, "View Audit Log", "View space audit log", "general"},
 
 		// Text channel permissions
@@ -108,6 +110,7 @@ func GetRoomOverridePermissions() []Permission {
 		{BAN_MEMBERS, "Ban Members", "Ban members from space", "general"},
 		{MANAGE_NICKNAMES, "Manage Nicknames", "Change other members' nicknames", "general"},
 		{MANAGE_WEBHOOKS, "Manage Webhooks", "Create, edit, and delete webhooks", "general"},
+		{MANAGE_EMOJIS, "Manage Emojis", "Create, edit, and delete custom emojis", "general"},
 		{VIEW_AUDIT_LOG, "View Audit Log", "View space audit log", "general"},
 
 		// Text channel permissions
@@ -245,6 +248,7 @@ const (
 	PermissionBanMembers
 	PermissionManageNicknames
 	PermissionManageWebhooks
+	PermissionManageEmojis
 	PermissionViewAuditLog
 	PermissionSendMessages
 	PermissionManageMessages
@@ -288,6 +292,8 @@ func PermissionsToBitfield(permissions []string) PermissionValue {
 			bitfield |= PermissionManageNicknames
 		case MANAGE_WEBHOOKS:
 			bitfield |= PermissionManageWebhooks
+		case MANAGE_EMOJIS:
+			bitfield |= PermissionManageEmojis
 		case VIEW_AUDIT_LOG:
 			bitfield |= PermissionViewAuditLog
 		case SEND_MESSAGES:
@@ -360,6 +366,9 @@ func BitfieldToPermissions(bitfield PermissionValue) []string {
 	}
 	if bitfield&PermissionManageWebhooks != 0 {
 		permissions = append(permissions, MANAGE_WEBHOOKS)
+	}
+	if bitfield&PermissionManageEmojis != 0 {
+		permissions = append(permissions, MANAGE_EMOJIS)
 	}
 	if bitfield&PermissionViewAuditLog != 0 {
 		permissions = append(permissions, VIEW_AUDIT_LOG)
@@ -523,6 +532,7 @@ func GetUserPermissionsInSpace(session *gocqlx.Session, userID, spaceID int64) (
 			MANAGE_ROLES,
 			KICK_MEMBERS,
 			BAN_MEMBERS,
+			MANAGE_EMOJIS,
 			VIEW_ROOMS,
 			SEND_MESSAGES,
 			MANAGE_MESSAGES,
