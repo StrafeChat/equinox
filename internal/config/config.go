@@ -1,0 +1,86 @@
+package config
+
+import (
+	"errors"
+	"strconv"
+)
+
+type Config struct {
+	App      AppConfig
+	HTTP     HTTPConfig
+	Flags    FeatureFlags
+	Database DatabaseConfig
+}
+
+type AppConfig struct {
+	Version string
+}
+
+type HTTPConfig struct {
+	Port string
+}
+
+type FeatureFlags struct {
+	Captcha    bool
+	Email      bool
+	InviteOnly bool
+}
+
+type DatabaseConfig struct {
+	Scylla ScyllaConfig
+	Redis  RedisConfig
+}
+
+type ScyllaConfig struct {
+	Hosts    []string
+	Port     string
+	Keyspace string
+}
+
+type RedisConfig struct {
+	Addr string
+}
+
+func Load() (*Config, error) {
+	cfg := &Config{
+		App: AppConfig{
+			Version: getEnvString("VERSION", "1.0.0"),
+		},
+		HTTP: HTTPConfig{
+			Port: getEnvString("PORT", "4000"),
+		},
+		Flags: FeatureFlags{
+			Captcha:    getEnvBool("CAPTCHA", false),
+			Email:      getEnvBool("EMAIL", false),
+			InviteOnly: getEnvBool("INVITE_ONLY", false),
+		},
+		Database: DatabaseConfig{
+			Scylla: ScyllaConfig{
+				Hosts:    getEnvArray("SCYLLA_HOSTS", []string{"localhost"}),
+				Port:     getEnvString("SCYLLA_PORT", "9042"),
+				Keyspace: getEnvString("SCYLLA_KEYSPACE", "equinox"),
+			},
+			Redis: RedisConfig{
+				Addr: getEnvString("REDIS_ADDRS", "localhost"),
+			},
+		},
+	}
+
+	if err := validate(cfg); err != nil {
+		return nil, err
+	}
+
+	return cfg, nil
+}
+
+func validate(cfg *Config) error {
+	if cfg.HTTP.Port == "" {
+		return errors.New("PORT is required")
+	}
+
+	if _, err := strconv.Atoi(cfg.HTTP.Port); err != nil {
+		return errors.New("PORT must be numeric")
+	}
+
+	return nil
+}

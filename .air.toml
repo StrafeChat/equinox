@@ -1,0 +1,18 @@
+root = "."
+tmp_dir = "tmp"
+
+[build]
+cmd = "go build -o tmp/app ./cmd/api"
+entrypoint = "tmp/app"
+delay = 600
+stop_on_error = true
+
+[watch]
+include_ext = ["go"]
+exclude_dir = ["tmp", "assets", ".git"]
+
+[color]
+main = "cyan"
+watcher = "magenta"
+build = "yellow"
+runner = "green"
