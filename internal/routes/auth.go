@@ -1,16 +1,23 @@
 package routes
 
 import (
-	"github.com/StrafeChat/equinox/internal/config"
+	"github.com/StrafeChat/equinox/internal/middleware"
 	"github.com/StrafeChat/equinox/internal/modules/auth"
-	"github.com/gofiber/fiber/v3"
 )
 
-func SetupAuthRoutes(app *fiber.App, cfg *config.Config) {
-	h := auth.NewHandler(cfg)
+func SetupAuthRoutes(d Deps) {
+	userRepo := auth.NewUserRepository(d.Scylla)
+	sessionRepo := auth.NewSessionRepository(d.Scylla)
+	svc := auth.NewService(d.Config, userRepo, sessionRepo)
+	h := auth.NewHandler(svc)
 
-	r := app.Group("/auth")
+	requireAuth := middleware.RequireAuth(sessionRepo, userRepo)
 
-	r.Get("/login", h.Login)
-	r.Get("/register", h.Register)
+	r := d.App.Group("/auth")
+
+	r.Post("/login", h.Login)
+	r.Post("/register", h.Register)
+
+	r.Post("/logout", requireAuth, h.Logout)
+	r.Post("/logout_all", requireAuth, h.LogoutAll)
 }

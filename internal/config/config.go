@@ -8,6 +8,7 @@ import (
 type Config struct {
 	App      AppConfig
 	HTTP     HTTPConfig
+	Session  SessionConfig
 	Flags    FeatureFlags
 	Database DatabaseConfig
 }
@@ -18,6 +19,11 @@ type AppConfig struct {
 
 type HTTPConfig struct {
 	Port string
+}
+
+type SessionConfig struct {
+	TTLSeconds int // session expiry in seconds
+	TokenBytes int // random bytes for token (e.g. 32)
 }
 
 type FeatureFlags struct {
@@ -48,6 +54,10 @@ func Load() (*Config, error) {
 		},
 		HTTP: HTTPConfig{
 			Port: getEnvString("PORT", "4000"),
+		},
+		Session: SessionConfig{
+			TTLSeconds: getEnvInt("SESSION_TTL_SECONDS", 86400*7), // 7 days
+			TokenBytes: getEnvInt("SESSION_TOKEN_BYTES", 32),
 		},
 		Flags: FeatureFlags{
 			Captcha:    getEnvBool("CAPTCHA", false),

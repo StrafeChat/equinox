@@ -9,30 +9,37 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/gofiber/fiber/v3"
+	"github.com/redis/go-redis/v9"
+	"github.com/scylladb/gocqlx/v3"
+
 	"github.com/StrafeChat/equinox/internal/config"
 	"github.com/StrafeChat/equinox/internal/db"
 	"github.com/StrafeChat/equinox/internal/routes"
-	"github.com/gofiber/fiber/v3"
 )
 
 type App struct {
-	cfg    *config.Config
-	fiber  *fiber.App
-	scylla any
-	redis  any
+	Config *config.Config
+	Fiber  *fiber.App
+	Scylla gocqlx.Session
+	Redis  *redis.Client
 }
 
 func New(cfg *config.Config) (*App, error) {
-	f := fiber.New()
+	fiber := fiber.New()
 
-	_, scylla := db.NewScylla(cfg.Database.Scylla)
+	scylla, err := db.NewScylla(cfg.Database.Scylla)
+	if err != nil {
+		return nil, err
+	}
+
 	redis := db.NewRedis(cfg.Database.Redis)
 
 	app := &App{
-		cfg:    cfg,
-		fiber:  f,
-		scylla: scylla,
-		redis:  redis,
+		Config: cfg,
+		Fiber:  fiber,
+		Scylla: scylla,
+		Redis:  redis,
 	}
 
 	app.register()
@@ -41,17 +48,21 @@ func New(cfg *config.Config) (*App, error) {
 }
 
 func (a *App) register() {
-
-	routes.SetupRoutes(a.fiber, a.cfg)
+	routes.SetupRoutes(routes.Deps{
+		App:    a.Fiber,
+		Config: a.Config,
+		Scylla: a.Scylla,
+		Redis:  a.Redis,
+	})
 }
 
 func (a *App) Start() error {
-	addr := fmt.Sprintf(":%s", a.cfg.HTTP.Port)
+	addr := fmt.Sprintf(":%s", a.Config.HTTP.Port)
 
 	go func() {
-		log.Printf("[SERVER] Starting on %s", addr)
+		log.Printf("[SERVER] starting on %s", addr)
 
-		if err := a.fiber.Listen(addr); err != nil {
+		if err := a.Fiber.Listen(addr); err != nil {
 			log.Printf("[SERVER] stopped: %v", err)
 		}
 	}()
@@ -70,5 +81,8 @@ func (a *App) gracefulShutdown() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	return a.fiber.ShutdownWithContext(ctx)
+	a.Scylla.Close()
+	_ = a.Redis.Close()
+
+	return a.Fiber.ShutdownWithContext(ctx)
 }
