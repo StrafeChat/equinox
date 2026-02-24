@@ -3,6 +3,8 @@ package config
 import (
 	"errors"
 	"strconv"
+
+	"github.com/StrafeChat/equinox/internal/logger"
 )
 
 type Config struct {
@@ -11,6 +13,11 @@ type Config struct {
 	Session  SessionConfig
 	Flags    FeatureFlags
 	Database DatabaseConfig
+	Log      LogConfig
+}
+
+type LogConfig struct {
+	Level logger.Level
 }
 
 type AppConfig struct {
@@ -73,6 +80,9 @@ func Load() (*Config, error) {
 			Redis: RedisConfig{
 				Addr: getEnvString("REDIS_ADDRS", "localhost"),
 			},
+		},
+		Log: LogConfig{
+			Level: logger.ParseLevel(getEnvString("LOG_LEVEL", "info")),
 		},
 	}
 

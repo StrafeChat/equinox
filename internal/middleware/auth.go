@@ -3,13 +3,13 @@ package middleware
 import (
 	"crypto/sha256"
 	"encoding/hex"
-	"log"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/gofiber/fiber/v3"
 
+	"github.com/StrafeChat/equinox/internal/logger"
 	"github.com/StrafeChat/equinox/internal/modules/auth"
 )
 
@@ -32,7 +32,7 @@ func RequireAuth(sessionRepo auth.SessionRepository, userRepo auth.UserRepositor
 
 		sess, err := sessionRepo.GetByTokenHash(c.Context(), tokenHash)
 		if err != nil {
-			log.Printf("[auth] session lookup error: %v", err)
+			logger.Err("auth", err, map[string]any{"path": c.Path()})
 			return c.Status(http.StatusInternalServerError).JSON(fiber.Map{"error": "internal error"})
 		}
 		if sess == nil {
@@ -48,7 +48,7 @@ func RequireAuth(sessionRepo auth.SessionRepository, userRepo auth.UserRepositor
 
 		u, err := userRepo.GetByID(c.Context(), sess.UserID)
 		if err != nil {
-			log.Printf("[auth] user lookup error: %v", err)
+			logger.Err("auth", err, map[string]any{"user_id": sess.UserID})
 			return c.Status(http.StatusInternalServerError).JSON(fiber.Map{"error": "internal error"})
 		}
 		if u == nil {

@@ -1,12 +1,12 @@
 package auth
 
 import (
-	"log"
 	"net/http"
 
 	"github.com/gofiber/fiber/v3"
 
 	"github.com/StrafeChat/equinox/internal/id"
+	"github.com/StrafeChat/equinox/internal/logger"
 )
 
 type Handler struct {
@@ -29,10 +29,10 @@ func (h *Handler) Login(c fiber.Ctx) error {
 	user, token, err := h.svc.Login(c.Context(), in.Email, in.Password, ip, userAgent)
 	if err != nil {
 		if err == ErrInvalidCredentials {
-			log.Printf("[auth] login failed: invalid credentials")
+			logger.Info("auth", "login failed: invalid credentials")
 			return c.Status(http.StatusUnauthorized).JSON(fiber.Map{"error": "invalid email or password"})
 		}
-		log.Printf("[auth] login error: %v", err)
+		logger.Err("auth", err, map[string]any{"email": in.Email})
 		return c.Status(http.StatusInternalServerError).JSON(fiber.Map{"error": "internal error"})
 	}
 
@@ -56,7 +56,7 @@ func (h *Handler) Logout(c fiber.Ctx) error {
 	}
 
 	if err := h.svc.Logout(c.Context(), user.ID, session.SessionID); err != nil {
-		log.Printf("[auth] logout error: %v", err)
+		logger.Err("auth", err, map[string]any{"user_id": user.ID})
 		return c.Status(http.StatusInternalServerError).JSON(fiber.Map{"error": "internal error"})
 	}
 	return c.Status(http.StatusOK).JSON(fiber.Map{"ok": true})
@@ -69,7 +69,7 @@ func (h *Handler) LogoutAll(c fiber.Ctx) error {
 	}
 
 	if err := h.svc.LogoutAll(c.Context(), user.ID); err != nil {
-		log.Printf("[auth] logout_all error: %v", err)
+		logger.Err("auth", err, map[string]any{"user_id": user.ID})
 		return c.Status(http.StatusInternalServerError).JSON(fiber.Map{"error": "internal error"})
 	}
 	return c.Status(http.StatusOK).JSON(fiber.Map{"ok": true})
@@ -93,7 +93,7 @@ func (h *Handler) Register(c fiber.Ctx) error {
 		case ErrWeakPassword, ErrInvalidUsername:
 			return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 		default:
-			log.Printf("[auth] register error: %v", err)
+			logger.Err("auth", err, map[string]any{"email": in.Email})
 			return c.Status(http.StatusInternalServerError).JSON(fiber.Map{"error": "internal error"})
 		}
 	}

@@ -5,11 +5,11 @@ import (
 
 	"github.com/StrafeChat/equinox/internal/app"
 	"github.com/StrafeChat/equinox/internal/config"
+	"github.com/StrafeChat/equinox/internal/logger"
 	"github.com/joho/godotenv"
 )
 
 func main() {
-
 	err := godotenv.Load()
 	if err != nil {
 		log.Fatal(err)
@@ -19,6 +19,8 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+
+	logger.InitDefault(cfg.Log.Level)
 
 	a, err := app.New(cfg)
 	if err != nil {

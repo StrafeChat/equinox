@@ -3,7 +3,6 @@ package app
 import (
 	"context"
 	"fmt"
-	"log"
 	"os"
 	"os/signal"
 	"syscall"
@@ -15,6 +14,8 @@ import (
 
 	"github.com/StrafeChat/equinox/internal/config"
 	"github.com/StrafeChat/equinox/internal/db"
+	"github.com/StrafeChat/equinox/internal/logger"
+	"github.com/StrafeChat/equinox/internal/middleware"
 	"github.com/StrafeChat/equinox/internal/routes"
 )
 
@@ -48,6 +49,8 @@ func New(cfg *config.Config) (*App, error) {
 }
 
 func (a *App) register() {
+	a.Fiber.Use(middleware.RequestLog())
+
 	routes.SetupRoutes(routes.Deps{
 		App:    a.Fiber,
 		Config: a.Config,
@@ -60,10 +63,10 @@ func (a *App) Start() error {
 	addr := fmt.Sprintf(":%s", a.Config.HTTP.Port)
 
 	go func() {
-		log.Printf("[SERVER] starting on %s", addr)
+		logger.Info("server", "starting on %s", addr)
 
 		if err := a.Fiber.Listen(addr); err != nil {
-			log.Printf("[SERVER] stopped: %v", err)
+			logger.Error("server", "stopped: %v", err)
 		}
 	}()
 
@@ -76,7 +79,7 @@ func (a *App) gracefulShutdown() error {
 
 	<-stop
 
-	log.Println("[SERVER] stopping...")
+	logger.Info("server", "stopping...")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
