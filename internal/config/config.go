@@ -11,6 +11,7 @@ type Config struct {
 	App      AppConfig
 	HTTP     HTTPConfig
 	Session  SessionConfig
+	Stargate StargateConfig
 	Flags    FeatureFlags
 	Database DatabaseConfig
 	Log      LogConfig
@@ -21,16 +22,23 @@ type LogConfig struct {
 }
 
 type AppConfig struct {
-	Version string
+	Version       string
+	SnowflakeNode int64 // node ID for snowflake generator (0-1023; unique per instance for federation)
 }
 
 type HTTPConfig struct {
 	Port string
 }
 
+type StargateConfig struct {
+	Port          string   // WebSocket server port (e.g. 4001)
+	Region        string   // instance region for multi-region (e.g. "us-east", "eu-west")
+	AllowedOrigins []string // allowed origins for CheckOrigin (e.g. https://strafe.chat)
+}
+
 type SessionConfig struct {
-	TTLSeconds int // session expiry in seconds
-	TokenBytes int // random bytes for token (e.g. 32)
+	TTLSeconds int
+	TokenBytes int
 }
 
 type FeatureFlags struct {
@@ -51,13 +59,15 @@ type ScyllaConfig struct {
 }
 
 type RedisConfig struct {
-	Addr string
+	Addr     string
+	PoolSize int // max connections in pool (default 10)
 }
 
 func Load() (*Config, error) {
 	cfg := &Config{
 		App: AppConfig{
-			Version: getEnvString("VERSION", "1.0.0"),
+			Version:       getEnvString("VERSION", "1.0.0"),
+			SnowflakeNode: int64(getEnvInt("SNOWFLAKE_NODE_ID", 0)),
 		},
 		HTTP: HTTPConfig{
 			Port: getEnvString("PORT", "4000"),
@@ -65,6 +75,11 @@ func Load() (*Config, error) {
 		Session: SessionConfig{
 			TTLSeconds: getEnvInt("SESSION_TTL_SECONDS", 86400*7), // 7 days
 			TokenBytes: getEnvInt("SESSION_TOKEN_BYTES", 32),
+		},
+		Stargate: StargateConfig{
+			Port:           getEnvString("STARGATE_PORT", "4001"),
+			Region:         getEnvString("STARGATE_REGION", "default"),
+			AllowedOrigins: getEnvArray("STARGATE_ALLOWED_ORIGINS", nil),
 		},
 		Flags: FeatureFlags{
 			Captcha:    getEnvBool("CAPTCHA", false),
@@ -78,7 +93,8 @@ func Load() (*Config, error) {
 				Keyspace: getEnvString("SCYLLA_KEYSPACE", "strafechat"),
 			},
 			Redis: RedisConfig{
-				Addr: getEnvString("REDIS_ADDRS", "localhost"),
+				Addr:     getEnvStringOr("REDIS_ADDR", "REDIS_ADDRS", "localhost:6379"),
+				PoolSize: getEnvInt("REDIS_POOL_SIZE", 10),
 			},
 		},
 		Log: LogConfig{
@@ -97,10 +113,11 @@ func validate(cfg *Config) error {
 	if cfg.HTTP.Port == "" {
 		return errors.New("PORT is required")
 	}
-
 	if _, err := strconv.Atoi(cfg.HTTP.Port); err != nil {
 		return errors.New("PORT must be numeric")
 	}
-
+	if cfg.App.SnowflakeNode < 0 || cfg.App.SnowflakeNode > 1023 {
+		return errors.New("SNOWFLAKE_NODE_ID must be 0-1023 (unique per instance)")
+	}
 	return nil
 }

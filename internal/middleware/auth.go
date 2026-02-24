@@ -68,8 +68,12 @@ func extractToken(c fiber.Ctx) string {
 			return strings.TrimSpace(strings.TrimPrefix(h, prefix))
 		}
 	}
-	// Cookie (optional)
+	// Cookie (optional, same-origin WebSocket)
 	if t := c.Cookies("session_token"); t != "" {
+		return t
+	}
+	// Query param (for WebSocket from clients that can't set headers)
+	if t := c.Query("token"); t != "" {
 		return t
 	}
 	return ""

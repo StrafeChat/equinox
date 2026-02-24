@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/gofiber/fiber/v3"
+	"github.com/gofiber/fiber/v3/middleware/recover"
 	"github.com/redis/go-redis/v9"
 	"github.com/scylladb/gocqlx/v3"
 
@@ -49,6 +50,7 @@ func New(cfg *config.Config) (*App, error) {
 }
 
 func (a *App) register() {
+	a.Fiber.Use(recover.New())
 	a.Fiber.Use(middleware.RequestLog())
 
 	routes.SetupRoutes(routes.Deps{

@@ -9,7 +9,6 @@ import (
 )
 
 // RequestLog logs each HTTP request when LOG_LEVEL is info or debug.
-// In production, set LOG_LEVEL=off to disable.
 func RequestLog() fiber.Handler {
 	return func(c fiber.Ctx) error {
 		start := time.Now()

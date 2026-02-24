@@ -18,11 +18,11 @@ func NewScylla(conf config.ScyllaConfig) (gocqlx.Session, error) {
 	cluster.Timeout = 5 * time.Second
 	cluster.ConnectTimeout = 5 * time.Second
 
+	// Token-aware routing reduces latency; round-robin for load distribution
 	cluster.PoolConfig.HostSelectionPolicy =
 		gocql.TokenAwareHostPolicy(
 			gocql.RoundRobinHostPolicy(),
 		)
 
-	// CreateSession blocks until connected; error propagates via WrapSession.
 	return gocqlx.WrapSession(cluster.CreateSession())
 }

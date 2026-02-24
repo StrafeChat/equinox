@@ -12,10 +12,12 @@ import (
 type UserRepository interface {
 	Create(ctx context.Context, u *User) error
 	GetByID(ctx context.Context, id int64) (*User, error)
+	GetByIDs(ctx context.Context, ids []int64) ([]*User, error)
 	GetByEmail(ctx context.Context, email string) (*User, error)
 	GetByUsernameDiscriminator(ctx context.Context, username string, discriminator int) (*User, error)
 	EmailExists(ctx context.Context, email string) (bool, error)
 	DiscriminatorsForUsername(ctx context.Context, username string) ([]int, error)
+	UpdateRelationships(ctx context.Context, userID int64, add, remove []int64) error
 }
 
 var userTable = table.New(table.Metadata{
@@ -110,6 +112,41 @@ func (r *scyllaUserRepo) GetByID(ctx context.Context, id int64) (*User, error) {
 	return &u, nil
 }
 
+// GetByIDs fetches multiple users by ID. Returns a slice ordered by input; nil for missing users.
+func (r *scyllaUserRepo) GetByIDs(ctx context.Context, ids []int64) ([]*User, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	seen := make(map[int64]bool)
+	unique := make([]int64, 0, len(ids))
+	for _, id := range ids {
+		if !seen[id] {
+			seen[id] = true
+			unique = append(unique, id)
+		}
+	}
+	out := make([]*User, len(unique))
+	for i, id := range unique {
+		u, err := r.GetByID(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+		out[i] = u
+	}
+	// Build id->user map and reorder to match input
+	byID := make(map[int64]*User)
+	for _, u := range out {
+		if u != nil {
+			byID[u.ID] = u
+		}
+	}
+	result := make([]*User, len(ids))
+	for i, id := range ids {
+		result[i] = byID[id]
+	}
+	return result, nil
+}
+
 func (r *scyllaUserRepo) GetByEmail(ctx context.Context, email string) (*User, error) {
 	var row UserByEmail
 	stmt, names := usersByEmailTable.Get()
@@ -168,4 +205,26 @@ func (r *scyllaUserRepo) DiscriminatorsForUsername(ctx context.Context, username
 		return nil, err
 	}
 	return out, nil
+}
+
+func (r *scyllaUserRepo) UpdateRelationships(ctx context.Context, userID int64, add, remove []int64) error {
+	for _, friendID := range add {
+		q := r.session.Session.Query(
+			"UPDATE users SET relationships = relationships + ? WHERE id = ?",
+			[]int64{friendID}, userID,
+		).WithContext(ctx)
+		if err := q.Exec(); err != nil {
+			return err
+		}
+	}
+	for _, friendID := range remove {
+		q := r.session.Session.Query(
+			"UPDATE users SET relationships = relationships - ? WHERE id = ?",
+			[]int64{friendID}, userID,
+		).WithContext(ctx)
+		if err := q.Exec(); err != nil {
+			return err
+		}
+	}
+	return nil
 }

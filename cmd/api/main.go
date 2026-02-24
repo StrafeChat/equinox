@@ -5,6 +5,7 @@ import (
 
 	"github.com/StrafeChat/equinox/internal/app"
 	"github.com/StrafeChat/equinox/internal/config"
+	"github.com/StrafeChat/equinox/internal/id"
 	"github.com/StrafeChat/equinox/internal/logger"
 	"github.com/joho/godotenv"
 )
@@ -21,6 +22,7 @@ func main() {
 	}
 
 	logger.InitDefault(cfg.Log.Level)
+	id.Init(cfg.App.SnowflakeNode)
 
 	a, err := app.New(cfg)
 	if err != nil {
