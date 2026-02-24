@@ -213,7 +213,9 @@ func (r *scyllaUserRepo) UpdateRelationships(ctx context.Context, userID int64, 
 			"UPDATE users SET relationships = relationships + ? WHERE id = ?",
 			[]int64{friendID}, userID,
 		).WithContext(ctx)
-		if err := q.Exec(); err != nil {
+		err := q.Exec()
+		q.Release()
+		if err != nil {
 			return err
 		}
 	}
@@ -222,7 +224,9 @@ func (r *scyllaUserRepo) UpdateRelationships(ctx context.Context, userID int64, 
 			"UPDATE users SET relationships = relationships - ? WHERE id = ?",
 			[]int64{friendID}, userID,
 		).WithContext(ctx)
-		if err := q.Exec(); err != nil {
+		err := q.Exec()
+		q.Release()
+		if err != nil {
 			return err
 		}
 	}

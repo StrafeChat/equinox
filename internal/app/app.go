@@ -28,7 +28,13 @@ type App struct {
 }
 
 func New(cfg *config.Config) (*App, error) {
-	fiber := fiber.New()
+	bodyLimit := cfg.HTTP.BodyLimitKB * 1024
+	if bodyLimit <= 0 {
+		bodyLimit = 1024 * 1024
+	}
+	fiber := fiber.New(fiber.Config{
+		BodyLimit: int(bodyLimit),
+	})
 
 	scylla, err := db.NewScylla(cfg.Database.Scylla)
 	if err != nil {
@@ -50,7 +56,9 @@ func New(cfg *config.Config) (*App, error) {
 }
 
 func (a *App) register() {
-	a.Fiber.Use(recover.New())
+	a.Fiber.Use(recover.New(recover.Config{EnableStackTrace: a.Config.Log.Level == logger.LevelDebug}))
+	a.Fiber.Use(middleware.SecurityHeaders())
+	a.Fiber.Use(middleware.CORS(a.Config.HTTP.CORSOrigins))
 	a.Fiber.Use(middleware.RequestLog())
 
 	routes.SetupRoutes(routes.Deps{

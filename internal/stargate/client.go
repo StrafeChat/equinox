@@ -4,8 +4,16 @@ import (
 	"context"
 	"encoding/json"
 	"sync"
+	"time"
 
 	"github.com/StrafeChat/equinox/internal/logger"
+)
+
+const (
+	readWait   = 60 * time.Second
+	writeWait  = 10 * time.Second
+	pongWait   = 60 * time.Second
+	pingPeriod = (pongWait * 9) / 10
 )
 
 type Client struct {
@@ -24,7 +32,7 @@ func newClient(hub *Hub, conn Conn, userID, sessionID int64) *Client {
 		conn:      conn,
 		userID:    userID,
 		sessionID: sessionID,
-		send:      make(chan []byte, 256),
+		send:      make(chan []byte, 512),
 		subs:      make(map[string]struct{}),
 	}
 }
@@ -77,6 +85,11 @@ func (c *Client) readPump(ctx context.Context) {
 	}()
 
 	c.conn.SetReadLimit(64 * 1024) // 64KB
+	c.conn.SetReadDeadline(time.Now().Add(pongWait))
+	c.conn.SetPongHandler(func(string) error {
+		c.conn.SetReadDeadline(time.Now().Add(pongWait))
+		return nil
+	})
 
 	for {
 		select {
@@ -89,6 +102,7 @@ func (c *Client) readPump(ctx context.Context) {
 		if err != nil {
 			break
 		}
+		c.conn.SetReadDeadline(time.Now().Add(readWait))
 
 		var msg ClientMessage
 		if err := json.Unmarshal(raw, &msg); err != nil {
@@ -183,7 +197,9 @@ func (c *Client) sendError(code int, message string) {
 }
 
 func (c *Client) writePump(ctx context.Context) {
+	ticker := time.NewTicker(pingPeriod)
 	defer func() {
+		ticker.Stop()
 		_ = c.conn.Close()
 	}()
 
@@ -196,7 +212,13 @@ func (c *Client) writePump(ctx context.Context) {
 				_ = c.conn.WriteMessage(CloseMessage, []byte{})
 				return
 			}
+			_ = c.conn.SetWriteDeadline(time.Now().Add(writeWait))
 			if err := c.conn.WriteMessage(TextMessage, msg); err != nil {
+				return
+			}
+		case <-ticker.C:
+			_ = c.conn.SetWriteDeadline(time.Now().Add(writeWait))
+			if err := c.conn.WriteMessage(PingMessage, []byte{}); err != nil {
 				return
 			}
 		}

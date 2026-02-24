@@ -45,7 +45,7 @@ func NewServer(cfg ServerConfig) *Server {
 		WriteBufferSize: cfg.WriteBufferSize,
 		CheckOrigin: func(r *http.Request) bool {
 			if len(cfg.AllowedOrigins) == 0 {
-				return true
+				return true // allow all when not configured (dev)
 			}
 			origin := r.Header.Get("Origin")
 			for _, o := range cfg.AllowedOrigins {
@@ -57,10 +57,10 @@ func NewServer(cfg ServerConfig) *Server {
 		},
 	}
 	if upgrader.ReadBufferSize == 0 {
-		upgrader.ReadBufferSize = 1024
+		upgrader.ReadBufferSize = 4096
 	}
 	if upgrader.WriteBufferSize == 0 {
-		upgrader.WriteBufferSize = 1024
+		upgrader.WriteBufferSize = 4096
 	}
 
 	return &Server{

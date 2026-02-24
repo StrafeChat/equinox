@@ -1,6 +1,9 @@
 package routes
 
 import (
+	"time"
+
+	"github.com/gofiber/fiber/v3/middleware/limiter"
 	"github.com/StrafeChat/equinox/internal/middleware"
 	"github.com/StrafeChat/equinox/internal/modules/auth"
 )
@@ -13,10 +16,16 @@ func SetupAuthRoutes(d Deps) {
 
 	requireAuth := middleware.RequireAuth(sessionRepo, userRepo)
 
+	// Rate limit auth endpoints: 10 attempts per minute per IP
+	authLimiter := limiter.New(limiter.Config{
+		Max:        10,
+		Expiration: time.Minute,
+	})
+
 	r := d.App.Group("/auth")
 
-	r.Post("/login", h.Login)
-	r.Post("/register", h.Register)
+	r.Post("/login", authLimiter, h.Login)
+	r.Post("/register", authLimiter, h.Register)
 
 	r.Post("/logout", requireAuth, h.Logout)
 	r.Post("/logout_all", requireAuth, h.LogoutAll)

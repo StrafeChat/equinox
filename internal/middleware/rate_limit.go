@@ -1,4 +1,4 @@
 package middleware
 
-// RateLimit middleware - TODO: implement token bucket or sliding window per IP/user.
-// For production, consider github.com/ulule/limiter or similar.
+// Global rate limiting uses Fiber's limiter on specific routes (e.g. auth).
+// Per-route limiters are configured in routes/auth.go.

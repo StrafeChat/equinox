@@ -23,17 +23,21 @@ type LogConfig struct {
 
 type AppConfig struct {
 	Version       string
-	SnowflakeNode int64 // node ID for snowflake generator (0-1023; unique per instance for federation)
+	SnowflakeNode int64 // node ID for snowflake generator (0-1023)
 }
 
 type HTTPConfig struct {
-	Port string
+	Port          string
+	BodyLimitKB   int      // max request body size in KB (default 1024 = 1MB)
+	CORSOrigins   []string // allowed origins; nil = allow all (dev)
 }
 
 type StargateConfig struct {
-	Port          string   // WebSocket server port (e.g. 4001)
-	Region        string   // instance region for multi-region (e.g. "us-east", "eu-west")
-	AllowedOrigins []string // allowed origins for CheckOrigin (e.g. https://strafe.chat)
+	Port            string   // WebSocket server port (e.g. 4001)
+	Region          string   // instance region for multi-region (e.g. "us-east", "eu-west")
+	AllowedOrigins  []string // allowed origins for CheckOrigin (e.g. https://web.strafe.chat)
+	ReadBufferSize  int     // bytes (default 4096)
+	WriteBufferSize int     // bytes (default 4096)
 }
 
 type SessionConfig struct {
@@ -70,16 +74,20 @@ func Load() (*Config, error) {
 			SnowflakeNode: int64(getEnvInt("SNOWFLAKE_NODE_ID", 0)),
 		},
 		HTTP: HTTPConfig{
-			Port: getEnvString("PORT", "4000"),
+			Port:        getEnvString("PORT", "4000"),
+			BodyLimitKB: getEnvInt("HTTP_BODY_LIMIT_KB", 1024),
+			CORSOrigins: getEnvArray("CORS_ORIGINS", nil),
 		},
 		Session: SessionConfig{
 			TTLSeconds: getEnvInt("SESSION_TTL_SECONDS", 86400*7), // 7 days
 			TokenBytes: getEnvInt("SESSION_TOKEN_BYTES", 32),
 		},
 		Stargate: StargateConfig{
-			Port:           getEnvString("STARGATE_PORT", "4001"),
-			Region:         getEnvString("STARGATE_REGION", "default"),
-			AllowedOrigins: getEnvArray("STARGATE_ALLOWED_ORIGINS", nil),
+			Port:            getEnvString("STARGATE_PORT", "4001"),
+			Region:          getEnvString("STARGATE_REGION", "default"),
+			AllowedOrigins:  getEnvArray("STARGATE_ALLOWED_ORIGINS", nil),
+			ReadBufferSize:  getEnvInt("STARGATE_READ_BUFFER", 4096),
+			WriteBufferSize: getEnvInt("STARGATE_WRITE_BUFFER", 4096),
 		},
 		Flags: FeatureFlags{
 			Captcha:    getEnvBool("CAPTCHA", false),

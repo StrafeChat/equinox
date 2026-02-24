@@ -46,9 +46,11 @@ func main() {
 	resolver := stargate.NewResolver(sessionRepo, userRepo)
 
 	srv := stargate.NewServer(stargate.ServerConfig{
-		Hub:            hub,
-		Resolver:       resolver,
-		AllowedOrigins: cfg.Stargate.AllowedOrigins,
+		Hub:             hub,
+		Resolver:        resolver,
+		AllowedOrigins:  cfg.Stargate.AllowedOrigins,
+		ReadBufferSize:  cfg.Stargate.ReadBufferSize,
+		WriteBufferSize: cfg.Stargate.WriteBufferSize,
 	})
 
 	mux := http.NewServeMux()
