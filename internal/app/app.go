@@ -25,8 +25,8 @@ type App struct {
 func New(cfg *config.Config) (*App, error) {
 	f := fiber.New()
 
-	_, scylla := db.NewScylla(cfg.Database.Scylla.Hosts, cfg.Database.Scylla.Keyspace)
-	redis := db.NewRedis(cfg.Database.Redis.Addr)
+	_, scylla := db.NewScylla(cfg.Database.Scylla)
+	redis := db.NewRedis(cfg.Database.Redis)
 
 	app := &App{
 		cfg:    cfg,
@@ -49,10 +49,10 @@ func (a *App) Start() error {
 	addr := fmt.Sprintf(":%s", a.cfg.HTTP.Port)
 
 	go func() {
-		log.Printf(" Server starting on %s", addr)
+		log.Printf("[SERVER] Starting on %s", addr)
 
 		if err := a.fiber.Listen(addr); err != nil {
-			log.Printf("server stopped: %v", err)
+			log.Printf("[SERVER] stopped: %v", err)
 		}
 	}()
 
@@ -65,7 +65,7 @@ func (a *App) gracefulShutdown() error {
 
 	<-stop
 
-	log.Println("Server stopping...")
+	log.Println("[SERVER] stopping...")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()

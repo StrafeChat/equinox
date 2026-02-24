@@ -13,6 +13,15 @@ func getEnvString(key, fallback string) string {
 	return fallback
 }
 
+func getEnvInt(key string, fallback int) int {
+	if v, ok := os.LookupEnv(key); ok {
+		if parsed, err := strconv.ParseInt(v, 10, 64); err == nil {
+			return int(parsed)
+		}
+	}
+	return fallback
+}
+
 func getEnvBool(key string, fallback bool) bool {
 	if v, ok := os.LookupEnv(key); ok {
 		if parsed, err := strconv.ParseBool(v); err == nil {

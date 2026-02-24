@@ -33,7 +33,7 @@ type DatabaseConfig struct {
 
 type ScyllaConfig struct {
 	Hosts    []string
-	Port     string
+	Port     int
 	Keyspace string
 }
 
@@ -57,8 +57,8 @@ func Load() (*Config, error) {
 		Database: DatabaseConfig{
 			Scylla: ScyllaConfig{
 				Hosts:    getEnvArray("SCYLLA_HOSTS", []string{"localhost"}),
-				Port:     getEnvString("SCYLLA_PORT", "9042"),
-				Keyspace: getEnvString("SCYLLA_KEYSPACE", "equinox"),
+				Port:     getEnvInt("SCYLLA_PORT", 9042),
+				Keyspace: getEnvString("SCYLLA_KEYSPACE", "strafechat"),
 			},
 			Redis: RedisConfig{
 				Addr: getEnvString("REDIS_ADDRS", "localhost"),
