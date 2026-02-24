@@ -46,12 +46,8 @@ func (s *service) Register(ctx context.Context, in RegisterInput) (*User, error)
 		return nil, ErrInviteOnly
 	}
 
-	in.Email = strings.TrimSpace(strings.ToLower(in.Email))
-	in.Username = strings.TrimSpace(in.Username)
-
-	if in.Email == "" || in.Username == "" || len(in.Password) < 8 {
-		return nil, ErrWeakPassword
-	}
+	// Normalize email; zog validates format and required fields.
+	in.Email = strings.ToLower(in.Email)
 
 	exists, err := s.repo.EmailExists(ctx, in.Email)
 	if err != nil {
@@ -70,10 +66,6 @@ func (s *service) Register(ctx context.Context, in RegisterInput) (*User, error)
 
 	var discriminator int
 	if in.Discriminator != nil {
-		if *in.Discriminator < 1 || *in.Discriminator > 9999 {
-			return nil, ErrInvalidUsername
-		}
-
 		existing, err := s.repo.GetByUsernameDiscriminator(ctx, in.Username, *in.Discriminator)
 		if err != nil {
 			return nil, err
@@ -140,10 +132,7 @@ func (s *service) pickUniqueDiscriminator(ctx context.Context, username string) 
 }
 
 func (s *service) Login(ctx context.Context, email, password, ip, userAgent string) (*User, string, error) {
-	email = strings.TrimSpace(strings.ToLower(email))
-	if email == "" || password == "" {
-		return nil, "", ErrInvalidCredentials
-	}
+	email = strings.ToLower(email)
 
 	u, err := s.repo.GetByEmail(ctx, email)
 	if err != nil || u == nil {

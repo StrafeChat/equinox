@@ -78,7 +78,6 @@ func (r *scyllaUserRepo) Create(ctx context.Context, u *User) error {
 	if err := q.BindStruct(u).ExecRelease(); err != nil {
 		return err
 	}
-	q.Release()
 
 	byEmail := UserByEmail{Email: u.Email, UserID: u.ID}
 	stmt, names = usersByEmailTable.Insert()
@@ -86,7 +85,6 @@ func (r *scyllaUserRepo) Create(ctx context.Context, u *User) error {
 	if err := q.BindStruct(&byEmail).ExecRelease(); err != nil {
 		return err
 	}
-	q.Release()
 
 	byUD := UserByUsernameDiscriminator{
 		Username:      u.Username,

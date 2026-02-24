@@ -1,7 +1,7 @@
 package auth
 
 import (
-	"context"
+	"log"
 	"net/http"
 
 	"github.com/gofiber/fiber/v3"
@@ -19,18 +19,20 @@ func NewHandler(svc Service) *Handler {
 
 func (h *Handler) Login(c fiber.Ctx) error {
 	var in LoginInput
-	if err := c.Bind().Body(&in); err != nil {
-		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "invalid request body"})
+	if errs := ParseLoginBody(c.Body(), &in); errs != nil {
+		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": formatValidationErrors(errs)})
 	}
 
 	ip := c.IP()
 	userAgent := c.Get("User-Agent")
 
-	user, token, err := h.svc.Login(context.Background(), in.Email, in.Password, ip, userAgent)
+	user, token, err := h.svc.Login(c.Context(), in.Email, in.Password, ip, userAgent)
 	if err != nil {
 		if err == ErrInvalidCredentials {
+			log.Printf("[auth] login failed: invalid credentials")
 			return c.Status(http.StatusUnauthorized).JSON(fiber.Map{"error": "invalid email or password"})
 		}
+		log.Printf("[auth] login error: %v", err)
 		return c.Status(http.StatusInternalServerError).JSON(fiber.Map{"error": "internal error"})
 	}
 
@@ -53,7 +55,8 @@ func (h *Handler) Logout(c fiber.Ctx) error {
 		return c.Status(http.StatusUnauthorized).JSON(fiber.Map{"error": "unauthorized"})
 	}
 
-	if err := h.svc.Logout(context.Background(), user.ID, session.SessionID); err != nil {
+	if err := h.svc.Logout(c.Context(), user.ID, session.SessionID); err != nil {
+		log.Printf("[auth] logout error: %v", err)
 		return c.Status(http.StatusInternalServerError).JSON(fiber.Map{"error": "internal error"})
 	}
 	return c.Status(http.StatusOK).JSON(fiber.Map{"ok": true})
@@ -65,7 +68,8 @@ func (h *Handler) LogoutAll(c fiber.Ctx) error {
 		return c.Status(http.StatusUnauthorized).JSON(fiber.Map{"error": "unauthorized"})
 	}
 
-	if err := h.svc.LogoutAll(context.Background(), user.ID); err != nil {
+	if err := h.svc.LogoutAll(c.Context(), user.ID); err != nil {
+		log.Printf("[auth] logout_all error: %v", err)
 		return c.Status(http.StatusInternalServerError).JSON(fiber.Map{"error": "internal error"})
 	}
 	return c.Status(http.StatusOK).JSON(fiber.Map{"ok": true})
@@ -73,13 +77,11 @@ func (h *Handler) LogoutAll(c fiber.Ctx) error {
 
 func (h *Handler) Register(c fiber.Ctx) error {
 	var in RegisterInput
-	if err := c.Bind().Body(&in); err != nil {
-		return c.Status(http.StatusBadRequest).JSON(fiber.Map{
-			"error": "invalid request body",
-		})
+	if errs := ParseRegisterBody(c.Body(), &in); errs != nil {
+		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": formatValidationErrors(errs)})
 	}
 
-	user, err := h.svc.Register(context.Background(), in)
+	user, err := h.svc.Register(c.Context(), in)
 	if err != nil {
 		switch err {
 		case ErrInviteOnly:
@@ -91,6 +93,7 @@ func (h *Handler) Register(c fiber.Ctx) error {
 		case ErrWeakPassword, ErrInvalidUsername:
 			return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 		default:
+			log.Printf("[auth] register error: %v", err)
 			return c.Status(http.StatusInternalServerError).JSON(fiber.Map{"error": "internal error"})
 		}
 	}
@@ -105,7 +108,6 @@ func (h *Handler) Register(c fiber.Ctx) error {
 	})
 }
 
-// Locals keys used by auth middleware.
 const (
 	LocalsKeyUser    = "user"
 	LocalsKeySession = "session"

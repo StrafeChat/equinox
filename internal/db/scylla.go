@@ -23,5 +23,6 @@ func NewScylla(conf config.ScyllaConfig) (gocqlx.Session, error) {
 			gocql.RoundRobinHostPolicy(),
 		)
 
+	// CreateSession blocks until connected; error propagates via WrapSession.
 	return gocqlx.WrapSession(cluster.CreateSession())
 }

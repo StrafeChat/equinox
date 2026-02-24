@@ -39,16 +39,12 @@ func NewSessionRepository(session gocqlx.Session) SessionRepository {
 }
 
 func (r *scyllaSessionRepo) Create(ctx context.Context, s *Session) error {
-	stmt, names := sessionsByUserTable.Insert()
-	q := r.session.Query(stmt, names).WithContext(ctx)
-	if err := q.BindStruct(s).ExecRelease(); err != nil {
-		return err
-	}
-	q.Release()
-
-	stmt, names = sessionsByTokenTable.Insert()
-	q = r.session.Query(stmt, names).WithContext(ctx)
-	return q.BindStruct(s).ExecRelease()
+	b := r.session.NewBatch(gocql.LoggedBatch).WithContext(ctx)
+	stmt1, _ := sessionsByUserTable.Insert()
+	b.Query(stmt1, s.UserID, s.SessionID, s.TokenHash, s.CreatedAt, s.ExpiresAt, s.IPAddress, s.UserAgent, s.DeviceName, s.RevokedAt)
+	stmt2, _ := sessionsByTokenTable.Insert()
+	b.Query(stmt2, s.TokenHash, s.UserID, s.SessionID, s.CreatedAt, s.ExpiresAt, s.IPAddress, s.UserAgent, s.DeviceName, s.RevokedAt)
+	return r.session.ExecuteBatch(b)
 }
 
 func (r *scyllaSessionRepo) GetByTokenHash(ctx context.Context, tokenHash string) (*Session, error) {
@@ -91,11 +87,7 @@ func (r *scyllaSessionRepo) Revoke(ctx context.Context, userID, sessionID int64)
 	if err := q.Bind(now, userID, sessionID).ExecRelease(); err != nil {
 		return err
 	}
-	q.Release()
 
-	// sessions_by_token: we need to set revoked_at but we don't have token_hash from (userID, sessionID) without an extra read.
-	// So we must read the session from sessions_by_user to get token_hash, then update sessions_by_token.
-	// Alternatively: when revoking by (user_id, session_id), read from sessions_by_user to get token_hash, then update both.
 	var s Session
 	stmt, names = sessionsByUserTable.Get()
 	q = r.session.Query(stmt, names).WithContext(ctx)
@@ -105,7 +97,6 @@ func (r *scyllaSessionRepo) Revoke(ctx context.Context, userID, sessionID int64)
 		}
 		return err
 	}
-	q.Release()
 
 	stmt, names = sessionsByTokenTable.Update("revoked_at")
 	q = r.session.Query(stmt, names).WithContext(ctx)

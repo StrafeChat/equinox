@@ -1,9 +1,9 @@
 package middleware
 
 import (
-	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -30,8 +30,9 @@ func RequireAuth(sessionRepo auth.SessionRepository, userRepo auth.UserRepositor
 		hash := sha256.Sum256(raw)
 		tokenHash := hex.EncodeToString(hash[:])
 
-		sess, err := sessionRepo.GetByTokenHash(context.Background(), tokenHash)
+		sess, err := sessionRepo.GetByTokenHash(c.Context(), tokenHash)
 		if err != nil {
+			log.Printf("[auth] session lookup error: %v", err)
 			return c.Status(http.StatusInternalServerError).JSON(fiber.Map{"error": "internal error"})
 		}
 		if sess == nil {
@@ -45,8 +46,9 @@ func RequireAuth(sessionRepo auth.SessionRepository, userRepo auth.UserRepositor
 			return c.Status(http.StatusUnauthorized).JSON(fiber.Map{"error": "session expired"})
 		}
 
-		u, err := userRepo.GetByID(context.Background(), sess.UserID)
+		u, err := userRepo.GetByID(c.Context(), sess.UserID)
 		if err != nil {
+			log.Printf("[auth] user lookup error: %v", err)
 			return c.Status(http.StatusInternalServerError).JSON(fiber.Map{"error": "internal error"})
 		}
 		if u == nil {
