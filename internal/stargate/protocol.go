@@ -52,7 +52,8 @@ type ReadyPayload struct {
 // Server outbound: EVENT
 type EventPayload struct {
 	Type      string      `json:"t"`       // e.g. MESSAGE, TYPING_START
-	SpaceID   string      `json:"space_id,omitempty"`
+	SpaceID   string      `json:"space_id,omitempty"`   // legacy; for rooms same as room_id
+	RoomID    string      `json:"room_id,omitempty"`    // room_id for room/PM events
 	UserID    string      `json:"user_id,omitempty"`
 	Data      interface{} `json:"d"`
 	Origin    string      `json:"origin,omitempty"`    // federation: source server

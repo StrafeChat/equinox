@@ -255,13 +255,17 @@ func partialUser(u *auth.User) map[string]interface{} {
 	if u == nil {
 		return nil
 	}
-	return map[string]interface{}{
+	m := map[string]interface{}{
 		"id":            id.Format(u.ID),
 		"username":      u.Username,
 		"discriminator": fmt.Sprintf("%04d", u.Discriminator),
 		"display_name":  u.DisplayName,
 		"avatar":        u.Avatar,
 	}
+	if u.Presence.Online {
+		m["online"] = true
+	}
+	return m
 }
 
 func buildRelationshipFromUser(u *auth.User, targetID int64, relType int, since *time.Time, nickname *string, userIgnored bool) *Relationship {

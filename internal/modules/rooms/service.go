@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"sort"
+	"strconv"
+	"time"
 
 	"github.com/redis/go-redis/v9"
 
@@ -41,7 +43,9 @@ func (s *Service) CreatePM(ctx context.Context, actorID, targetID int64) (*RoomW
 	}
 	if existing != nil {
 		ids, _ := s.repo.GetParticipants(ctx, existing.ID)
-		return &RoomWithParticipants{Room: *existing, ParticipantIDs: ids}, false, nil
+		rwp := &RoomWithParticipants{Room: *existing, ParticipantIDs: ids}
+		enrichParticipants(ctx, s.user, rwp)
+		return rwp, false, nil
 	}
 	roomID := id.Next()
 	room := &Room{
@@ -69,10 +73,12 @@ func (s *Service) CreatePM(ctx context.Context, actorID, targetID int64) (*RoomW
 		}
 		stargate.PublishToUser(ctx, s.redis, targetID, "ROOM_CREATE", payload, region)
 	}
-	return &RoomWithParticipants{
+	rwp := &RoomWithParticipants{
 		Room:           *room,
 		ParticipantIDs: []int64{actorID, targetID},
-	}, true, nil
+	}
+	enrichParticipants(ctx, s.user, rwp)
+	return rwp, true, nil
 }
 
 // ListRooms returns rooms the user participates in (PMs first, ordered by recency).
@@ -104,7 +110,101 @@ func (s *Service) ListRooms(ctx context.Context, userID int64) ([]RoomWithPartic
 		}
 		return ida > idb
 	})
+
+	// Enrich with participant details for display (PM names, etc.)
+	allIDs := make(map[int64]struct{})
+	for _, r := range out {
+		for _, pid := range r.ParticipantIDs {
+			allIDs[pid] = struct{}{}
+		}
+	}
+		ids := make([]int64, 0, len(allIDs))
+	for pid := range allIDs {
+		ids = append(ids, pid)
+	}
+	if len(ids) > 0 {
+		users, err := s.user.GetByIDs(ctx, ids)
+		if err == nil {
+			byID := make(map[int64]*auth.User)
+			for i := range ids {
+				if i < len(users) && users[i] != nil {
+					byID[ids[i]] = users[i]
+				}
+			}
+			for i := range out {
+				for _, pid := range out[i].ParticipantIDs {
+					if u := byID[pid]; u != nil {
+						out[i].Participants = append(out[i].Participants, Participant{
+							ID:          id.Format(u.ID),
+							Username:    u.Username,
+							DisplayName: u.DisplayName,
+							Avatar:      u.Avatar,
+						})
+					}
+				}
+			}
+		}
+	}
 	return out, nil
+}
+
+func enrichParticipants(ctx context.Context, user auth.UserRepository, rwp *RoomWithParticipants) {
+	if len(rwp.ParticipantIDs) == 0 {
+		return
+	}
+	users, err := user.GetByIDs(ctx, rwp.ParticipantIDs)
+	if err != nil {
+		return
+	}
+	for i := range rwp.ParticipantIDs {
+		if i < len(users) && users[i] != nil {
+			rwp.Participants = append(rwp.Participants, Participant{
+				ID:          id.Format(users[i].ID),
+				Username:    users[i].Username,
+				DisplayName: users[i].DisplayName,
+				Avatar:      users[i].Avatar,
+			})
+		}
+	}
+}
+
+const typingRateLimitSec = 5
+
+// Typing publishes TYPING_START to the room. No persistence. Rate-limited per user/room.
+func (s *Service) Typing(ctx context.Context, userID, roomID int64) error {
+	ids, err := s.repo.GetParticipants(ctx, roomID)
+	if err != nil {
+		return err
+	}
+	ok := false
+	for _, pid := range ids {
+		if pid == userID {
+			ok = true
+			break
+		}
+	}
+	if !ok {
+		return ErrNotParticipant
+	}
+	if s.redis == nil || s.cfg == nil {
+		return nil
+	}
+	key := "typing:" + strconv.FormatInt(userID, 10) + ":" + strconv.FormatInt(roomID, 10)
+	// Rate limit: 1 event per 5s per user per room. Silent drop if throttled.
+	if set, _ := s.redis.SetNX(ctx, key, "1", typingRateLimitSec*time.Second).Result(); !set {
+		return nil
+	}
+	region := s.cfg.Stargate.Region
+	if region == "" {
+		region = "default"
+	}
+	payload := map[string]interface{}{
+		"room_id":   id.Format(roomID),
+		"user_id":   id.Format(userID),
+		"timestamp": time.Now().Unix(),
+	}
+	stargate.PublishToSpace(ctx, s.redis, roomID, "TYPING_START", payload, region)
+	return nil
 }
 
 // GetRoom returns a room by ID if the user is a participant.
@@ -127,5 +227,17 @@ func (s *Service) GetRoom(ctx context.Context, userID, roomID int64) (*RoomWithP
 	if !ok {
 		return nil, ErrNotParticipant
 	}
-	return &RoomWithParticipants{Room: *room, ParticipantIDs: ids}, nil
+	rwp := &RoomWithParticipants{Room: *room, ParticipantIDs: ids}
+	users, _ := s.user.GetByIDs(ctx, ids)
+	for i := range ids {
+		if i < len(users) && users[i] != nil {
+			rwp.Participants = append(rwp.Participants, Participant{
+				ID:          id.Format(users[i].ID),
+				Username:    users[i].Username,
+				DisplayName: users[i].DisplayName,
+				Avatar:      users[i].Avatar,
+			})
+		}
+	}
+	return rwp, nil
 }

@@ -18,7 +18,8 @@ func SetupDevicesRoutes(d Deps) {
 	r := d.App.Group("/devices", requireAuth)
 	r.Post("", devHandler.RegisterDevice)
 
-	// Prekey bundle for session init: GET /users/:user_id/devices/:device_id/prekey_bundle
+	// Devices and prekey bundle
 	users := d.App.Group("/users", requireAuth)
+	users.Get("/:user_id/devices", devHandler.ListDevices)
 	users.Get("/:user_id/devices/:device_id/prekey_bundle", devHandler.GetPrekeyBundle)
 }

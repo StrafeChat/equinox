@@ -26,10 +26,19 @@ type Room struct {
 	UpdatedAt      time.Time `db:"updated_at" json:"updated_at"`
 }
 
-// RoomWithParticipants extends Room with participant IDs.
+// Participant is a minimal user for room display.
+type Participant struct {
+	ID          string `json:"id"`
+	Username    string `json:"username"`
+	DisplayName string `json:"display_name"`
+	Avatar      string `json:"avatar,omitempty"`
+}
+
+// RoomWithParticipants extends Room with participant IDs and optional details.
 type RoomWithParticipants struct {
 	Room
-	ParticipantIDs []int64 `json:"recipients,omitempty"`
+	ParticipantIDs []int64        `json:"recipients,omitempty"`
+	Participants   []Participant  `json:"participants,omitempty"`
 }
 
 // RoomRow is rooms_by_user row.

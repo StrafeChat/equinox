@@ -31,6 +31,11 @@ func (s *Service) RegisterDevice(ctx context.Context, userID int64, in *Register
 	return nil
 }
 
+// ListDevices returns all devices for a user (public keys only).
+func (s *Service) ListDevices(ctx context.Context, userID int64) ([]DeviceKeys, error) {
+	return s.repo.ListDevices(ctx, userID)
+}
+
 // GetPrekeyBundle returns a bundle for X3DH session init. Consumes one one-time prekey if available.
 func (s *Service) GetPrekeyBundle(ctx context.Context, userID, deviceID int64) (*PrekeyBundle, error) {
 	d, err := s.repo.GetDevice(ctx, userID, deviceID)

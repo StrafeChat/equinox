@@ -61,6 +61,26 @@ func (h *Handler) Get(c fiber.Ctx) error {
 	return c.JSON(roomToJSON(*room))
 }
 
+// Typing triggers TYPING_START for the room. POST /rooms/:id/typing. Returns 204.
+func (h *Handler) Typing(c fiber.Ctx) error {
+	user := auth.GetUser(c)
+	if user == nil {
+		return c.Status(http.StatusUnauthorized).JSON(fiber.Map{"error": "unauthorized"})
+	}
+	roomID, err := id.Parse(c.Params("id"))
+	if err != nil {
+		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "invalid room id"})
+	}
+	if err := h.svc.Typing(c.Context(), user.ID, roomID); err != nil {
+		if err == ErrNotParticipant {
+			return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": "not a participant"})
+		}
+		logger.Err("rooms", err, map[string]any{"user_id": user.ID, "room_id": roomID})
+		return c.Status(http.StatusInternalServerError).JSON(fiber.Map{"error": "internal error"})
+	}
+	return c.Status(http.StatusNoContent).Send(nil)
+}
+
 // CreatePM creates or returns existing 1:1 PM. Body: { "recipient_id": "123" }
 func (h *Handler) CreatePM(c fiber.Ctx) error {
 	user := auth.GetUser(c)
@@ -118,6 +138,9 @@ func roomToJSON(r RoomWithParticipants) fiber.Map {
 	}
 	if !r.UpdatedAt.IsZero() {
 		m["updated_at"] = r.UpdatedAt
+	}
+	if len(r.Participants) > 0 {
+		m["participants"] = r.Participants
 	}
 	return m
 }

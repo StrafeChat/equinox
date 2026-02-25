@@ -63,3 +63,26 @@ func (h *Handler) GetPrekeyBundle(c fiber.Ctx) error {
 	}
 	return c.JSON(bundle)
 }
+
+// ListDevices returns all devices for a user. GET /users/:user_id/devices
+func (h *Handler) ListDevices(c fiber.Ctx) error {
+	if auth.GetUser(c) == nil {
+		return c.Status(http.StatusUnauthorized).JSON(fiber.Map{"error": "unauthorized"})
+	}
+	targetUserID, err := id.Parse(c.Params("user_id"))
+	if err != nil {
+		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "invalid user_id"})
+	}
+	devices, err := h.svc.ListDevices(c.Context(), targetUserID)
+	if err != nil {
+		logger.Err("devices", err, nil)
+		return c.Status(http.StatusInternalServerError).JSON(fiber.Map{"error": "internal error"})
+	}
+	out := make([]fiber.Map, 0, len(devices))
+	for _, d := range devices {
+		out = append(out, fiber.Map{
+			"device_id": d.DeviceID,
+		})
+	}
+	return c.JSON(out)
+}

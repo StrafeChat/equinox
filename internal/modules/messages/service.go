@@ -69,12 +69,7 @@ func (s *Service) Create(ctx context.Context, userID, roomID int64, in *CreateMe
 		// non-fatal: message is stored
 	}
 	if s.redis != nil && s.cfg != nil {
-		region := s.cfg.Stargate.Region
-		if region == "" {
-			region = "default"
-		}
-		payload := messageEventPayload(m)
-		stargate.PublishToSpace(ctx, s.redis, roomID, "MESSAGE_CREATE", payload, region)
+		stargate.PublishToSpace(ctx, s.redis, roomID, "MESSAGE_CREATE", messageEventPayload(m), s.cfg.Stargate.Region)
 	}
 	return m, nil
 }
@@ -112,12 +107,7 @@ func (s *Service) Edit(ctx context.Context, userID, roomID, msgID int64, in *Edi
 		return nil, err
 	}
 	if s.redis != nil && s.cfg != nil && updated != nil {
-		region := s.cfg.Stargate.Region
-		if region == "" {
-			region = "default"
-		}
-		payload := messageEventPayload(updated)
-		stargate.PublishToSpace(ctx, s.redis, roomID, "MESSAGE_UPDATE", payload, region)
+		stargate.PublishToSpace(ctx, s.redis, roomID, "MESSAGE_UPDATE", messageEventPayload(updated), s.cfg.Stargate.Region)
 	}
 	return updated, nil
 }
@@ -142,10 +132,10 @@ func (s *Service) Delete(ctx context.Context, userID, roomID, msgID int64) error
 			region = "default"
 		}
 		payload := map[string]interface{}{
-			"room_id":   id.Format(roomID),
+			"room_id":     id.Format(roomID),
 			"message_id": id.Format(msgID),
 		}
-		stargate.PublishToSpace(ctx, s.redis, roomID, "MESSAGE_DELETE", payload, region)
+		stargate.PublishToSpace(ctx, s.redis, roomID, "MESSAGE_DELETE", payload, s.cfg.Stargate.Region)
 	}
 	return nil
 }

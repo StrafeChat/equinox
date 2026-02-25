@@ -83,6 +83,7 @@ func (h *Hub) handleRedisMessage(msg *redis.Message) {
 	event := EventPayload{
 		Type:    env.Type,
 		SpaceID: env.SpaceID,
+		RoomID:  env.SpaceID, // room_id alias for room/PM events
 		UserID:  env.UserID,
 		Data:    env.Data,
 		Origin:  env.Origin,

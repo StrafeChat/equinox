@@ -10,11 +10,16 @@ import (
 	"github.com/StrafeChat/equinox/internal/logger"
 )
 
+func defaultRegion(region string) string {
+	if region == "" {
+		return "default"
+	}
+	return region
+}
+
 // PublishToUsers publishes the same event to multiple users (e.g. RELATIONSHIP_ADD to both parties).
 func PublishToUsers(ctx context.Context, redis *redis.Client, userIDs []int64, eventType string, data interface{}, region string) {
-	if region == "" {
-		region = "default"
-	}
+	region = defaultRegion(region)
 	for _, uid := range userIDs {
 		PublishToUser(ctx, redis, uid, eventType, data, region)
 	}
@@ -23,9 +28,7 @@ func PublishToUsers(ctx context.Context, redis *redis.Client, userIDs []int64, e
 // PublishToSpace sends an event to a room/space WebSocket channel.
 // Clients subscribed to space:{room_id} receive it.
 func PublishToSpace(ctx context.Context, redis *redis.Client, roomID int64, eventType string, data interface{}, region string) {
-	if region == "" {
-		region = "default"
-	}
+	region = defaultRegion(region)
 	env := RedisEnvelope{
 		Type:    eventType,
 		SpaceID: strconv.FormatInt(roomID, 10),
@@ -44,12 +47,9 @@ func PublishToSpace(ctx context.Context, redis *redis.Client, roomID int64, even
 }
 
 // PublishToUser sends an event to a user's WebSocket channel.
-// Call from REST API (e.g. when a relationship request is created).
 // Recipients must be subscribed to user:{their_id} to receive.
 func PublishToUser(ctx context.Context, redis *redis.Client, userID int64, eventType string, data interface{}, region string) {
-	if region == "" {
-		region = "default"
-	}
+	region = defaultRegion(region)
 	env := RedisEnvelope{
 		Type:   eventType,
 		UserID: strconv.FormatInt(userID, 10),

@@ -18,6 +18,7 @@ func SetupRoomsRoutes(d Deps) {
 	r := d.App.Group("/rooms", requireAuth)
 	r.Get("", roomHandler.List)
 	r.Get("/:id", roomHandler.Get)
+	r.Post("/:id/typing", roomHandler.Typing)
 	r.Post("", roomHandler.CreatePM)
 }
 
