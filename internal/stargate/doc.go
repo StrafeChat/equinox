@@ -16,7 +16,7 @@
 //
 // Channel model
 //
-//   - stargate:space:{space_id}  - Messages for a space (room/channel)
+//   - stargate:space:{id} - Events for a room or space (id = room_id for PMs, space_id for Spaces)
 //   - stargate:user:{user_id}     - DMs, typing, presence
 //   - stargate:presence:{space_id} - Optional presence in a space
 //

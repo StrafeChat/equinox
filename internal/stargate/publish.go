@@ -20,6 +20,29 @@ func PublishToUsers(ctx context.Context, redis *redis.Client, userIDs []int64, e
 	}
 }
 
+// PublishToSpace sends an event to a room/space WebSocket channel.
+// Clients subscribed to space:{room_id} receive it.
+func PublishToSpace(ctx context.Context, redis *redis.Client, roomID int64, eventType string, data interface{}, region string) {
+	if region == "" {
+		region = "default"
+	}
+	env := RedisEnvelope{
+		Type:    eventType,
+		SpaceID: strconv.FormatInt(roomID, 10),
+		From:    0,
+		Data:   data,
+		Region: region,
+	}
+	raw, err := json.Marshal(env)
+	if err != nil {
+		return
+	}
+	ch := redisChannel("space", strconv.FormatInt(roomID, 10))
+	if err := redis.Publish(ctx, ch, raw).Err(); err != nil {
+		logger.Err("stargate", err, map[string]any{"channel": ch, "event": eventType})
+	}
+}
+
 // PublishToUser sends an event to a user's WebSocket channel.
 // Call from REST API (e.g. when a relationship request is created).
 // Recipients must be subscribed to user:{their_id} to receive.

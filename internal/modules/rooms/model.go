@@ -4,15 +4,15 @@ import "time"
 
 // RoomType discriminator for polymorphic rooms.
 const (
-	TypePM            = 1
-	TypeGroupPM       = 2
-	TypeSpaceText     = 3
-	TypeSpaceVoice    = 4
-	TypeSpaceCategory = 5
-	TypeThread        = 6
+	TypePM          = 1
+	TypeGroupPM     = 2
+	TypeSpaceText   = 3
+	TypeSpaceVoice  = 4
+	TypeRoomSection = 5
+	TypeThread      = 6
 )
 
-// Room is a polymorphic channel: PM, Group PM, Space text/voice, category, or thread.
+// Room is a polymorphic container: PM, Group PM, Space text/voice, room section, or thread.
 type Room struct {
 	ID             int64     `db:"id" json:"id"`
 	Type           int       `db:"type" json:"type"`

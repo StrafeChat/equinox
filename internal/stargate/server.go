@@ -120,7 +120,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	client := newClient(s.hub, conn, user.ID, session.SessionID)
 	s.hub.register(client)
 
-	// Auto-subscribe to own user channel for relationship requests, DMs, etc.
+	// Auto-subscribe to own user stream for relationship requests, PMs, etc.
 	client.subscribe("user", strconv.FormatInt(user.ID, 10))
 	s.hub.subscribe(client, "user", strconv.FormatInt(user.ID, 10))
 

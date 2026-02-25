@@ -1,11 +1,12 @@
--- Rooms (channels): polymorphic container for PM, Space channels, threads.
+-- Rooms: polymorphic container for PMs, Space rooms, threads.
+-- PM = private message; Space = server/guild equivalent.
 
 -- Main rooms table: partition by id.
 CREATE TABLE IF NOT EXISTS rooms (
     id bigint PRIMARY KEY,
-    type int,              -- RoomType: 1=PM, 2=GROUP_PM, 3=SPACE_TEXT, 4=SPACE_VOICE, 5=SPACE_CATEGORY, 6=THREAD
+    type int,              -- RoomType: 1=PM, 2=GROUP_PM, 3=SPACE_TEXT, 4=SPACE_VOICE, 5=ROOM_SECTION, 6=THREAD
     space_id bigint,       -- null for PMs
-    parent_id bigint,      -- null; for threads: parent channel id
+    parent_id bigint,      -- null; for threads: parent room id
     name text,
     topic text,
     position int,
@@ -40,7 +41,7 @@ CREATE TABLE IF NOT EXISTS pm_rooms (
     PRIMARY KEY (user_a_id, user_b_id)
 );
 
--- Rooms in a space: for future SPACE_TEXT, SPACE_VOICE, SPACE_CATEGORY.
+-- Rooms in a space: for future SPACE_TEXT, SPACE_VOICE, ROOM_SECTION.
 CREATE TABLE IF NOT EXISTS rooms_by_space (
     space_id bigint,
     room_id bigint,

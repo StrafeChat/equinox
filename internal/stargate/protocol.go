@@ -29,7 +29,7 @@ type SubscribePayload struct {
 	UserID  string `json:"user_id,omitempty"` // for DMs
 }
 
-// Send payload (publish to space/channel)
+// Send payload (publish to room/space; space_id = room_id for PMs)
 type SendPayload struct {
 	SpaceID  string      `json:"space_id"`
 	Type     string      `json:"type,omitempty"` // e.g. "message", "typing"

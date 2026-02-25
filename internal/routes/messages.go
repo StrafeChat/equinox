@@ -3,21 +3,24 @@ package routes
 import (
 	"github.com/StrafeChat/equinox/internal/middleware"
 	"github.com/StrafeChat/equinox/internal/modules/auth"
+	"github.com/StrafeChat/equinox/internal/modules/messages"
 	"github.com/StrafeChat/equinox/internal/modules/rooms"
 )
 
-func SetupRoomsRoutes(d Deps) {
+func SetupMessagesRoutes(d Deps) {
 	userRepo := auth.NewCachedUserRepository(auth.NewUserRepository(d.Scylla), d.Redis, d.Config)
 	sessionRepo := auth.NewCachedSessionRepository(auth.NewSessionRepository(d.Scylla), d.Redis, d.Config)
 	requireAuth := middleware.RequireAuth(sessionRepo, userRepo)
 
+	msgRepo := messages.NewRepository(d.Scylla)
 	roomRepo := rooms.NewRepository(d.Scylla)
-	roomSvc := rooms.NewService(roomRepo, userRepo, d.Redis, d.Config)
-	roomHandler := rooms.NewHandler(roomSvc)
+	msgSvc := messages.NewService(msgRepo, roomRepo, d.Redis, d.Config)
+	msgHandler := messages.NewHandler(msgSvc)
 
 	r := d.App.Group("/rooms", requireAuth)
-	r.Get("", roomHandler.List)
-	r.Get("/:id", roomHandler.Get)
-	r.Post("", roomHandler.CreatePM)
+	r.Post("/:id/messages", msgHandler.Create)
+	r.Get("/:id/messages", msgHandler.List)
+	r.Get("/:id/messages/:msg_id", msgHandler.Get)
+	r.Patch("/:id/messages/:msg_id", msgHandler.Edit)
+	r.Delete("/:id/messages/:msg_id", msgHandler.Delete)
 }
-

@@ -42,6 +42,7 @@ type Repository interface {
 	GetParticipants(ctx context.Context, roomID int64) ([]int64, error)
 	GetPMRoom(ctx context.Context, userA, userB int64) (*Room, error)
 	ListByUser(ctx context.Context, userID int64) ([]RoomRow, error)
+	UpdateLastMessageID(ctx context.Context, roomID int64, participants []int64, msgID int64) error
 }
 
 type repo struct {
@@ -64,37 +65,24 @@ func (r *repo) Create(ctx context.Context, room *Room, participantIDs []int64) e
 	room.CreatedAt = now
 	room.UpdatedAt = now
 
-	stmt, names := roomsTable.Insert()
-	q := r.session.Query(stmt, names).WithContext(ctx)
-	if err := q.BindStruct(room).ExecRelease(); err != nil {
-		return err
-	}
-
 	b := r.session.NewBatch(gocql.LoggedBatch).WithContext(ctx)
-	stmt, names = participantsTable.Insert()
+	stmt, _ := roomsTable.Insert()
+	b.Query(stmt, room.ID, room.Type, room.SpaceID, room.ParentID, room.Name, room.Topic, room.Position, room.LastMessageID, room.CreatedAt, room.UpdatedAt)
+
+	stmt, _ = participantsTable.Insert()
 	for _, uid := range participantIDs {
 		b.Query(stmt, room.ID, uid, now)
 	}
-	if err := r.session.ExecuteBatch(b); err != nil {
-		return err
-	}
-
+	stmt, _ = roomsByUserTable.Insert()
 	for _, uid := range participantIDs {
-		stmt, names = roomsByUserTable.Insert()
-		q = r.session.Query(stmt, names).WithContext(ctx)
-		if err := q.Bind(uid, room.ID, room.LastMessageID, now).ExecRelease(); err != nil {
-			return err
-		}
+		b.Query(stmt, uid, room.ID, room.LastMessageID, now)
 	}
-
 	if room.Type == TypePM && len(participantIDs) == 2 {
 		ua, ub := minMax(participantIDs[0], participantIDs[1])
-		stmt, names = pmRoomsTable.Insert()
-		q = r.session.Query(stmt, names).WithContext(ctx)
-		return q.Bind(ua, ub, room.ID, now).ExecRelease()
+		stmt, _ = pmRoomsTable.Insert()
+		b.Query(stmt, ua, ub, room.ID, now)
 	}
-
-	return nil
+	return r.session.ExecuteBatch(b)
 }
 
 func (r *repo) GetByID(ctx context.Context, id int64) (*Room, error) {
@@ -156,4 +144,16 @@ func (r *repo) ListByUser(ctx context.Context, userID int64) ([]RoomRow, error) 
 		rows = append(rows, row)
 	}
 	return rows, iter.Close()
+}
+
+func (r *repo) UpdateLastMessageID(ctx context.Context, roomID int64, participants []int64, msgID int64) error {
+	b := r.session.NewBatch(gocql.LoggedBatch).WithContext(ctx)
+	stmt, _ := roomsTable.Update("last_message_id", "updated_at")
+	now := time.Now().UTC()
+	b.Query(stmt, msgID, now, roomID)
+	stmt, _ = roomsByUserTable.Update("last_message_id")
+	for _, uid := range participants {
+		b.Query(stmt, msgID, uid, roomID)
+	}
+	return r.session.ExecuteBatch(b)
 }
