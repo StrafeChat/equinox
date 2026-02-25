@@ -1,11 +1,41 @@
 package auth
 
-import "time"
+import (
+	"time"
+
+	"github.com/gocql/gocql"
+)
 
 type UserPresence struct {
 	Online       bool   `db:"online" json:"online"`
 	Status       string `db:"status" json:"status"`
 	CustomStatus string `db:"custom_status" json:"custom_status"`
+}
+
+	func (u UserPresence) MarshalUDT(name string, info gocql.TypeInfo) ([]byte, error) {
+	switch name {
+	case "online":
+		return gocql.Marshal(info, u.Online)
+	case "status":
+		return gocql.Marshal(info, u.Status)
+	case "custom_status":
+		return gocql.Marshal(info, u.CustomStatus)
+	default:
+		return nil, nil
+	}
+}
+
+func (u *UserPresence) UnmarshalUDT(name string, info gocql.TypeInfo, data []byte) error {
+	switch name {
+	case "online":
+		return gocql.Unmarshal(info, data, &u.Online)
+	case "status":
+		return gocql.Unmarshal(info, data, &u.Status)
+	case "custom_status":
+		return gocql.Unmarshal(info, data, &u.CustomStatus)
+	default:
+		return nil
+	}
 }
 
 type User struct {

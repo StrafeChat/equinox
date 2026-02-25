@@ -16,7 +16,7 @@ func SetupUsersRoutes(d Deps) {
 	relSvc := relationships.NewService(relRepo, userRepo, d.Redis, d.Config)
 	relHandler := relationships.NewHandler(relSvc)
 
-	usersHandler := users.NewHandler(userRepo)
+	usersHandler := users.NewHandler(userRepo, d.Redis, d.Config)
 
 	// /users/@me - current user
 	me := d.App.Group("/users/@me", requireAuth)

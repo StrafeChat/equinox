@@ -5,18 +5,23 @@ import (
 	"net/http"
 
 	"github.com/gofiber/fiber/v3"
+	"github.com/redis/go-redis/v9"
 
+	"github.com/StrafeChat/equinox/internal/config"
 	"github.com/StrafeChat/equinox/internal/id"
 	"github.com/StrafeChat/equinox/internal/logger"
 	"github.com/StrafeChat/equinox/internal/modules/auth"
+	"github.com/StrafeChat/equinox/internal/stargate"
 )
 
 type Handler struct {
 	userRepo auth.UserRepository
+	redis    *redis.Client
+	cfg      *config.Config
 }
 
-func NewHandler(userRepo auth.UserRepository) *Handler {
-	return &Handler{userRepo: userRepo}
+func NewHandler(userRepo auth.UserRepository, redis *redis.Client, cfg *config.Config) *Handler {
+	return &Handler{userRepo: userRepo, redis: redis, cfg: cfg}
 }
 
 // Me returns the current user's info. Requires auth.
@@ -64,6 +69,23 @@ func (h *Handler) PatchMe(c fiber.Ctx) error {
 	}
 	if updated == nil {
 		return c.Status(http.StatusNotFound).JSON(fiber.Map{"error": "user not found"})
+	}
+
+	// Real-time: publish PRESENCE_UPDATE when presence changed (Redis Pub/Sub -> WebSocket)
+	if upd.Presence != nil && h.redis != nil {
+		region := "default"
+		if h.cfg != nil {
+			region = h.cfg.Stargate.Region
+		}
+		payload := map[string]interface{}{
+			"user_id":  id.Format(updated.ID),
+			"presence": updated.Presence,
+		}
+		stargate.PublishToUser(c.Context(), h.redis, updated.ID, "PRESENCE_UPDATE", payload, region)
+		friendIDs := updated.Relationships
+		if len(friendIDs) > 0 {
+			stargate.PublishToUsers(c.Context(), h.redis, friendIDs, "PRESENCE_UPDATE", payload, region)
+		}
 	}
 
 	return c.JSON(fiber.Map{
