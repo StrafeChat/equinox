@@ -194,16 +194,12 @@ func (s *Service) Typing(ctx context.Context, userID, roomID int64) error {
 	if set, _ := s.redis.SetNX(ctx, key, "1", typingRateLimitSec*time.Second).Result(); !set {
 		return nil
 	}
-	region := s.cfg.Stargate.Region
-	if region == "" {
-		region = "default"
-	}
 	payload := map[string]interface{}{
 		"room_id":   id.Format(roomID),
 		"user_id":   id.Format(userID),
 		"timestamp": time.Now().Unix(),
 	}
-	stargate.PublishToSpace(ctx, s.redis, roomID, "TYPING_START", payload, region)
+	stargate.PublishToSpace(ctx, s.redis, roomID, "TYPING_START", payload, s.cfg.Stargate.Region)
 	return nil
 }
 

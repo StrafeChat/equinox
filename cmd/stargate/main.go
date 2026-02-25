@@ -37,12 +37,18 @@ func main() {
 	}
 	redis := db.NewRedis(cfg.Database.Redis)
 
-	hub := stargate.NewHub(redis, cfg.Stargate.Region)
+	sessionRepo := auth.NewCachedSessionRepository(auth.NewSessionRepository(scylla), redis, cfg)
+	userRepo := auth.NewCachedUserRepository(auth.NewUserRepository(scylla), redis, cfg)
+
+	presenceNotifier := stargate.NewDefaultPresenceNotifier(userRepo, redis, cfg.Stargate.Region)
+	hub := stargate.NewHubWithConfig(stargate.HubConfig{
+		Redis:            redis,
+		Region:           cfg.Stargate.Region,
+		PresenceNotifier: presenceNotifier,
+	})
 	ctx := context.Background()
 	hub.Run(ctx)
 
-	sessionRepo := auth.NewCachedSessionRepository(auth.NewSessionRepository(scylla), redis, cfg)
-	userRepo := auth.NewCachedUserRepository(auth.NewUserRepository(scylla), redis, cfg)
 	resolver := stargate.NewResolver(sessionRepo, userRepo)
 
 	srv := stargate.NewServer(stargate.ServerConfig{

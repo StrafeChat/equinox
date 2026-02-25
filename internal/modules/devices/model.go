@@ -2,7 +2,8 @@ package devices
 
 import "time"
 
-// DeviceKeys holds public keys for a device (Signal X3DH).\
+// DeviceKeys holds public keys for a device (Signal Protocol X3DH).
+// Note: signed_prekey_signature is a placeholder until Ed25519 signing is implemented.
 type DeviceKeys struct {
 	UserID               int64     `db:"user_id" json:"-"`
 	DeviceID             int64     `db:"device_id" json:"device_id"`

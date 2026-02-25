@@ -23,12 +23,28 @@ var oneTimePrekeysTable = table.New(table.Metadata{
 	SortKey: []string{"key_id"},
 })
 
+var deviceKeyBackupsTable = table.New(table.Metadata{
+	Name:    "device_key_backups",
+	Columns: []string{"user_id", "encrypted_backup", "salt", "created_at", "updated_at"},
+	PartKey: []string{"user_id"},
+})
+
+type DeviceKeyBackup struct {
+	UserID          int64     `db:"user_id"`
+	EncryptedBackup string    `db:"encrypted_backup"`
+	Salt            string    `db:"salt"`
+	CreatedAt       time.Time `db:"created_at"`
+	UpdatedAt       time.Time `db:"updated_at"`
+}
+
 type Repository interface {
 	UpsertDevice(ctx context.Context, userID int64, d *DeviceKeys) error
 	GetDevice(ctx context.Context, userID, deviceID int64) (*DeviceKeys, error)
 	ListDevices(ctx context.Context, userID int64) ([]DeviceKeys, error)
 	AddOneTimePrekeys(ctx context.Context, userID, deviceID int64, prekeys []OneTimePrekeyUpload) error
 	TakeOneTimePrekey(ctx context.Context, userID, deviceID int64) (*OneTimePrekey, error)
+	UpsertKeyBackup(ctx context.Context, userID int64, encryptedBackup, salt string) error
+	GetKeyBackup(ctx context.Context, userID int64) (*DeviceKeyBackup, error)
 }
 
 type repo struct {
@@ -110,4 +126,25 @@ func (r *repo) TakeOneTimePrekey(ctx context.Context, userID, deviceID int64) (*
 		return nil, err
 	}
 	return &p, nil
+}
+
+func (r *repo) UpsertKeyBackup(ctx context.Context, userID int64, encryptedBackup, salt string) error {
+	now := time.Now().UTC()
+	stmt, names := deviceKeyBackupsTable.Insert()
+	q := r.session.Query(stmt, names).WithContext(ctx)
+	return q.Bind(userID, encryptedBackup, salt, now, now).ExecRelease()
+}
+
+func (r *repo) GetKeyBackup(ctx context.Context, userID int64) (*DeviceKeyBackup, error) {
+	var b DeviceKeyBackup
+	stmt, names := deviceKeyBackupsTable.Get()
+	q := r.session.Query(stmt, names).WithContext(ctx)
+	defer q.Release()
+	if err := q.Bind(userID).GetRelease(&b); err != nil {
+		if err == gocql.ErrNotFound {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &b, nil
 }

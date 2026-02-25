@@ -86,3 +86,47 @@ func (h *Handler) ListDevices(c fiber.Ctx) error {
 	}
 	return c.JSON(out)
 }
+
+// GetKeyBackup returns encrypted backup (exists: true/false). GET /devices/backup
+func (h *Handler) GetKeyBackup(c fiber.Ctx) error {
+	user := auth.GetUser(c)
+	if user == nil {
+		return c.Status(http.StatusUnauthorized).JSON(fiber.Map{"error": "unauthorized"})
+	}
+	backup, err := h.svc.GetKeyBackup(c.Context(), user.ID)
+	if err != nil {
+		logger.Err("devices", err, nil)
+		return c.Status(http.StatusInternalServerError).JSON(fiber.Map{"error": "internal error"})
+	}
+	if backup == nil || backup.EncryptedBackup == "" {
+		return c.JSON(fiber.Map{"exists": false})
+	}
+	return c.JSON(fiber.Map{
+		"exists":           true,
+		"encrypted_backup": backup.EncryptedBackup,
+		"salt":             backup.Salt,
+	})
+}
+
+// SetKeyBackup stores encrypted backup. PUT /devices/backup
+func (h *Handler) SetKeyBackup(c fiber.Ctx) error {
+	user := auth.GetUser(c)
+	if user == nil {
+		return c.Status(http.StatusUnauthorized).JSON(fiber.Map{"error": "unauthorized"})
+	}
+	var in struct {
+		EncryptedBackup string `json:"encrypted_backup"`
+		Salt            string `json:"salt"`
+	}
+	if err := json.Unmarshal(c.Body(), &in); err != nil {
+		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "invalid json"})
+	}
+	if in.EncryptedBackup == "" || in.Salt == "" {
+		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "encrypted_backup and salt required"})
+	}
+	if err := h.svc.SetKeyBackup(c.Context(), user.ID, in.EncryptedBackup, in.Salt); err != nil {
+		logger.Err("devices", err, map[string]any{"user_id": user.ID})
+		return c.Status(http.StatusInternalServerError).JSON(fiber.Map{"error": "internal error"})
+	}
+	return c.JSON(fiber.Map{"ok": true})
+}

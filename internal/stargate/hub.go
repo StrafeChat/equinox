@@ -16,26 +16,45 @@ func redisChannel(typ, id string) string {
 	return redisPrefix + ":" + typ + ":" + id
 }
 
-type Hub struct {
-	region  string
-	redis   *redis.Client
-	clients map[*Client]struct{}
-	subs    map[string]map[*Client]struct{} // channel -> clients
-	subMu   sync.RWMutex
-	regMu   sync.RWMutex
+// PresenceNotifier is called when a client connects or disconnects.
+// Implementations should update the user's presence in the DB and publish to friends.
+type PresenceNotifier interface {
+	OnConnect(ctx context.Context, userID int64)
+	OnDisconnect(ctx context.Context, userID int64)
+}
+
+type HubConfig struct {
+	Redis             *redis.Client
+	Region            string
+	PresenceNotifier  PresenceNotifier // optional; if set, called on connect/disconnect
 }
 
 func NewHub(redis *redis.Client, region string) *Hub {
-	if region == "" {
-		region = "default"
+	return NewHubWithConfig(HubConfig{Redis: redis, Region: region})
+}
+
+func NewHubWithConfig(cfg HubConfig) *Hub {
+	if cfg.Region == "" {
+		cfg.Region = "default"
 	}
 	h := &Hub{
-		region:  region,
-		redis:   redis,
-		clients: make(map[*Client]struct{}),
-		subs:    make(map[string]map[*Client]struct{}),
+		region:          cfg.Region,
+		redis:           cfg.Redis,
+		presenceNotify:  cfg.PresenceNotifier,
+		clients:         make(map[*Client]struct{}),
+		subs:            make(map[string]map[*Client]struct{}),
 	}
 	return h
+}
+
+type Hub struct {
+	region         string
+	redis          *redis.Client
+	presenceNotify PresenceNotifier
+	clients        map[*Client]struct{}
+	subs           map[string]map[*Client]struct{} // channel -> clients
+	subMu          sync.RWMutex
+	regMu          sync.RWMutex
 }
 
 func (h *Hub) Run(ctx context.Context) {
@@ -115,17 +134,38 @@ func (h *Hub) handleRedisMessage(msg *redis.Message) {
 	h.subMu.RUnlock()
 }
 
+// hasOtherClientLocked returns true if there is another connected client for the same user.
+// Caller must hold h.regMu.
+func (h *Hub) hasOtherClientLocked(userID int64, exclude *Client) bool {
+	for cl := range h.clients {
+		if cl != exclude && cl.userID == userID {
+			return true
+		}
+	}
+	return false
+}
+
 func (h *Hub) register(c *Client) {
 	h.regMu.Lock()
 	h.clients[c] = struct{}{}
 	h.regMu.Unlock()
 	logger.Info("stargate", "client connected: user_id=%d", c.userID)
+	if h.presenceNotify != nil {
+		go h.presenceNotify.OnConnect(context.Background(), c.userID)
+	}
 }
 
 func (h *Hub) unregister(c *Client) {
+	userID := c.userID
 	h.regMu.Lock()
 	delete(h.clients, c)
+	// Only notify offline when no other clients for this user remain
+	hasOther := h.hasOtherClientLocked(userID, c)
 	h.regMu.Unlock()
+
+	if h.presenceNotify != nil && !hasOther {
+		go h.presenceNotify.OnDisconnect(context.Background(), userID)
+	}
 
 	// Unsubscribe from all Redis channels this client was in
 	for _, sub := range c.listSubs() {

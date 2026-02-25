@@ -17,6 +17,8 @@ func SetupDevicesRoutes(d Deps) {
 
 	r := d.App.Group("/devices", requireAuth)
 	r.Post("", devHandler.RegisterDevice)
+	r.Get("/backup", devHandler.GetKeyBackup)
+	r.Put("/backup", devHandler.SetKeyBackup)
 
 	// Devices and prekey bundle
 	users := d.App.Group("/users", requireAuth)

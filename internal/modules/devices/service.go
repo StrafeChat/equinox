@@ -64,3 +64,13 @@ func (s *Service) GetPrekeyBundle(ctx context.Context, userID, deviceID int64) (
 	}
 	return b, nil
 }
+
+// SetKeyBackup stores encrypted key backup for recovery (Signal Secure Value Recovery style).
+func (s *Service) SetKeyBackup(ctx context.Context, userID int64, encryptedBackup, salt string) error {
+	return s.repo.UpsertKeyBackup(ctx, userID, encryptedBackup, salt)
+}
+
+// GetKeyBackup returns the encrypted backup if exists.
+func (s *Service) GetKeyBackup(ctx context.Context, userID int64) (*DeviceKeyBackup, error) {
+	return s.repo.GetKeyBackup(ctx, userID)
+}
