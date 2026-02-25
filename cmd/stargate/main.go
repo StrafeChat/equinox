@@ -41,8 +41,8 @@ func main() {
 	ctx := context.Background()
 	hub.Run(ctx)
 
-	sessionRepo := auth.NewSessionRepository(scylla)
-	userRepo := auth.NewUserRepository(scylla)
+	sessionRepo := auth.NewCachedSessionRepository(auth.NewSessionRepository(scylla), redis, cfg)
+	userRepo := auth.NewCachedUserRepository(auth.NewUserRepository(scylla), redis, cfg)
 	resolver := stargate.NewResolver(sessionRepo, userRepo)
 
 	srv := stargate.NewServer(stargate.ServerConfig{

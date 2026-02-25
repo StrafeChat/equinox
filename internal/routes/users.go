@@ -8,19 +8,20 @@ import (
 )
 
 func SetupUsersRoutes(d Deps) {
-	userRepo := auth.NewUserRepository(d.Scylla)
-	sessionRepo := auth.NewSessionRepository(d.Scylla)
+	userRepo := auth.NewCachedUserRepository(auth.NewUserRepository(d.Scylla), d.Redis, d.Config)
+	sessionRepo := auth.NewCachedSessionRepository(auth.NewSessionRepository(d.Scylla), d.Redis, d.Config)
 	requireAuth := middleware.RequireAuth(sessionRepo, userRepo)
 
 	relRepo := relationships.NewRepository(d.Scylla)
 	relSvc := relationships.NewService(relRepo, userRepo, d.Redis, d.Config)
 	relHandler := relationships.NewHandler(relSvc)
 
-	usersHandler := users.NewHandler()
+	usersHandler := users.NewHandler(userRepo)
 
 	// /users/@me - current user
 	me := d.App.Group("/users/@me", requireAuth)
 	me.Get("", usersHandler.Me)
+	me.Patch("", usersHandler.PatchMe)
 
 	// /users/@me/relationships
 	r := me.Group("/relationships")

@@ -12,6 +12,7 @@ import (
 type SessionRepository interface {
 	Create(ctx context.Context, s *Session) error
 	GetByTokenHash(ctx context.Context, tokenHash string) (*Session, error)
+	GetByUserSession(ctx context.Context, userID, sessionID int64) (*Session, error)
 	ListByUser(ctx context.Context, userID int64) ([]Session, error)
 	Revoke(ctx context.Context, userID, sessionID int64) error
 	RevokeAllForUser(ctx context.Context, userID int64) error
@@ -53,6 +54,20 @@ func (r *scyllaSessionRepo) GetByTokenHash(ctx context.Context, tokenHash string
 	q := r.session.Query(stmt, names).WithContext(ctx)
 	defer q.Release()
 	if err := q.Bind(tokenHash).GetRelease(&s); err != nil {
+		if err == gocql.ErrNotFound {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &s, nil
+}
+
+func (r *scyllaSessionRepo) GetByUserSession(ctx context.Context, userID, sessionID int64) (*Session, error) {
+	var s Session
+	stmt, names := sessionsByUserTable.Get()
+	q := r.session.Query(stmt, names).WithContext(ctx)
+	defer q.Release()
+	if err := q.Bind(userID, sessionID).GetRelease(&s); err != nil {
 		if err == gocql.ErrNotFound {
 			return nil, nil
 		}

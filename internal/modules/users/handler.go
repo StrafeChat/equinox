@@ -1,18 +1,22 @@
 package users
 
 import (
+	"fmt"
 	"net/http"
 
 	"github.com/gofiber/fiber/v3"
 
 	"github.com/StrafeChat/equinox/internal/id"
+	"github.com/StrafeChat/equinox/internal/logger"
 	"github.com/StrafeChat/equinox/internal/modules/auth"
 )
 
-type Handler struct{}
+type Handler struct {
+	userRepo auth.UserRepository
+}
 
-func NewHandler() *Handler {
-	return &Handler{}
+func NewHandler(userRepo auth.UserRepository) *Handler {
+	return &Handler{userRepo: userRepo}
 }
 
 // Me returns the current user's info. Requires auth.
@@ -23,10 +27,67 @@ func (h *Handler) Me(c fiber.Ctx) error {
 	}
 
 	return c.JSON(fiber.Map{
-		"id":            id.Format(user.ID),
-		"email":         user.Email,
-		"username":      user.Username,
-		"discriminator": user.Discriminator,
-		"display_name":  user.DisplayName,
+		"id":             id.Format(user.ID),
+		"email":          user.Email,
+		"username":       user.Username,
+		"discriminator":  fmt.Sprintf("%04d", user.Discriminator),
+		"display_name":   user.DisplayName,
+		"bio":            user.Bio,
+		"about_me":       user.AboutMe,
+		"avatar":         user.Avatar,
+		"banner":         user.Banner,
+		"accent_color":   user.AccentColor,
+		"presence":       user.Presence,
 	})
+}
+
+// PatchMe updates the current user's profile. Requires auth.
+func (h *Handler) PatchMe(c fiber.Ctx) error {
+	user := auth.GetUser(c)
+	if user == nil {
+		return c.Status(http.StatusUnauthorized).JSON(fiber.Map{"error": "unauthorized"})
+	}
+
+	var upd auth.ProfileUpdate
+	msg, ok := ParsePatchMeBody(c.Body(), &upd)
+	if !ok {
+		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": msg})
+	}
+	if !hasProfileUpdate(&upd) {
+		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "no fields to update"})
+	}
+
+	updated, err := h.userRepo.UpdateProfile(c.Context(), user.ID, &upd)
+	if err != nil {
+		logger.Err("users", err, map[string]any{"user_id": user.ID})
+		return c.Status(http.StatusInternalServerError).JSON(fiber.Map{"error": "internal error"})
+	}
+	if updated == nil {
+		return c.Status(http.StatusNotFound).JSON(fiber.Map{"error": "user not found"})
+	}
+
+	return c.JSON(fiber.Map{
+		"id":             id.Format(updated.ID),
+		"email":          updated.Email,
+		"username":       updated.Username,
+		"discriminator":  fmt.Sprintf("%04d", updated.Discriminator),
+		"display_name":   updated.DisplayName,
+		"bio":            updated.Bio,
+		"about_me":       updated.AboutMe,
+		"avatar":         updated.Avatar,
+		"banner":         updated.Banner,
+		"accent_color":   updated.AccentColor,
+		"presence":       updated.Presence,
+	})
+}
+
+func hasProfileUpdate(u *auth.ProfileUpdate) bool {
+	if u == nil {
+		return false
+	}
+	if u.DisplayName != nil || u.Bio != nil || u.AboutMe != nil ||
+		u.Avatar != nil || u.Banner != nil || u.AccentColor != nil || u.Presence != nil {
+		return true
+	}
+	return false
 }

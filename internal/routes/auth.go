@@ -9,8 +9,8 @@ import (
 )
 
 func SetupAuthRoutes(d Deps) {
-	userRepo := auth.NewUserRepository(d.Scylla)
-	sessionRepo := auth.NewSessionRepository(d.Scylla)
+	userRepo := auth.NewCachedUserRepository(auth.NewUserRepository(d.Scylla), d.Redis, d.Config)
+	sessionRepo := auth.NewCachedSessionRepository(auth.NewSessionRepository(d.Scylla), d.Redis, d.Config)
 	svc := auth.NewService(d.Config, userRepo, sessionRepo)
 	h := auth.NewHandler(svc)
 

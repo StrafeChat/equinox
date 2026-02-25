@@ -63,8 +63,10 @@ type ScyllaConfig struct {
 }
 
 type RedisConfig struct {
-	Addr     string
-	PoolSize int // max connections in pool (default 10)
+	Addr         string
+	PoolSize     int    // max connections in pool (default 10)
+	CacheEnabled bool   // enable Redis cache-aside for sessions, users, relationships
+	CachePrefix  string // Redis key prefix (e.g. "equinox:") for cache keys
 }
 
 func Load() (*Config, error) {
@@ -101,8 +103,10 @@ func Load() (*Config, error) {
 				Keyspace: getEnvString("SCYLLA_KEYSPACE", "strafechat"),
 			},
 			Redis: RedisConfig{
-				Addr:     getEnvStringOr("REDIS_ADDR", "REDIS_ADDRS", "localhost:6379"),
-				PoolSize: getEnvInt("REDIS_POOL_SIZE", 10),
+				Addr:         getEnvStringOr("REDIS_ADDR", "REDIS_ADDRS", "localhost:6379"),
+				PoolSize:     getEnvInt("REDIS_POOL_SIZE", 10),
+				CacheEnabled: getEnvBool("REDIS_CACHE_ENABLED", true),
+				CachePrefix:  getEnvString("REDIS_CACHE_PREFIX", "equinox:"),
 			},
 		},
 		Log: LogConfig{

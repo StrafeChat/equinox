@@ -9,6 +9,24 @@ import (
 	"github.com/scylladb/gocqlx/v3/table"
 )
 
+// ProfileUpdate holds optional fields for PATCH /users/@me.
+type ProfileUpdate struct {
+	DisplayName *string       `json:"display_name,omitempty"`
+	Bio         *string       `json:"bio,omitempty"`
+	AboutMe     *string       `json:"about_me,omitempty"`
+	Avatar      *string       `json:"avatar,omitempty"`
+	Banner      *string       `json:"banner,omitempty"`
+	AccentColor *string       `json:"accent_color,omitempty"`
+	Presence    *PresenceUpdate `json:"presence,omitempty"`
+}
+
+// PresenceUpdate holds optional presence fields (status: online, offline, dnd, idle).
+type PresenceUpdate struct {
+	Online       *bool   `json:"online,omitempty"`
+	Status       *string `json:"status,omitempty"`
+	CustomStatus *string `json:"custom_status,omitempty"`
+}
+
 type UserRepository interface {
 	Create(ctx context.Context, u *User) error
 	GetByID(ctx context.Context, id int64) (*User, error)
@@ -18,6 +36,7 @@ type UserRepository interface {
 	EmailExists(ctx context.Context, email string) (bool, error)
 	DiscriminatorsForUsername(ctx context.Context, username string) ([]int, error)
 	UpdateRelationships(ctx context.Context, userID int64, add, remove []int64) error
+	UpdateProfile(ctx context.Context, userID int64, upd *ProfileUpdate) (*User, error)
 }
 
 var userTable = table.New(table.Metadata{
@@ -231,4 +250,47 @@ func (r *scyllaUserRepo) UpdateRelationships(ctx context.Context, userID int64, 
 		}
 	}
 	return nil
+}
+
+func (r *scyllaUserRepo) UpdateProfile(ctx context.Context, userID int64, upd *ProfileUpdate) (*User, error) {
+	if upd == nil {
+		return r.GetByID(ctx, userID)
+	}
+	u, err := r.GetByID(ctx, userID)
+	if err != nil || u == nil {
+		return u, err
+	}
+	u.UpdatedAt = time.Now().UTC()
+	if upd.DisplayName != nil {
+		u.DisplayName = *upd.DisplayName
+	}
+	if upd.Bio != nil {
+		u.Bio = *upd.Bio
+	}
+	if upd.AboutMe != nil {
+		u.AboutMe = *upd.AboutMe
+	}
+	if upd.Avatar != nil {
+		u.Avatar = *upd.Avatar
+	}
+	if upd.Banner != nil {
+		u.Banner = *upd.Banner
+	}
+	if upd.AccentColor != nil {
+		u.AccentColor = *upd.AccentColor
+	}
+	if upd.Presence != nil {
+		if upd.Presence.Online != nil {
+			u.Presence.Online = *upd.Presence.Online
+		}
+		if upd.Presence.Status != nil {
+			u.Presence.Status = *upd.Presence.Status
+		}
+		if upd.Presence.CustomStatus != nil {
+			u.Presence.CustomStatus = *upd.Presence.CustomStatus
+		}
+	}
+	stmt, names := userTable.Update("display_name", "bio", "about_me", "avatar", "banner", "accent_color", "presence", "updated_at")
+	q := r.session.Query(stmt, names).WithContext(ctx)
+	return u, q.Bind(u.DisplayName, u.Bio, u.AboutMe, u.Avatar, u.Banner, u.AccentColor, u.Presence, u.UpdatedAt, u.ID).ExecRelease()
 }
