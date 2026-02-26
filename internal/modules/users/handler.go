@@ -42,7 +42,7 @@ func (h *Handler) Me(c fiber.Ctx) error {
 		"avatar":         user.Avatar,
 		"banner":         user.Banner,
 		"accent_color":   user.AccentColor,
-		"presence":       user.Presence,
+		"presence":       auth.ToPublicPresence(user.Presence, false),
 	})
 }
 
@@ -77,14 +77,19 @@ func (h *Handler) PatchMe(c fiber.Ctx) error {
 		if h.cfg != nil {
 			region = h.cfg.Stargate.Region
 		}
-		payload := map[string]interface{}{
+		// Self sees actual status; friends see public (invisible → offline)
+		presenceSelf := auth.ToPublicPresence(updated.Presence, false)
+		presenceOthers := auth.ToPublicPresence(updated.Presence, true)
+		stargate.PublishToUser(c.Context(), h.redis, updated.ID, "PRESENCE_UPDATE", map[string]interface{}{
 			"user_id":  id.Format(updated.ID),
-			"presence": updated.Presence,
-		}
-		stargate.PublishToUser(c.Context(), h.redis, updated.ID, "PRESENCE_UPDATE", payload, region)
+			"presence": presenceSelf,
+		}, region)
 		friendIDs := updated.Relationships
 		if len(friendIDs) > 0 {
-			stargate.PublishToUsers(c.Context(), h.redis, friendIDs, "PRESENCE_UPDATE", payload, region)
+			stargate.PublishToUsers(c.Context(), h.redis, friendIDs, "PRESENCE_UPDATE", map[string]interface{}{
+				"user_id":  id.Format(updated.ID),
+				"presence": presenceOthers,
+			}, region)
 		}
 	}
 
@@ -99,7 +104,7 @@ func (h *Handler) PatchMe(c fiber.Ctx) error {
 		"avatar":         updated.Avatar,
 		"banner":         updated.Banner,
 		"accent_color":   updated.AccentColor,
-		"presence":       updated.Presence,
+		"presence":       auth.ToPublicPresence(updated.Presence, false),
 	})
 }
 

@@ -250,7 +250,7 @@ func (s *Service) RejectRequest(ctx context.Context, actorID, fromUserID int64) 
 	return nil
 }
 
-// partialUser builds a partial user object.
+// partialUser builds a partial user object. Presence uses status/custom_status only (never online).
 func partialUser(u *auth.User) map[string]interface{} {
 	if u == nil {
 		return nil
@@ -262,9 +262,8 @@ func partialUser(u *auth.User) map[string]interface{} {
 		"display_name":  u.DisplayName,
 		"avatar":        u.Avatar,
 	}
-	if u.Presence.Online {
-		m["online"] = true
-	}
+	pub := auth.ToPublicPresence(u.Presence, true)
+	m["presence"] = pub
 	return m
 }
 

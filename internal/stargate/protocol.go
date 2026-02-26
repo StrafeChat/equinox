@@ -44,9 +44,12 @@ type UnsubscribePayload struct {
 }
 
 // Server outbound: READY (after successful auth)
+// When ReadyDataProvider is set, rooms and relationships are included for initial load.
 type ReadyPayload struct {
-	User      interface{} `json:"user"`
-	SessionID string      `json:"session_id"`
+	User           interface{} `json:"user"`
+	SessionID      string      `json:"session_id"`
+	Rooms          interface{} `json:"rooms,omitempty"`
+	Relationships  interface{} `json:"relationships,omitempty"`
 }
 
 // Server outbound: EVENT

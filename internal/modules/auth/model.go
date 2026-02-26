@@ -7,7 +7,7 @@ import (
 )
 
 type UserPresence struct {
-	Online       bool   `db:"online" json:"online"`
+	Online       bool   `db:"online" json:"-"`
 	Status       string `db:"status" json:"status"`
 	CustomStatus string `db:"custom_status" json:"custom_status"`
 }

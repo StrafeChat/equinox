@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -17,6 +18,7 @@ import (
 	"github.com/StrafeChat/equinox/internal/modules/auth"
 )
 
+
 // SessionResolver validates a token hash and returns user + session or error.
 type SessionResolver interface {
 	Resolve(ctx context.Context, tokenHash string) (*auth.User, *auth.Session, error)
@@ -25,18 +27,26 @@ type SessionResolver interface {
 // Server runs the WebSocket server at /events. Use a separate process/domain
 // (e.g. stargate.strafe.chat/events).
 type Server struct {
-	hub     *Hub
-	resolve SessionResolver
-	upgrade *websocket.Upgrader
+	hub       *Hub
+	resolve   SessionResolver
+	readyData ReadyDataProvider
+	upgrade   *websocket.Upgrader
+}
+
+// ReadyDataProvider fetches initial data (rooms, relationships) for the READY payload.
+// If nil, only user and session_id are sent.
+type ReadyDataProvider interface {
+	GetReadyData(ctx context.Context, userID int64) (rooms interface{}, relationships interface{}, err error)
 }
 
 // ServerConfig configures the WebSocket server.
 type ServerConfig struct {
-	Hub             *Hub
-	Resolver        SessionResolver
-	AllowedOrigins  []string // nil/empty = allow all
-	ReadBufferSize  int
-	WriteBufferSize int
+	Hub               *Hub
+	Resolver          SessionResolver
+	ReadyDataProvider ReadyDataProvider
+	AllowedOrigins    []string // nil/empty = allow all
+	ReadBufferSize    int
+	WriteBufferSize   int
 }
 
 func NewServer(cfg ServerConfig) *Server {
@@ -64,9 +74,10 @@ func NewServer(cfg ServerConfig) *Server {
 	}
 
 	return &Server{
-		hub:     cfg.Hub,
-		resolve: cfg.Resolver,
-		upgrade: upgrader,
+		hub:       cfg.Hub,
+		resolve:   cfg.Resolver,
+		readyData: cfg.ReadyDataProvider,
+		upgrade:   upgrader,
 	}
 }
 
@@ -124,15 +135,29 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	client.subscribe("user", strconv.FormatInt(user.ID, 10))
 	s.hub.subscribe(client, "user", strconv.FormatInt(user.ID, 10))
 
-	client.sendOp(OpReady, ReadyPayload{
-		User: map[string]interface{}{
-			"id":            id.Format(user.ID),
-			"username":      user.Username,
-			"discriminator": user.Discriminator,
-			"display_name":  user.DisplayName,
-		},
+	readyUser := map[string]interface{}{
+		"id":            id.Format(user.ID),
+		"username":      user.Username,
+		"discriminator": fmt.Sprintf("%04d", user.Discriminator),
+		"display_name":  user.DisplayName,
+	}
+	if p := auth.ToPublicPresence(user.Presence, false); p.Status != "" || p.CustomStatus != "" {
+		readyUser["presence"] = p
+	}
+	readyPayload := ReadyPayload{
+		User:      readyUser,
 		SessionID: strconv.FormatInt(session.SessionID, 10),
-	})
+	}
+	if s.readyData != nil {
+		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+		rooms, rels, err := s.readyData.GetReadyData(ctx, user.ID)
+		cancel()
+		if err == nil {
+			readyPayload.Rooms = rooms
+			readyPayload.Relationships = rels
+		}
+	}
+	client.sendOp(OpReady, readyPayload)
 
 	ctx2, cancel2 := context.WithCancel(context.Background())
 	defer cancel2()

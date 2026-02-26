@@ -46,18 +46,25 @@ func (p *DefaultPresenceNotifier) setOnline(ctx context.Context, userID int64, o
 	if updated == nil {
 		return
 	}
+	// Use public presence (status/custom_status only; invisible→offline for others)
+	presenceSelf := auth.ToPublicPresence(updated.Presence, false)
+	presenceOthers := auth.ToPublicPresence(updated.Presence, true)
 
-	payload := map[string]interface{}{
+	payloadSelf := map[string]interface{}{
 		"user_id":  id.Format(updated.ID),
-		"presence": updated.Presence,
+		"presence": presenceSelf,
+	}
+	payloadOthers := map[string]interface{}{
+		"user_id":  id.Format(updated.ID),
+		"presence": presenceOthers,
 	}
 
 	// Notify the user themselves (e.g. multiple devices)
-	PublishToUser(ctx, p.redis, updated.ID, presenceUpdateEvent, payload, p.region)
+	PublishToUser(ctx, p.redis, updated.ID, presenceUpdateEvent, payloadSelf, p.region)
 
 	// Notify all friends
 	friendIDs := updated.Relationships
 	if len(friendIDs) > 0 {
-		PublishToUsers(ctx, p.redis, friendIDs, presenceUpdateEvent, payload, p.region)
+		PublishToUsers(ctx, p.redis, friendIDs, presenceUpdateEvent, payloadOthers, p.region)
 	}
 }

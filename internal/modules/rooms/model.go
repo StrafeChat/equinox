@@ -1,6 +1,10 @@
 package rooms
 
-import "time"
+import (
+	"time"
+
+	"github.com/StrafeChat/equinox/internal/modules/auth"
+)
 
 // RoomType discriminator for polymorphic rooms.
 const (
@@ -28,25 +32,30 @@ type Room struct {
 
 // Participant is a minimal user for room display.
 type Participant struct {
-	ID          string `json:"id"`
-	Username    string `json:"username"`
-	DisplayName string `json:"display_name"`
-	Avatar      string `json:"avatar,omitempty"`
+	ID          string            `json:"id"`
+	Username    string            `json:"username"`
+	DisplayName string            `json:"display_name"`
+	Avatar      string            `json:"avatar,omitempty"`
+	Presence   auth.PublicPresence `json:"presence"`
 }
 
 // RoomWithParticipants extends Room with participant IDs and optional details.
 type RoomWithParticipants struct {
 	Room
-	ParticipantIDs []int64        `json:"recipients,omitempty"`
-	Participants   []Participant  `json:"participants,omitempty"`
+	ParticipantIDs    []int64       `json:"recipients,omitempty"`
+	Participants      []Participant `json:"participants,omitempty"`
+	LastReadMessageID *int64        `json:"last_read_message_id,omitempty"`
+	MentionCount      int           `json:"mention_count,omitempty"`
 }
 
 // RoomRow is rooms_by_user row.
 type RoomRow struct {
-	UserID        int64     `db:"user_id"`
-	RoomID        int64     `db:"room_id"`
-	LastMessageID *int64    `db:"last_message_id"`
-	JoinedAt      time.Time `db:"joined_at"`
+	UserID             int64     `db:"user_id"`
+	RoomID             int64     `db:"room_id"`
+	LastMessageID      *int64    `db:"last_message_id"`
+	LastReadMessageID  *int64    `db:"last_read_message_id"`
+	MentionCount       int       `db:"mention_count"`
+	JoinedAt           time.Time `db:"joined_at"`
 }
 
 // PMRoomsRow is pm_rooms lookup row.

@@ -8,7 +8,7 @@ import (
 )
 
 var validStatuses = map[string]struct{}{
-	"online": {}, "offline": {}, "dnd": {}, "idle": {},
+	"online": {}, "offline": {}, "dnd": {}, "idle": {}, "invisible": {},
 }
 
 const (
