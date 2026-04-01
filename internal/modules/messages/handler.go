@@ -34,13 +34,19 @@ func (h *Handler) Create(c fiber.Ctx) error {
 	if err := json.Unmarshal(c.Body(), &in); err != nil {
 		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "invalid json"})
 	}
-	if in.Ciphertext == "" {
-		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "ciphertext required"})
+	if in.Ciphertext == "" && in.Plaintext == "" {
+		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "ciphertext or plaintext required"})
 	}
 	msg, err := h.svc.Create(c.Context(), user.ID, roomID, &in)
 	if err != nil {
 		if err == ErrNotParticipant {
 			return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": "not a participant"})
+		}
+		if err == ErrForbidden {
+			return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": "missing permission to send messages in this channel"})
+		}
+		if err == ErrInvalidInput {
+			return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "plaintext required when E2EE is off; ciphertext required when E2EE is on"})
 		}
 		logger.Err("messages", err, map[string]any{"room_id": roomID})
 		return c.Status(http.StatusInternalServerError).JSON(fiber.Map{"error": "internal error"})
@@ -66,6 +72,9 @@ func (h *Handler) Get(c fiber.Ctx) error {
 	if err != nil {
 		if err == ErrNotParticipant {
 			return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": "not a participant"})
+		}
+		if err == ErrForbidden {
+			return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": "missing permission to read this channel"})
 		}
 		return c.Status(http.StatusInternalServerError).JSON(fiber.Map{"error": "internal error"})
 	}
@@ -103,6 +112,9 @@ func (h *Handler) List(c fiber.Ctx) error {
 	if err != nil {
 		if err == ErrNotParticipant {
 			return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": "not a participant"})
+		}
+		if err == ErrForbidden {
+			return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": "missing permission to read this channel"})
 		}
 		logger.Err("messages", err, map[string]any{"room_id": roomID})
 		return c.Status(http.StatusInternalServerError).JSON(fiber.Map{"error": "internal error"})
@@ -192,11 +204,18 @@ func messageToJSON(m *Message) fiber.Map {
 		"created_at":       m.CreatedAt,
 		"updated_at":       m.UpdatedAt,
 	}
+	if m.Plaintext != "" {
+		out["plaintext"] = m.Plaintext
+	}
 	if m.ReplyToID != nil {
 		out["reply_to_id"] = id.Format(*m.ReplyToID)
 	}
 	if m.DeletedAt != nil && !m.DeletedAt.IsZero() {
 		out["deleted_at"] = m.DeletedAt
+	}
+	if m.SystemType != "" {
+		out["system_type"] = m.SystemType
+		out["system_payload"] = m.SystemPayload
 	}
 	return out
 }

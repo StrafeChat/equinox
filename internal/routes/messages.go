@@ -5,6 +5,7 @@ import (
 	"github.com/StrafeChat/equinox/internal/modules/auth"
 	"github.com/StrafeChat/equinox/internal/modules/messages"
 	"github.com/StrafeChat/equinox/internal/modules/rooms"
+	"github.com/StrafeChat/equinox/internal/modules/spaces"
 )
 
 func SetupMessagesRoutes(d Deps) {
@@ -14,7 +15,9 @@ func SetupMessagesRoutes(d Deps) {
 
 	msgRepo := messages.NewRepository(d.Scylla)
 	roomRepo := rooms.NewRepository(d.Scylla)
-	msgSvc := messages.NewService(msgRepo, roomRepo, d.Redis, d.Config)
+	spaceRepo := spaces.NewRepository(d.Scylla)
+	spaceSvc := spaces.NewService(spaceRepo, roomRepo, userRepo, d.Redis, d.Config)
+	msgSvc := messages.NewService(msgRepo, roomRepo, d.Redis, d.Config, spaceSvc)
 	msgHandler := messages.NewHandler(msgSvc)
 
 	r := d.App.Group("/rooms", requireAuth)

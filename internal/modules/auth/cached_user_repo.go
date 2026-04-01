@@ -14,30 +14,37 @@ import (
 
 const userCacheTTL = 10 * time.Minute
 
+// cachedPresence stores presence for Redis; includes Online so initial load shows correct status.
+type cachedPresence struct {
+	Online       bool   `json:"online"`
+	Status       string `json:"status"`
+	CustomStatus string `json:"custom_status"`
+}
+
 // cachedUser is User without PasswordHash, for safe Redis storage.
 type cachedUser struct {
-	ID            int64        `json:"id"`
-	Email         string       `json:"email"`
-	Username      string       `json:"username"`
-	Discriminator int          `json:"discriminator"`
-	DisplayName   string       `json:"display_name"`
-	Avatar        string       `json:"avatar"`
-	Banner        string       `json:"banner"`
-	Bot           bool         `json:"bot"`
-	Bots          []string     `json:"bots"`
-	System        bool         `json:"system"`
-	Bio           string       `json:"bio"`
-	Flags         int          `json:"flags"`
-	Relationships []int64      `json:"relationships"`
-	Spaces        []int64      `json:"spaces"`
-	DateOfBirth   time.Time    `json:"date_of_birth"`
-	VerifiedEmail bool         `json:"verified_email"`
-	AboutMe       string       `json:"about_me"`
-	AccentColor   string       `json:"accent_color"`
-	Locale        string       `json:"locale"`
-	Presence      UserPresence `json:"presence"`
-	CreatedAt     time.Time    `json:"created_at"`
-	UpdatedAt     time.Time    `json:"updated_at"`
+	ID            int64          `json:"id"`
+	Email         string         `json:"email"`
+	Username      string         `json:"username"`
+	Discriminator int            `json:"discriminator"`
+	DisplayName   string          `json:"display_name"`
+	Avatar        string          `json:"avatar"`
+	Banner        string          `json:"banner"`
+	Bot           bool           `json:"bot"`
+	Bots          []string       `json:"bots"`
+	System        bool           `json:"system"`
+	Bio           string         `json:"bio"`
+	Flags         int            `json:"flags"`
+	Relationships []int64        `json:"relationships"`
+	Spaces        []int64        `json:"spaces"`
+	DateOfBirth   time.Time      `json:"date_of_birth"`
+	VerifiedEmail bool           `json:"verified_email"`
+	AboutMe       string         `json:"about_me"`
+	AccentColor   string         `json:"accent_color"`
+	Locale        string         `json:"locale"`
+	Presence      cachedPresence `json:"presence"`
+	CreatedAt     time.Time      `json:"created_at"`
+	UpdatedAt     time.Time      `json:"updated_at"`
 }
 
 func userToCached(u *User) *cachedUser {
@@ -64,9 +71,13 @@ func userToCached(u *User) *cachedUser {
 		AboutMe:       u.AboutMe,
 		AccentColor:   u.AccentColor,
 		Locale:        u.Locale,
-		Presence:      u.Presence,
-		CreatedAt:     u.CreatedAt,
-		UpdatedAt:     u.UpdatedAt,
+		Presence: cachedPresence{
+			Online:       u.Presence.Online,
+			Status:       u.Presence.Status,
+			CustomStatus: u.Presence.CustomStatus,
+		},
+		CreatedAt: u.CreatedAt,
+		UpdatedAt: u.UpdatedAt,
 	}
 }
 
@@ -95,9 +106,13 @@ func cachedToUser(c *cachedUser, passwordHash string) *User {
 		AboutMe:       c.AboutMe,
 		AccentColor:   c.AccentColor,
 		Locale:        c.Locale,
-		Presence:      c.Presence,
-		CreatedAt:     c.CreatedAt,
-		UpdatedAt:     c.UpdatedAt,
+		Presence: UserPresence{
+			Online:       c.Presence.Online,
+			Status:       c.Presence.Status,
+			CustomStatus: c.Presence.CustomStatus,
+		},
+		CreatedAt: c.CreatedAt,
+		UpdatedAt: c.UpdatedAt,
 	}
 }
 

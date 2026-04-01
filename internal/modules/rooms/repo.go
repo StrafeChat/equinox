@@ -11,7 +11,7 @@ import (
 
 var roomsTable = table.New(table.Metadata{
 	Name:    "rooms",
-	Columns: []string{"id", "type", "space_id", "parent_id", "name", "topic", "position", "last_message_id", "created_at", "updated_at"},
+	Columns: []string{"id", "type", "space_id", "parent_id", "name", "topic", "position", "creator_id", "e2ee_enabled", "last_message_id", "created_at", "updated_at"},
 	PartKey: []string{"id"},
 })
 
@@ -36,9 +36,17 @@ var pmRoomsTable = table.New(table.Metadata{
 	SortKey: []string{"user_b_id"},
 })
 
+var roomsBySpaceTable = table.New(table.Metadata{
+	Name:    "rooms_by_space",
+	Columns: []string{"space_id", "room_id", "position", "created_at"},
+	PartKey: []string{"space_id"},
+	SortKey: []string{"room_id"},
+})
+
 type Repository interface {
 	Create(ctx context.Context, r *Room, participantIDs []int64) error
 	AddParticipant(ctx context.Context, roomID, userID int64) error
+	RemoveParticipant(ctx context.Context, roomID, userID int64) error
 	GetByID(ctx context.Context, id int64) (*Room, error)
 	GetParticipants(ctx context.Context, roomID int64) ([]int64, error)
 	GetPMRoom(ctx context.Context, userA, userB int64) (*Room, error)
@@ -46,6 +54,10 @@ type Repository interface {
 	ListByUser(ctx context.Context, userID int64) ([]RoomRow, error)
 	UpdateLastMessageID(ctx context.Context, roomID int64, participants []int64, msgID int64) error
 	UpdateReadState(ctx context.Context, userID, roomID, lastReadMessageID int64) error
+	UpdateRoomName(ctx context.Context, roomID int64, name string) error
+	UpdateRoomE2EEEnabled(ctx context.Context, roomID int64, enabled bool) error
+	ListBySpace(ctx context.Context, spaceID int64) ([]RoomBySpaceRow, error)
+	CreateSpaceRoom(ctx context.Context, room *Room) error
 }
 
 type repo struct {
@@ -70,7 +82,7 @@ func (r *repo) Create(ctx context.Context, room *Room, participantIDs []int64) e
 
 	b := r.session.NewBatch(gocql.LoggedBatch).WithContext(ctx)
 	stmt, _ := roomsTable.Insert()
-	b.Query(stmt, room.ID, room.Type, room.SpaceID, room.ParentID, room.Name, room.Topic, room.Position, room.LastMessageID, room.CreatedAt, room.UpdatedAt)
+	b.Query(stmt, room.ID, room.Type, room.SpaceID, room.ParentID, room.Name, room.Topic, room.Position, room.CreatorID, room.E2EEEnabled, room.LastMessageID, room.CreatedAt, room.UpdatedAt)
 
 	stmt, _ = participantsTable.Insert()
 	for _, uid := range participantIDs {
@@ -106,6 +118,15 @@ func (r *repo) AddParticipant(ctx context.Context, roomID, userID int64) error {
 	b.Query(stmt, roomID, userID, now)
 	stmt, _ = roomsByUserTable.Insert()
 	b.Query(stmt, userID, roomID, room.LastMessageID, nil, 0, now)
+	return r.session.ExecuteBatch(b)
+}
+
+func (r *repo) RemoveParticipant(ctx context.Context, roomID, userID int64) error {
+	b := r.session.NewBatch(gocql.LoggedBatch).WithContext(ctx)
+	stmt, _ := participantsTable.Delete()
+	b.Query(stmt, roomID, userID)
+	stmt, _ = roomsByUserTable.Delete()
+	b.Query(stmt, userID, roomID)
 	return r.session.ExecuteBatch(b)
 }
 
@@ -201,4 +222,50 @@ func (r *repo) UpdateReadState(ctx context.Context, userID, roomID, lastReadMess
 	q := r.session.Query(stmt, names).WithContext(ctx)
 	defer q.Release()
 	return q.Bind(lastReadMessageID, 0, userID, roomID).ExecRelease()
+}
+
+func (r *repo) UpdateRoomName(ctx context.Context, roomID int64, name string) error {
+	now := time.Now().UTC()
+	stmt, names := roomsTable.Update("name", "updated_at")
+	q := r.session.Query(stmt, names).WithContext(ctx)
+	defer q.Release()
+	return q.Bind(name, now, roomID).ExecRelease()
+}
+
+func (r *repo) UpdateRoomE2EEEnabled(ctx context.Context, roomID int64, enabled bool) error {
+	now := time.Now().UTC()
+	stmt, names := roomsTable.Update("e2ee_enabled", "updated_at")
+	q := r.session.Query(stmt, names).WithContext(ctx)
+	defer q.Release()
+	return q.Bind(enabled, now, roomID).ExecRelease()
+}
+
+func (r *repo) ListBySpace(ctx context.Context, spaceID int64) ([]RoomBySpaceRow, error) {
+	stmt, names := roomsBySpaceTable.Select()
+	q := r.session.Query(stmt, names).WithContext(ctx)
+	defer q.Release()
+	iter := q.Bind(spaceID).Iter()
+	defer iter.Close()
+	var out []RoomBySpaceRow
+	var row RoomBySpaceRow
+	for iter.StructScan(&row) {
+		out = append(out, row)
+	}
+	return out, iter.Close()
+}
+
+// CreateSpaceRoom inserts a space room (text, voice, or section) and adds it to rooms_by_space. No participants.
+func (r *repo) CreateSpaceRoom(ctx context.Context, room *Room) error {
+	if room.SpaceID == nil {
+		return nil
+	}
+	now := time.Now().UTC()
+	room.CreatedAt = now
+	room.UpdatedAt = now
+	b := r.session.NewBatch(gocql.LoggedBatch).WithContext(ctx)
+	stmt, _ := roomsTable.Insert()
+	b.Query(stmt, room.ID, room.Type, room.SpaceID, room.ParentID, room.Name, room.Topic, room.Position, room.CreatorID, room.E2EEEnabled, room.LastMessageID, room.CreatedAt, room.UpdatedAt)
+	stmt, _ = roomsBySpaceTable.Insert()
+	b.Query(stmt, *room.SpaceID, room.ID, room.Position, now)
+	return r.session.ExecuteBatch(b)
 }

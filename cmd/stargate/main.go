@@ -17,24 +17,26 @@ import (
 	"github.com/StrafeChat/equinox/internal/modules/auth"
 	"github.com/StrafeChat/equinox/internal/modules/relationships"
 	"github.com/StrafeChat/equinox/internal/modules/rooms"
+	"github.com/StrafeChat/equinox/internal/modules/spaces"
 	"github.com/StrafeChat/equinox/internal/stargate"
 	"github.com/joho/godotenv"
 )
 
-// readyDataProvider fetches rooms and relationships for the READY payload.
+// readyDataProvider fetches rooms, relationships, spaces, and space rooms for the READY payload.
 type readyDataProvider struct {
-	roomSvc *rooms.Service
-	relSvc  *relationships.Service
+	roomSvc  *rooms.Service
+	relSvc   *relationships.Service
+	spaceSvc *spaces.Service
 }
 
-func (p *readyDataProvider) GetReadyData(ctx context.Context, userID int64) (interface{}, interface{}, error) {
+func (p *readyDataProvider) GetReadyData(ctx context.Context, userID int64) (interface{}, interface{}, interface{}, interface{}, error) {
 	roomList, err := p.roomSvc.ListRooms(ctx, userID)
 	if err != nil {
-		return nil, nil, fmt.Errorf("list rooms: %w", err)
+		return nil, nil, nil, nil, fmt.Errorf("list rooms: %w", err)
 	}
 	relList, err := p.relSvc.ListRelationships(ctx, userID)
 	if err != nil {
-		return nil, nil, fmt.Errorf("list relationships: %w", err)
+		return nil, nil, nil, nil, fmt.Errorf("list relationships: %w", err)
 	}
 	out := make([]map[string]interface{}, 0, len(roomList))
 	for _, r := range roomList {
@@ -71,12 +73,108 @@ func (p *readyDataProvider) GetReadyData(ctx context.Context, userID int64) (int
 		if !r.UpdatedAt.IsZero() {
 			m["updated_at"] = r.UpdatedAt
 		}
+		if r.Type == rooms.TypeGroupPM {
+			m["creator_id"] = id.Format(r.CreatorID)
+		} else if r.CreatorID != 0 {
+			m["creator_id"] = id.Format(r.CreatorID)
+		}
+		e2eeEnabled := true
+		if r.E2EEEnabled != nil {
+			e2eeEnabled = *r.E2EEEnabled
+		}
+		m["e2ee_enabled"] = e2eeEnabled
 		if len(r.Participants) > 0 {
 			m["participants"] = r.Participants
 		}
 		out = append(out, m)
 	}
-	return out, relList, nil
+
+	// Spaces and space rooms
+	var spacesList []map[string]interface{}
+	spaceRoomsMap := make(map[string]interface{})
+	if p.spaceSvc != nil {
+		spaceRows, err := p.spaceSvc.ListSpacesForUser(ctx, userID)
+		if err == nil {
+			for _, row := range spaceRows {
+				space, err := p.spaceSvc.GetSpace(ctx, row.SpaceID)
+				if err != nil || space == nil {
+					continue
+				}
+				spacesList = append(spacesList, spaceToReadyMap(space))
+				roomListForSpace, err := p.spaceSvc.ListSpaceRooms(ctx, userID, row.SpaceID)
+				if err != nil {
+					continue
+				}
+				roomMaps := make([]map[string]interface{}, 0, len(roomListForSpace))
+				for _, r := range roomListForSpace {
+					roomMaps = append(roomMaps, roomToReadyMap(r))
+				}
+				spaceRoomsMap[id.Format(row.SpaceID)] = roomMaps
+			}
+		}
+	}
+
+	return out, relList, spacesList, spaceRoomsMap, nil
+}
+
+func spaceToReadyMap(s *spaces.Space) map[string]interface{} {
+	m := map[string]interface{}{
+		"id":                            id.Format(s.ID),
+		"name":                          s.Name,
+		"name_acronym":                  s.NameAcronym,
+		"description":                   s.Description,
+		"icon":                          s.Icon,
+		"banner":                        s.Banner,
+		"owner_id":                      id.Format(s.OwnerID),
+		"verification_level":            s.VerificationLevel,
+		"default_message_notifications": s.DefaultMessageNotif,
+		"explicit_content_filter":       s.ExplicitContentFilter,
+		"features":                      s.Features,
+		"afk_timeout":                   s.AFKTimeout,
+		"system_room_flags":             s.SystemRoomFlags,
+		"max_presences":                 s.MaxPresences,
+		"max_members":                   s.MaxMembers,
+		"vanity_url_code":               s.VanityURLCode,
+		"preferred_locale":              s.PreferredLocale,
+		"max_video_room_users":          s.MaxVideoRoomUsers,
+		"created_at":                    s.CreatedAt,
+		"updated_at":                    s.UpdatedAt,
+	}
+	if s.AFKRoomID != nil {
+		m["afk_room_id"] = id.Format(*s.AFKRoomID)
+	}
+	if s.SystemRoomID != nil {
+		m["system_room_id"] = id.Format(*s.SystemRoomID)
+	}
+	if s.RulesRoomID != nil {
+		m["rules_room_id"] = id.Format(*s.RulesRoomID)
+	}
+	if s.PublicUpdatesRoomID != nil {
+		m["public_updates_room_id"] = id.Format(*s.PublicUpdatesRoomID)
+	}
+	return m
+}
+
+func roomToReadyMap(r *rooms.Room) map[string]interface{} {
+	m := map[string]interface{}{
+		"id":         id.Format(r.ID),
+		"type":       r.Type,
+		"name":       r.Name,
+		"topic":      r.Topic,
+		"position":   r.Position,
+		"created_at": r.CreatedAt,
+		"updated_at": r.UpdatedAt,
+	}
+	if r.SpaceID != nil {
+		m["space_id"] = id.Format(*r.SpaceID)
+	}
+	if r.ParentID != nil {
+		m["parent_id"] = id.Format(*r.ParentID)
+	}
+	if r.LastMessageID != nil {
+		m["last_message_id"] = id.Format(*r.LastMessageID)
+	}
+	return m
 }
 
 func recipientIDsToSlice(ids []int64) []string {
@@ -121,10 +219,12 @@ func main() {
 	resolver := stargate.NewResolver(sessionRepo, userRepo)
 
 	roomRepo := rooms.NewRepository(scylla)
-	roomSvc := rooms.NewService(roomRepo, userRepo, redis, cfg)
+	spaceRepo := spaces.NewRepository(scylla)
+	spaceSvc := spaces.NewService(spaceRepo, roomRepo, userRepo, redis, cfg)
+	roomSvc := rooms.NewService(roomRepo, userRepo, redis, cfg, nil, spaceSvc)
 	relRepo := relationships.NewRepository(scylla)
 	relSvc := relationships.NewService(relRepo, userRepo, redis, cfg)
-	readyProvider := &readyDataProvider{roomSvc: roomSvc, relSvc: relSvc}
+	readyProvider := &readyDataProvider{roomSvc: roomSvc, relSvc: relSvc, spaceSvc: spaceSvc}
 
 	srv := stargate.NewServer(stargate.ServerConfig{
 		Hub:               hub,

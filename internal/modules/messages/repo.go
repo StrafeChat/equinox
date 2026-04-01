@@ -11,7 +11,7 @@ import (
 
 var messagesTable = table.New(table.Metadata{
 	Name:    "messages",
-	Columns: []string{"room_id", "id", "sender_id", "sender_device_id", "ciphertext", "reply_to_id", "created_at", "updated_at", "deleted_at"},
+	Columns: []string{"room_id", "id", "sender_id", "sender_device_id", "ciphertext", "plaintext", "reply_to_id", "system_type", "system_payload", "created_at", "updated_at", "deleted_at"},
 	PartKey: []string{"room_id"},
 	SortKey: []string{"id"},
 })
@@ -67,6 +67,9 @@ func (r *repo) List(ctx context.Context, roomID int64, beforeID *int64, limit in
 	var out []Message
 	var row Message
 	for iter.StructScan(&row) {
+		if row.DeletedAt != nil && !row.DeletedAt.IsZero() {
+			continue
+		}
 		if beforeID != nil && row.ID >= *beforeID {
 			continue
 		}

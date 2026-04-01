@@ -3,6 +3,7 @@ package rooms
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 
 	"github.com/gofiber/fiber/v3"
 
@@ -126,7 +127,7 @@ func (h *Handler) GetNotes(c fiber.Ctx) error {
 	return c.JSON(roomToJSON(*room))
 }
 
-// CreatePM creates a 1:1 PM or group PM. Body: { "recipient_id": "123" } for DM, or { "name": "Friends", "recipient_ids": ["1","2"] } for group.
+// CreatePM creates a 1:1 PM or group PM. Body: { "recipient_id": "123" } for DM, or { "recipient_ids": ["1","2"] } for group (optional "name").
 func (h *Handler) CreatePM(c fiber.Ctx) error {
 	user := auth.GetUser(c)
 	if user == nil {
@@ -155,7 +156,7 @@ func (h *Handler) CreatePM(c fiber.Ctx) error {
 		}
 		return c.Status(http.StatusOK).JSON(roomToJSON(*room))
 	}
-	if body.Name != "" && len(body.RecipientIDs) > 0 {
+	if len(body.RecipientIDs) > 0 {
 		ids := make([]int64, 0, len(body.RecipientIDs))
 		for _, s := range body.RecipientIDs {
 			parsed, err := id.Parse(s)
@@ -164,7 +165,8 @@ func (h *Handler) CreatePM(c fiber.Ctx) error {
 			}
 			ids = append(ids, parsed)
 		}
-		room, err := h.svc.CreateGroupPM(c.Context(), user.ID, body.Name, ids)
+		name := strings.TrimSpace(body.Name)
+		room, err := h.svc.CreateGroupPM(c.Context(), user.ID, name, ids)
 		if err != nil {
 			switch err {
 			case ErrMinParticipants:
@@ -217,6 +219,104 @@ func (h *Handler) AddParticipant(c fiber.Ctx) error {
 	return c.Status(http.StatusNoContent).Send(nil)
 }
 
+// RemoveParticipant removes a user from a group. DELETE /rooms/:id/participants/:user_id. Only group creator.
+func (h *Handler) RemoveParticipant(c fiber.Ctx) error {
+	user := auth.GetUser(c)
+	if user == nil {
+		return c.Status(http.StatusUnauthorized).JSON(fiber.Map{"error": "unauthorized"})
+	}
+	roomID, err := id.Parse(c.Params("id"))
+	if err != nil {
+		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "invalid room id"})
+	}
+	targetID, err := id.Parse(c.Params("user_id"))
+	if err != nil {
+		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "invalid user_id"})
+	}
+	if err := h.svc.RemoveParticipant(c.Context(), user.ID, roomID, targetID); err != nil {
+		switch err {
+		case ErrRoomNotFound:
+			return c.Status(http.StatusNotFound).JSON(fiber.Map{"error": "room not found"})
+		case ErrNotParticipant:
+			return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": "not a participant"})
+		case ErrNotGroupRoom:
+			return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "not a group room"})
+		case ErrNotCreator:
+			return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": "only the group creator can remove members"})
+		case ErrCannotRemoveSelf:
+			return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "creator cannot remove themselves"})
+		case ErrMinParticipants:
+			return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "group must have at least 2 participants"})
+		default:
+			logger.Err("rooms", err, map[string]any{"room_id": roomID, "target_id": targetID})
+			return c.Status(http.StatusInternalServerError).JSON(fiber.Map{"error": "internal error"})
+		}
+	}
+	return c.Status(http.StatusNoContent).Send(nil)
+}
+
+// UpdateRoom updates room properties. PATCH /rooms/:id. Body: { "name": "...", "e2ee_enabled": true|false }. Only group creator.
+func (h *Handler) UpdateRoom(c fiber.Ctx) error {
+	user := auth.GetUser(c)
+	if user == nil {
+		return c.Status(http.StatusUnauthorized).JSON(fiber.Map{"error": "unauthorized"})
+	}
+	roomID, err := id.Parse(c.Params("id"))
+	if err != nil {
+		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "invalid room id"})
+	}
+	var body struct {
+		Name        string `json:"name"`
+		E2EEEnabled *bool  `json:"e2ee_enabled"`
+	}
+	if err := json.Unmarshal(c.Body(), &body); err != nil {
+		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "invalid body"})
+	}
+	if body.Name != "" {
+		name := strings.TrimSpace(body.Name)
+		if name == "" {
+			return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "name cannot be empty"})
+		}
+		if err := h.svc.UpdateRoomName(c.Context(), user.ID, roomID, name); err != nil {
+			switch err {
+			case ErrRoomNotFound:
+				return c.Status(http.StatusNotFound).JSON(fiber.Map{"error": "room not found"})
+			case ErrNotParticipant:
+				return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": "not a participant"})
+			case ErrNotGroupRoom:
+				return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "not a group room"})
+			case ErrNotCreator:
+				return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": "only the group creator can rename the group"})
+			default:
+				logger.Err("rooms", err, map[string]any{"room_id": roomID})
+				return c.Status(http.StatusInternalServerError).JSON(fiber.Map{"error": "internal error"})
+			}
+		}
+	}
+	if body.E2EEEnabled != nil {
+		if err := h.svc.UpdateRoomE2EEEnabled(c.Context(), user.ID, roomID, *body.E2EEEnabled); err != nil {
+			switch err {
+			case ErrRoomNotFound:
+				return c.Status(http.StatusNotFound).JSON(fiber.Map{"error": "room not found"})
+			case ErrNotParticipant:
+				return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": "not a participant"})
+			case ErrNotGroupRoom:
+				return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "not a group room"})
+			case ErrNotCreator:
+				return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": "only the group creator can change this setting"})
+			default:
+				logger.Err("rooms", err, map[string]any{"room_id": roomID})
+				return c.Status(http.StatusInternalServerError).JSON(fiber.Map{"error": "internal error"})
+			}
+		}
+	}
+	room, _ := h.svc.GetRoom(c.Context(), user.ID, roomID)
+	if room != nil {
+		return c.JSON(roomToJSON(*room))
+	}
+	return c.Status(http.StatusNoContent).Send(nil)
+}
+
 func roomToJSON(r RoomWithParticipants) fiber.Map {
 	m := fiber.Map{
 		"id":   id.Format(r.ID),
@@ -251,6 +351,17 @@ func roomToJSON(r RoomWithParticipants) fiber.Map {
 	if !r.UpdatedAt.IsZero() {
 		m["updated_at"] = r.UpdatedAt
 	}
+	// Always include creator_id for group rooms so the client can show owner crown and settings
+	if r.Type == TypeGroupPM {
+		m["creator_id"] = id.Format(r.CreatorID)
+	} else if r.CreatorID != 0 {
+		m["creator_id"] = id.Format(r.CreatorID)
+	}
+	e2eeEnabled := true
+	if r.E2EEEnabled != nil {
+		e2eeEnabled = *r.E2EEEnabled
+	}
+	m["e2ee_enabled"] = e2eeEnabled
 	if len(r.Participants) > 0 {
 		m["participants"] = r.Participants
 	}

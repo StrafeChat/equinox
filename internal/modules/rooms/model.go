@@ -17,6 +17,10 @@ const (
 )
 
 // Room is a polymorphic container: PM, Group PM, Space text/voice, room section, or thread.
+// For TypeGroupPM, CreatorID is the user who created the group (only they can remove members or rename).
+// E2EEEnabled: when false, messages are stored as plaintext. For PM/GroupPM nil/true = E2EE on (default).
+// For space rooms (TypeSpaceText, TypeSpaceVoice), E2EE is off by default (scale; a future space-scale
+// E2EE protocol, e.g. MLS or sender-keys-style for thousands of members, could be added later).
 type Room struct {
 	ID             int64     `db:"id" json:"id"`
 	Type           int       `db:"type" json:"type"`
@@ -25,6 +29,8 @@ type Room struct {
 	Name           string    `db:"name" json:"name,omitempty"`
 	Topic          string    `db:"topic" json:"topic,omitempty"`
 	Position       int       `db:"position" json:"position"`
+	CreatorID      int64     `db:"creator_id" json:"creator_id,omitempty"`
+	E2EEEnabled    *bool     `db:"e2ee_enabled" json:"e2ee_enabled,omitempty"`
 	LastMessageID  *int64    `db:"last_message_id" json:"last_message_id,omitempty"`
 	CreatedAt      time.Time `db:"created_at" json:"created_at"`
 	UpdatedAt      time.Time `db:"updated_at" json:"updated_at"`
@@ -32,11 +38,12 @@ type Room struct {
 
 // Participant is a minimal user for room display.
 type Participant struct {
-	ID          string            `json:"id"`
-	Username    string            `json:"username"`
-	DisplayName string            `json:"display_name"`
-	Avatar      string            `json:"avatar,omitempty"`
-	Presence   auth.PublicPresence `json:"presence"`
+	ID            string              `json:"id"`
+	Username      string              `json:"username"`
+	Discriminator int                 `json:"discriminator"`
+	DisplayName   string              `json:"display_name"`
+	Avatar        string              `json:"avatar,omitempty"`
+	Presence      auth.PublicPresence `json:"presence"`
 }
 
 // RoomWithParticipants extends Room with participant IDs and optional details.
@@ -63,5 +70,13 @@ type PMRoomsRow struct {
 	UserAID   int64     `db:"user_a_id"`
 	UserBID   int64     `db:"user_b_id"`
 	RoomID    int64     `db:"room_id"`
+	CreatedAt time.Time `db:"created_at"`
+}
+
+// RoomBySpaceRow is rooms_by_space row.
+type RoomBySpaceRow struct {
+	SpaceID   int64     `db:"space_id"`
+	RoomID    int64     `db:"room_id"`
+	Position  int       `db:"position"`
 	CreatedAt time.Time `db:"created_at"`
 }

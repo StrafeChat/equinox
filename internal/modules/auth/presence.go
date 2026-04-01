@@ -9,14 +9,15 @@ type PublicPresence struct {
 
 // ToPublicPresence converts UserPresence to PublicPresence for API/WS responses.
 // When forOthers is true, "invisible" is mapped to "offline" so others cannot tell if you are invisible.
+// When the user is offline (Online=false), status is always "offline" so disconnect updates are correct.
 func ToPublicPresence(p UserPresence, forOthers bool) PublicPresence {
-	status := p.Status
-	if status == "" {
-		if p.Online {
-			status = "online"
-		} else {
-			status = "offline"
-		}
+	var status string
+	if !p.Online {
+		status = "offline"
+	} else if p.Status == "" {
+		status = "online"
+	} else {
+		status = p.Status
 	}
 	if forOthers && status == "invisible" {
 		status = "offline"
