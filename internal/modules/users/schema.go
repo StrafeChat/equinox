@@ -12,12 +12,12 @@ var validStatuses = map[string]struct{}{
 }
 
 const (
-	maxDisplayName = 32
-	maxBio         = 190
-	maxAboutMe     = 190
-	maxAvatar      = 256
-	maxBanner      = 256
-	maxAccentColor = 32
+	maxDisplayName  = 32
+	maxBio          = 190
+	maxAboutMe      = 190
+	maxAvatar       = 256
+	maxBanner       = 256
+	maxAccentColor  = 32
 	maxCustomStatus = 128
 )
 
@@ -109,4 +109,3 @@ func ParsePatchMeBody(body []byte, out *auth.ProfileUpdate) (string, bool) {
 	}
 	return "", true
 }
-

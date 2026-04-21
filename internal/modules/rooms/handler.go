@@ -73,14 +73,22 @@ func (h *Handler) Ack(c fiber.Ctx) error {
 		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "invalid room id"})
 	}
 	var body struct {
-		MessageID string `json:"message_id"`
+		MessageID      string `json:"message_id"`
+		LastReadID     string `json:"last_read_message_id"`
 	}
-	if err := json.Unmarshal(c.Body(), &body); err != nil || body.MessageID == "" {
-		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "message_id required"})
+	if err := json.Unmarshal(c.Body(), &body); err != nil {
+		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "invalid body"})
 	}
-	msgID, err := id.Parse(body.MessageID)
+	ackID := strings.TrimSpace(body.LastReadID)
+	if ackID == "" {
+		ackID = strings.TrimSpace(body.MessageID)
+	}
+	if ackID == "" {
+		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "last_read_message_id required"})
+	}
+	msgID, err := id.Parse(ackID)
 	if err != nil {
-		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "invalid message_id"})
+		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "invalid last_read_message_id"})
 	}
 	if err := h.svc.Ack(c.Context(), user.ID, roomID, msgID); err != nil {
 		if err == ErrNotParticipant {

@@ -2,7 +2,6 @@ package spaces
 
 import (
 	"context"
-	"sort"
 	"time"
 
 	"github.com/StrafeChat/equinox/internal/id"
@@ -50,53 +49,67 @@ func (s *Service) EffectiveChannelPermissions(ctx context.Context, userID, space
 	if permissions.Has(base, permissions.PermAdministrator) {
 		return permissions.AllRoom, nil
 	}
-	ovs, err := s.repo.ListRoomRoleOverrides(ctx, spaceID, roomID)
+	roleOverrides, err := s.repo.ListRoomRoleOverrides(ctx, spaceID, roomID)
 	if err != nil {
 		return 0, err
 	}
-	ovByRole := make(map[int64]SpaceRoomRoleOverride, len(ovs))
-	for _, o := range ovs {
-		ovByRole[o.RoleID] = o
+	userOverrides, err := s.repo.ListRoomUserOverrides(ctx, spaceID, roomID)
+	if err != nil {
+		return 0, err
 	}
-	roleOrder := make([]int64, 0, 1+len(mem.RoleIDs))
-	roleOrder = append(roleOrder, everyoneID)
-	type ridPos struct {
-		id  int64
-		pos int
-	}
-	var rest []ridPos
-	seen := map[int64]struct{}{everyoneID: {}}
-	for _, rid := range mem.RoleIDs {
-		if _, ok := seen[rid]; ok {
+	return resolveEffectiveRoomPermissions(base, everyoneID, mem.RoleIDs, userID, roleOverrides, userOverrides), nil
+}
+
+func resolveEffectiveRoomPermissions(
+	base int64,
+	everyoneID int64,
+	memberRoleIDs []int64,
+	userID int64,
+	roleOverrides []SpaceRoomRoleOverride,
+	userOverrides []SpaceRoomUserOverride,
+) int64 {
+	perms := base
+
+	// 1) Apply @everyone room override (deny, then allow).
+	for _, o := range roleOverrides {
+		if o.RoleID != everyoneID {
 			continue
 		}
-		seen[rid] = struct{}{}
-		p := 0x7fffffff
-		if r := byID[rid]; r != nil {
-			p = r.Position
+		perms &= ^o.Deny
+		perms |= o.Allow
+		break
+	}
+
+	// 2) Aggregate all role overrides member has (excluding @everyone), deny then allow.
+	memberRoleSet := make(map[int64]struct{}, len(memberRoleIDs))
+	for _, rid := range memberRoleIDs {
+		if rid == everyoneID {
+			continue
 		}
-		rest = append(rest, ridPos{id: rid, pos: p})
+		memberRoleSet[rid] = struct{}{}
 	}
-	sort.Slice(rest, func(i, j int) bool {
-		if rest[i].pos != rest[j].pos {
-			return rest[i].pos < rest[j].pos
+	var rolesDeny int64
+	var rolesAllow int64
+	for _, o := range roleOverrides {
+		if _, ok := memberRoleSet[o.RoleID]; !ok {
+			continue
 		}
-		return rest[i].id < rest[j].id
-	})
-	for _, rp := range rest {
-		roleOrder = append(roleOrder, rp.id)
+		rolesDeny |= o.Deny
+		rolesAllow |= o.Allow
 	}
-	var stack []struct {
-		Allow, Deny int64
-	}
-	for _, rid := range roleOrder {
-		if o, ok := ovByRole[rid]; ok {
-			stack = append(stack, struct {
-				Allow, Deny int64
-			}{Allow: o.Allow, Deny: o.Deny})
+	perms &= ^rolesDeny
+	perms |= rolesAllow
+
+	// 3) Apply user-specific room override, if any (deny then allow).
+	for _, o := range userOverrides {
+		if o.UserID != userID {
+			continue
 		}
+		perms &= ^o.Deny
+		perms |= o.Allow
+		break
 	}
-	return permissions.ApplyOverwrites(base, stack), nil
+	return perms
 }
 
 // SpacePermissionBase is OR of @everyone + member roles (no room overrides). For management checks.

@@ -4,6 +4,7 @@ import (
 	"github.com/StrafeChat/equinox/internal/middleware"
 	"github.com/StrafeChat/equinox/internal/modules/auth"
 	"github.com/StrafeChat/equinox/internal/modules/relationships"
+	"github.com/StrafeChat/equinox/internal/modules/rooms"
 	"github.com/StrafeChat/equinox/internal/modules/users"
 )
 
@@ -16,12 +17,14 @@ func SetupUsersRoutes(d Deps) {
 	relSvc := relationships.NewService(relRepo, userRepo, d.Redis, d.Config)
 	relHandler := relationships.NewHandler(relSvc)
 
-	usersHandler := users.NewHandler(userRepo, d.Redis, d.Config)
+	roomsRepo := rooms.NewRepository(d.Scylla)
+	usersHandler := users.NewHandler(userRepo, roomsRepo, d.Redis, d.Config)
 
 	// /users/@me - current user
 	me := d.App.Group("/users/@me", requireAuth)
 	me.Get("", usersHandler.Me)
 	me.Patch("", usersHandler.PatchMe)
+	me.Post("/avatar", usersHandler.PostAvatar)
 
 	// /users/@me/relationships
 	r := me.Group("/relationships")

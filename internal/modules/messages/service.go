@@ -25,6 +25,8 @@ var (
 type SpaceChannelAuth interface {
 	IsMember(ctx context.Context, spaceID, userID int64) (bool, error)
 	EffectiveChannelPermissions(ctx context.Context, userID, spaceID, roomID int64) (int64, error)
+	// ListSpaceMemberUserIDs lists all members for fan-out of rooms_by_user.last_message_id on new messages.
+	ListSpaceMemberUserIDs(ctx context.Context, spaceID int64) ([]int64, error)
 }
 
 type Service struct {
@@ -76,6 +78,10 @@ func (s *Service) requireSpaceTextPerms(ctx context.Context, userID, roomID int6
 	if err != nil {
 		return err
 	}
+	// Implicit rule: if user cannot view the channel, all other room permissions are irrelevant.
+	if need != permissions.PermViewRoom && !permissions.Has(perms, permissions.PermViewRoom) {
+		return ErrForbidden
+	}
 	if !permissions.Has(perms, need) {
 		return ErrForbidden
 	}
@@ -91,6 +97,15 @@ func (s *Service) Create(ctx context.Context, userID, roomID int64, in *CreateMe
 		return nil, err
 	}
 	room, _ := s.rooms.GetByID(ctx, roomID)
+	// Space channels have no room_participants; fan out last_message_id to every space member.
+	if room != nil && room.SpaceID != nil && len(participants) == 0 && s.spaceAuth != nil {
+		if room.Type == rooms.TypeSpaceText || room.Type == rooms.TypeSpaceVoice {
+			ids, err := s.spaceAuth.ListSpaceMemberUserIDs(ctx, *room.SpaceID)
+			if err == nil && len(ids) > 0 {
+				participants = ids
+			}
+		}
+	}
 	e2eeOff := room != nil && (
 		(room.Type == rooms.TypeGroupPM && room.E2EEEnabled != nil && !*room.E2EEEnabled) ||
 		((room.Type == rooms.TypeSpaceText || room.Type == rooms.TypeSpaceVoice) && (room.E2EEEnabled == nil || !*room.E2EEEnabled)))

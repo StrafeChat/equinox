@@ -11,7 +11,7 @@ import (
 
 var roomsTable = table.New(table.Metadata{
 	Name:    "rooms",
-	Columns: []string{"id", "type", "space_id", "parent_id", "name", "topic", "position", "creator_id", "e2ee_enabled", "last_message_id", "created_at", "updated_at"},
+	Columns: []string{"id", "type", "space_id", "parent_id", "name", "topic", "slowmode_seconds", "position", "creator_id", "e2ee_enabled", "last_message_id", "created_at", "updated_at"},
 	PartKey: []string{"id"},
 })
 
@@ -56,8 +56,13 @@ type Repository interface {
 	UpdateReadState(ctx context.Context, userID, roomID, lastReadMessageID int64) error
 	UpdateRoomName(ctx context.Context, roomID int64, name string) error
 	UpdateRoomE2EEEnabled(ctx context.Context, roomID int64, enabled bool) error
+	UpdateSpaceRoom(ctx context.Context, roomID int64, name, topic string, slowmodeSeconds int) error
+	DeleteSpaceRoom(ctx context.Context, spaceID, roomID int64) error
 	ListBySpace(ctx context.Context, spaceID int64) ([]RoomBySpaceRow, error)
 	CreateSpaceRoom(ctx context.Context, room *Room) error
+	UpdateSpaceRoomPosition(ctx context.Context, spaceID, roomID int64, position int) error
+	// UpdateSpaceRoomParentAndPosition updates parent_id and position in rooms, and position in rooms_by_space (space channel only).
+	UpdateSpaceRoomParentAndPosition(ctx context.Context, spaceID, roomID int64, parentID *int64, position int) error
 }
 
 type repo struct {
@@ -82,7 +87,7 @@ func (r *repo) Create(ctx context.Context, room *Room, participantIDs []int64) e
 
 	b := r.session.NewBatch(gocql.LoggedBatch).WithContext(ctx)
 	stmt, _ := roomsTable.Insert()
-	b.Query(stmt, room.ID, room.Type, room.SpaceID, room.ParentID, room.Name, room.Topic, room.Position, room.CreatorID, room.E2EEEnabled, room.LastMessageID, room.CreatedAt, room.UpdatedAt)
+	b.Query(stmt, room.ID, room.Type, room.SpaceID, room.ParentID, room.Name, room.Topic, room.SlowmodeSeconds, room.Position, room.CreatorID, room.E2EEEnabled, room.LastMessageID, room.CreatedAt, room.UpdatedAt)
 
 	stmt, _ = participantsTable.Insert()
 	for _, uid := range participantIDs {
@@ -206,15 +211,33 @@ func (r *repo) ListByUser(ctx context.Context, userID int64) ([]RoomRow, error) 
 }
 
 func (r *repo) UpdateLastMessageID(ctx context.Context, roomID int64, participants []int64, msgID int64) error {
-	b := r.session.NewBatch(gocql.LoggedBatch).WithContext(ctx)
-	stmt, _ := roomsTable.Update("last_message_id", "updated_at")
 	now := time.Now().UTC()
-	b.Query(stmt, msgID, now, roomID)
-	stmt, _ = roomsByUserTable.Update("last_message_id")
-	for _, uid := range participants {
-		b.Query(stmt, msgID, uid, roomID)
+	stmtRoom, namesRoom := roomsTable.Update("last_message_id", "updated_at")
+	q := r.session.Query(stmtRoom, namesRoom).WithContext(ctx)
+	defer q.Release()
+	if err := q.Bind(msgID, now, roomID).ExecRelease(); err != nil {
+		return err
 	}
-	return r.session.ExecuteBatch(b)
+	if len(participants) == 0 {
+		return nil
+	}
+	// Space channels can fan out to many members; chunk to stay within batch limits.
+	const chunkSize = 50
+	stmtUser, _ := roomsByUserTable.Update("last_message_id")
+	for i := 0; i < len(participants); i += chunkSize {
+		end := i + chunkSize
+		if end > len(participants) {
+			end = len(participants)
+		}
+		b := r.session.NewBatch(gocql.UnloggedBatch).WithContext(ctx)
+		for _, uid := range participants[i:end] {
+			b.Query(stmtUser, msgID, uid, roomID)
+		}
+		if err := r.session.ExecuteBatch(b); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (r *repo) UpdateReadState(ctx context.Context, userID, roomID, lastReadMessageID int64) error {
@@ -264,8 +287,72 @@ func (r *repo) CreateSpaceRoom(ctx context.Context, room *Room) error {
 	room.UpdatedAt = now
 	b := r.session.NewBatch(gocql.LoggedBatch).WithContext(ctx)
 	stmt, _ := roomsTable.Insert()
-	b.Query(stmt, room.ID, room.Type, room.SpaceID, room.ParentID, room.Name, room.Topic, room.Position, room.CreatorID, room.E2EEEnabled, room.LastMessageID, room.CreatedAt, room.UpdatedAt)
+	b.Query(stmt, room.ID, room.Type, room.SpaceID, room.ParentID, room.Name, room.Topic, room.SlowmodeSeconds, room.Position, room.CreatorID, room.E2EEEnabled, room.LastMessageID, room.CreatedAt, room.UpdatedAt)
 	stmt, _ = roomsBySpaceTable.Insert()
 	b.Query(stmt, *room.SpaceID, room.ID, room.Position, now)
+	return r.session.ExecuteBatch(b)
+}
+
+func (r *repo) UpdateSpaceRoom(ctx context.Context, roomID int64, name, topic string, slowmodeSeconds int) error {
+	now := time.Now().UTC()
+	q := r.session.Session.Query(
+		"UPDATE rooms SET name = ?, topic = ?, slowmode_seconds = ?, updated_at = ? WHERE id = ?",
+		name, topic, slowmodeSeconds, now, roomID,
+	).WithContext(ctx)
+	err := q.Exec()
+	q.Release()
+	return err
+}
+
+// UpdateSpaceRoomPosition updates ordering in both rooms and rooms_by_space.
+func (r *repo) UpdateSpaceRoomPosition(ctx context.Context, spaceID, roomID int64, position int) error {
+	now := time.Now().UTC()
+	q1 := r.session.Session.Query(
+		"UPDATE rooms SET position = ?, updated_at = ? WHERE id = ?",
+		position, now, roomID,
+	).WithContext(ctx)
+	if err := q1.Exec(); err != nil {
+		q1.Release()
+		return err
+	}
+	q1.Release()
+	q2 := r.session.Session.Query(
+		"UPDATE rooms_by_space SET position = ? WHERE space_id = ? AND room_id = ?",
+		position, spaceID, roomID,
+	).WithContext(ctx)
+	err := q2.Exec()
+	q2.Release()
+	return err
+}
+
+func (r *repo) UpdateSpaceRoomParentAndPosition(ctx context.Context, spaceID, roomID int64, parentID *int64, position int) error {
+	now := time.Now().UTC()
+	q1 := r.session.Session.Query(
+		"UPDATE rooms SET parent_id = ?, position = ?, updated_at = ? WHERE id = ?",
+		parentID, position, now, roomID,
+	).WithContext(ctx)
+	if err := q1.Exec(); err != nil {
+		q1.Release()
+		return err
+	}
+	q1.Release()
+	q2 := r.session.Session.Query(
+		"UPDATE rooms_by_space SET position = ? WHERE space_id = ? AND room_id = ?",
+		position, spaceID, roomID,
+	).WithContext(ctx)
+	err := q2.Exec()
+	q2.Release()
+	return err
+}
+
+func (r *repo) DeleteSpaceRoom(ctx context.Context, spaceID, roomID int64) error {
+	b := r.session.NewBatch(gocql.LoggedBatch).WithContext(ctx)
+	stmt, _ := roomsTable.Delete()
+	b.Query(stmt, roomID)
+	stmt, _ = roomsBySpaceTable.Delete()
+	b.Query(stmt, spaceID, roomID)
+	// Remove all per-room override rows.
+	b.Query("DELETE FROM space_room_role_overrides WHERE space_id = ? AND room_id = ?", spaceID, roomID)
+	b.Query("DELETE FROM space_room_user_overrides WHERE space_id = ? AND room_id = ?", spaceID, roomID)
 	return r.session.ExecuteBatch(b)
 }

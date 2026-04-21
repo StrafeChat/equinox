@@ -59,6 +59,17 @@ type SpaceRoomRoleOverride struct {
 	UpdatedAt time.Time `db:"updated_at"`
 }
 
+// SpaceRoomUserOverride is a Discord-style allow/deny mask for one user in one room.
+type SpaceRoomUserOverride struct {
+	SpaceID   int64     `db:"space_id"`
+	RoomID    int64     `db:"room_id"`
+	UserID    int64     `db:"user_id"`
+	Allow     int64     `db:"allow_mask"`
+	Deny      int64     `db:"deny_mask"`
+	CreatedAt time.Time `db:"created_at"`
+	UpdatedAt time.Time `db:"updated_at"`
+}
+
 // SpaceMember is a user's membership in a space.
 type SpaceMember struct {
 	SpaceID   int64     `db:"space_id"`
@@ -80,6 +91,11 @@ type CreateSpaceInput struct {
 	Name        string `json:"name"`
 	Description string `json:"description,omitempty"`
 	Icon        string `json:"icon,omitempty"`
+}
+
+// PatchSpaceInput patches space fields (e.g. name). Omitted fields are unchanged.
+type PatchSpaceInput struct {
+	Name *string `json:"name,omitempty"`
 }
 
 // SpaceInvite is an invite link/code for joining a space.
@@ -114,4 +130,38 @@ type UpdateSpaceRoleInput struct {
 type PutRoomRoleOverrideInput struct {
 	Allow int64 `json:"allow"`
 	Deny  int64 `json:"deny"`
+}
+
+// PutRoomUserOverrideInput sets channel overrides for a user in a room.
+type PutRoomUserOverrideInput struct {
+	Allow int64 `json:"allow"`
+	Deny  int64 `json:"deny"`
+}
+
+type UpdateRoomInput struct {
+	Name            string `json:"name"`
+	Topic           string `json:"topic"`
+	SlowmodeSeconds int    `json:"slowmode_seconds"`
+}
+
+// CreateRoomInput is the service-layer input (parent as int64). HTTP JSON is decoded in the handler (string snowflake parent_id).
+type CreateRoomInput struct {
+	Name     string
+	Type     int
+	ParentID *int64
+}
+
+// ReorderRoomsInput reorders either all sections (scope "sections") or all text/voice channels in one parent group (scope "channels").
+type ReorderRoomsInput struct {
+	Scope            string   `json:"scope"` // "sections" | "channels"
+	ParentSectionID *string `json:"parent_section_id,omitempty"` // for "channels": omit or null = top-level (parent_id null); else snowflake of section
+	RoomIDs          []string `json:"room_ids"`                    // must be a permutation of the server-side group
+}
+
+// MoveChannelInput moves a text/voice channel to another parent group (or top-level) in one step.
+// Omitted or empty parent_section_id means top-level; omitted or empty before_room_id means append at end of the target group.
+type MoveChannelInput struct {
+	ChannelID       string  `json:"channel_id"`
+	ParentSectionID *string `json:"parent_section_id,omitempty"`
+	BeforeRoomID    *string `json:"before_room_id,omitempty"`
 }

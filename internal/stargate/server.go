@@ -141,6 +141,12 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		"discriminator": fmt.Sprintf("%04d", user.Discriminator),
 		"display_name":  user.DisplayName,
 	}
+	if user.Avatar != "" {
+		readyUser["avatar"] = user.Avatar
+	}
+	if user.Banner != "" {
+		readyUser["banner"] = user.Banner
+	}
 	if p := auth.ToPublicPresence(user.Presence, false); p.Status != "" || p.CustomStatus != "" {
 		readyUser["presence"] = p
 	}

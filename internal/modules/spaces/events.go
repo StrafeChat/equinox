@@ -51,3 +51,15 @@ func roomOverrideEventData(o *SpaceRoomRoleOverride) map[string]interface{} {
 		"updated_at": o.UpdatedAt,
 	}
 }
+
+func roomUserOverrideEventData(o *SpaceRoomUserOverride) map[string]interface{} {
+	return map[string]interface{}{
+		"space_id":   id.Format(o.SpaceID),
+		"room_id":    id.Format(o.RoomID),
+		"user_id":    id.Format(o.UserID),
+		"allow":      o.Allow,
+		"deny":       o.Deny,
+		"created_at": o.CreatedAt,
+		"updated_at": o.UpdatedAt,
+	}
+}

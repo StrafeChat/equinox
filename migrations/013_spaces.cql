@@ -23,6 +23,7 @@ CREATE TABLE IF NOT EXISTS spaces (
     preferred_locale text,
     public_updates_room_id bigint,
     max_video_room_users int,
+    everyone_role_id bigint,
     created_at timestamp,
     updated_at timestamp
 );

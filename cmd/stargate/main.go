@@ -107,7 +107,19 @@ func (p *readyDataProvider) GetReadyData(ctx context.Context, userID int64) (int
 				}
 				roomMaps := make([]map[string]interface{}, 0, len(roomListForSpace))
 				for _, r := range roomListForSpace {
-					roomMaps = append(roomMaps, roomToReadyMap(r))
+					m := roomToReadyMap(r)
+					if ur, _ := p.roomSvc.GetUserRoomRow(ctx, userID, r.ID); ur != nil {
+						if ur.LastReadMessageID != nil {
+							m["last_read_message_id"] = id.Format(*ur.LastReadMessageID)
+						}
+						if ur.LastMessageID != nil {
+							m["last_message_id"] = id.Format(*ur.LastMessageID)
+						}
+						if ur.MentionCount > 0 {
+							m["mention_count"] = ur.MentionCount
+						}
+					}
+					roomMaps = append(roomMaps, m)
 				}
 				spaceRoomsMap[id.Format(row.SpaceID)] = roomMaps
 			}

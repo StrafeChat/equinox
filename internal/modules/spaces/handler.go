@@ -3,9 +3,11 @@ package spaces
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 
 	"github.com/gofiber/fiber/v3"
 
+	"github.com/StrafeChat/equinox/internal/config"
 	"github.com/StrafeChat/equinox/internal/id"
 	"github.com/StrafeChat/equinox/internal/logger"
 	"github.com/StrafeChat/equinox/internal/modules/auth"
@@ -14,10 +16,11 @@ import (
 
 type Handler struct {
 	svc *Service
+	cfg *config.Config
 }
 
-func NewHandler(svc *Service) *Handler {
-	return &Handler{svc: svc}
+func NewHandler(svc *Service, cfg *config.Config) *Handler {
+	return &Handler{svc: svc, cfg: cfg}
 }
 
 // Create creates a new space. POST /spaces. Body: { "name": "...", "description": "...", "icon": "..." }.
@@ -116,6 +119,7 @@ func spaceRoomToJSON(r *rooms.Room) fiber.Map {
 		"type":       r.Type,
 		"name":       r.Name,
 		"topic":      r.Topic,
+		"slowmode_seconds": r.SlowmodeSeconds,
 		"position":   r.Position,
 		"created_at": r.CreatedAt,
 		"updated_at": r.UpdatedAt,
@@ -190,6 +194,16 @@ func spaceRoleToJSON(r *SpaceRole) fiber.Map {
 func roomOverrideToJSON(o *SpaceRoomRoleOverride) fiber.Map {
 	return fiber.Map{
 		"role_id":    id.Format(o.RoleID),
+		"allow":      o.Allow,
+		"deny":       o.Deny,
+		"created_at": o.CreatedAt,
+		"updated_at": o.UpdatedAt,
+	}
+}
+
+func roomUserOverrideToJSON(o *SpaceRoomUserOverride) fiber.Map {
+	return fiber.Map{
+		"user_id":    id.Format(o.UserID),
 		"allow":      o.Allow,
 		"deny":       o.Deny,
 		"created_at": o.CreatedAt,
@@ -559,4 +573,209 @@ func (h *Handler) DeleteRoomOverride(c fiber.Ctx) error {
 		return c.Status(http.StatusInternalServerError).JSON(fiber.Map{"error": "internal error"})
 	}
 	return c.SendStatus(http.StatusNoContent)
+}
+
+// ListRoomUserOverrides GET /spaces/:id/rooms/:roomId/overrides/users
+func (h *Handler) ListRoomUserOverrides(c fiber.Ctx) error {
+	user := auth.GetUser(c)
+	if user == nil {
+		return c.Status(http.StatusUnauthorized).JSON(fiber.Map{"error": "unauthorized"})
+	}
+	spaceID, err := id.Parse(c.Params("id"))
+	if err != nil {
+		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "invalid space id"})
+	}
+	roomID, err := id.Parse(c.Params("roomId"))
+	if err != nil {
+		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "invalid room id"})
+	}
+	ovs, err := h.svc.ListRoomUserOverrides(c.Context(), user.ID, spaceID, roomID)
+	if err != nil {
+		if err == ErrNotMember {
+			return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": "not a member of this space"})
+		}
+		if err == ErrInvalidRoom {
+			return c.Status(http.StatusNotFound).JSON(fiber.Map{"error": "room not found"})
+		}
+		logger.Err("spaces", err, map[string]any{"space_id": spaceID})
+		return c.Status(http.StatusInternalServerError).JSON(fiber.Map{"error": "internal error"})
+	}
+	out := make([]fiber.Map, 0, len(ovs))
+	for i := range ovs {
+		out = append(out, roomUserOverrideToJSON(&ovs[i]))
+	}
+	return c.JSON(out)
+}
+
+// PutRoomUserOverride PUT /spaces/:id/rooms/:roomId/overrides/users/:userId
+func (h *Handler) PutRoomUserOverride(c fiber.Ctx) error {
+	user := auth.GetUser(c)
+	if user == nil {
+		return c.Status(http.StatusUnauthorized).JSON(fiber.Map{"error": "unauthorized"})
+	}
+	spaceID, err := id.Parse(c.Params("id"))
+	if err != nil {
+		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "invalid space id"})
+	}
+	roomID, err := id.Parse(c.Params("roomId"))
+	if err != nil {
+		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "invalid room id"})
+	}
+	targetUserID, err := id.Parse(c.Params("userId"))
+	if err != nil {
+		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "invalid user id"})
+	}
+	var body PutRoomUserOverrideInput
+	if err := json.Unmarshal(c.Body(), &body); err != nil {
+		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "invalid JSON"})
+	}
+	if err := h.svc.PutRoomUserOverride(c.Context(), user.ID, spaceID, roomID, targetUserID, &body); err != nil {
+		if err == ErrMissingPerm || err == ErrNotMember {
+			return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": "forbidden"})
+		}
+		if err == ErrInvalidRoom {
+			return c.Status(http.StatusNotFound).JSON(fiber.Map{"error": "room not found"})
+		}
+		logger.Err("spaces", err, map[string]any{"space_id": spaceID})
+		return c.Status(http.StatusInternalServerError).JSON(fiber.Map{"error": "internal error"})
+	}
+	return c.SendStatus(http.StatusNoContent)
+}
+
+// DeleteRoomUserOverride DELETE /spaces/:id/rooms/:roomId/overrides/users/:userId
+func (h *Handler) DeleteRoomUserOverride(c fiber.Ctx) error {
+	user := auth.GetUser(c)
+	if user == nil {
+		return c.Status(http.StatusUnauthorized).JSON(fiber.Map{"error": "unauthorized"})
+	}
+	spaceID, err := id.Parse(c.Params("id"))
+	if err != nil {
+		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "invalid space id"})
+	}
+	roomID, err := id.Parse(c.Params("roomId"))
+	if err != nil {
+		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "invalid room id"})
+	}
+	targetUserID, err := id.Parse(c.Params("userId"))
+	if err != nil {
+		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "invalid user id"})
+	}
+	if err := h.svc.DeleteRoomUserOverride(c.Context(), user.ID, spaceID, roomID, targetUserID); err != nil {
+		if err == ErrMissingPerm || err == ErrNotMember {
+			return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": "forbidden"})
+		}
+		if err == ErrInvalidRoom {
+			return c.Status(http.StatusNotFound).JSON(fiber.Map{"error": "room not found"})
+		}
+		logger.Err("spaces", err, map[string]any{"space_id": spaceID})
+		return c.Status(http.StatusInternalServerError).JSON(fiber.Map{"error": "internal error"})
+	}
+	return c.SendStatus(http.StatusNoContent)
+}
+
+// PatchRoom PATCH /spaces/:id/rooms/:roomId
+func (h *Handler) PatchRoom(c fiber.Ctx) error {
+	user := auth.GetUser(c)
+	if user == nil {
+		return c.Status(http.StatusUnauthorized).JSON(fiber.Map{"error": "unauthorized"})
+	}
+	spaceID, err := id.Parse(c.Params("id"))
+	if err != nil {
+		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "invalid space id"})
+	}
+	roomID, err := id.Parse(c.Params("roomId"))
+	if err != nil {
+		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "invalid room id"})
+	}
+	var body UpdateRoomInput
+	if err := json.Unmarshal(c.Body(), &body); err != nil {
+		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "invalid JSON"})
+	}
+	if err := h.svc.UpdateRoom(c.Context(), user.ID, spaceID, roomID, &body); err != nil {
+		if err == ErrMissingPerm || err == ErrNotMember {
+			return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": "forbidden"})
+		}
+		if err == ErrInvalidRoom {
+			return c.Status(http.StatusNotFound).JSON(fiber.Map{"error": "room not found"})
+		}
+		if err == ErrInvalidSlowmode {
+			return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+		}
+		logger.Err("spaces", err, map[string]any{"space_id": spaceID, "room_id": roomID})
+		return c.Status(http.StatusInternalServerError).JSON(fiber.Map{"error": "internal error"})
+	}
+	return c.SendStatus(http.StatusNoContent)
+}
+
+// DeleteRoom DELETE /spaces/:id/rooms/:roomId
+func (h *Handler) DeleteRoom(c fiber.Ctx) error {
+	user := auth.GetUser(c)
+	if user == nil {
+		return c.Status(http.StatusUnauthorized).JSON(fiber.Map{"error": "unauthorized"})
+	}
+	spaceID, err := id.Parse(c.Params("id"))
+	if err != nil {
+		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "invalid space id"})
+	}
+	roomID, err := id.Parse(c.Params("roomId"))
+	if err != nil {
+		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "invalid room id"})
+	}
+	if err := h.svc.DeleteRoom(c.Context(), user.ID, spaceID, roomID); err != nil {
+		if err == ErrMissingPerm || err == ErrNotMember {
+			return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": "forbidden"})
+		}
+		if err == ErrInvalidRoom {
+			return c.Status(http.StatusNotFound).JSON(fiber.Map{"error": "room not found"})
+		}
+		logger.Err("spaces", err, map[string]any{"space_id": spaceID, "room_id": roomID})
+		return c.Status(http.StatusInternalServerError).JSON(fiber.Map{"error": "internal error"})
+	}
+	return c.SendStatus(http.StatusNoContent)
+}
+
+// postRoomRequest matches client JSON: parent_id is a string snowflake (JS cannot safely use int64 in JSON).
+type postRoomRequest struct {
+	Name     string  `json:"name"`
+	Type     int     `json:"type"`
+	ParentID *string `json:"parent_id,omitempty"`
+}
+
+// PostRoom POST /spaces/:id/rooms
+func (h *Handler) PostRoom(c fiber.Ctx) error {
+	user := auth.GetUser(c)
+	if user == nil {
+		return c.Status(http.StatusUnauthorized).JSON(fiber.Map{"error": "unauthorized"})
+	}
+	spaceID, err := id.Parse(c.Params("id"))
+	if err != nil {
+		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "invalid space id"})
+	}
+	var raw postRoomRequest
+	if err := json.Unmarshal(c.Body(), &raw); err != nil {
+		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "invalid JSON"})
+	}
+	body := CreateRoomInput{Name: raw.Name, Type: raw.Type}
+	if raw.ParentID != nil && strings.TrimSpace(*raw.ParentID) != "" {
+		pid, err := id.Parse(strings.TrimSpace(*raw.ParentID))
+		if err != nil {
+			return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "invalid parent_id"})
+		}
+		body.ParentID = &pid
+	}
+	room, err := h.svc.CreateRoom(c.Context(), user.ID, spaceID, &body)
+	if err != nil {
+		if err == ErrMissingPerm || err == ErrNotMember {
+			return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": "forbidden"})
+		}
+		if err == ErrInvalidRoomType {
+			return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+		}
+		if err == ErrInvalidRoom {
+			return c.Status(http.StatusNotFound).JSON(fiber.Map{"error": "parent room not found"})
+		}
+		logger.Err("spaces", err, map[string]any{"space_id": spaceID})
+		return c.Status(http.StatusInternalServerError).JSON(fiber.Map{"error": "internal error"})
+	}
+	return c.Status(http.StatusCreated).JSON(spaceRoomToJSON(room))
 }

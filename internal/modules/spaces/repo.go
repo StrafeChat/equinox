@@ -67,6 +67,13 @@ type Repository interface {
 	UpsertRoomRoleOverride(ctx context.Context, o *SpaceRoomRoleOverride) error
 	ListRoomRoleOverrides(ctx context.Context, spaceID, roomID int64) ([]SpaceRoomRoleOverride, error)
 	DeleteRoomRoleOverride(ctx context.Context, spaceID, roomID, roleID int64) error
+
+	UpsertRoomUserOverride(ctx context.Context, o *SpaceRoomUserOverride) error
+	ListRoomUserOverrides(ctx context.Context, spaceID, roomID int64) ([]SpaceRoomUserOverride, error)
+	DeleteRoomUserOverride(ctx context.Context, spaceID, roomID, userID int64) error
+
+	UpdateSpaceIcon(ctx context.Context, spaceID int64, icon string, updatedAt time.Time) error
+	UpdateSpaceName(ctx context.Context, spaceID int64, name, nameAcronym string, updatedAt time.Time) error
 }
 
 type repo struct {
@@ -211,10 +218,37 @@ var spaceRoomRoleOverridesTable = table.New(table.Metadata{
 	SortKey: []string{"role_id"},
 })
 
+var spaceRoomUserOverridesTable = table.New(table.Metadata{
+	Name:    "space_room_user_overrides",
+	Columns: []string{"space_id", "room_id", "user_id", "allow_mask", "deny_mask", "created_at", "updated_at"},
+	PartKey: []string{"space_id", "room_id"},
+	SortKey: []string{"user_id"},
+})
+
 func (r *repo) UpdateEveryoneRoleID(ctx context.Context, spaceID, roleID int64) error {
 	q := r.session.Session.Query(
 		"UPDATE spaces SET everyone_role_id = ? WHERE id = ?",
 		roleID, spaceID,
+	).WithContext(ctx)
+	err := q.Exec()
+	q.Release()
+	return err
+}
+
+func (r *repo) UpdateSpaceIcon(ctx context.Context, spaceID int64, icon string, updatedAt time.Time) error {
+	q := r.session.Session.Query(
+		"UPDATE spaces SET icon = ?, updated_at = ? WHERE id = ?",
+		icon, updatedAt, spaceID,
+	).WithContext(ctx)
+	err := q.Exec()
+	q.Release()
+	return err
+}
+
+func (r *repo) UpdateSpaceName(ctx context.Context, spaceID int64, name, nameAcronym string, updatedAt time.Time) error {
+	q := r.session.Session.Query(
+		"UPDATE spaces SET name = ?, name_acronym = ?, updated_at = ? WHERE id = ?",
+		name, nameAcronym, updatedAt, spaceID,
 	).WithContext(ctx)
 	err := q.Exec()
 	q.Release()
@@ -325,4 +359,34 @@ func (r *repo) DeleteRoomRoleOverride(ctx context.Context, spaceID, roomID, role
 	q := r.session.Query(stmt, names).WithContext(ctx)
 	defer q.Release()
 	return q.Bind(spaceID, roomID, roleID).ExecRelease()
+}
+
+func (r *repo) UpsertRoomUserOverride(ctx context.Context, o *SpaceRoomUserOverride) error {
+	stmt, names := spaceRoomUserOverridesTable.Insert()
+	q := r.session.Query(stmt, names).WithContext(ctx)
+	return q.BindStruct(o).ExecRelease()
+}
+
+func (r *repo) ListRoomUserOverrides(ctx context.Context, spaceID, roomID int64) ([]SpaceRoomUserOverride, error) {
+	stmt, names := spaceRoomUserOverridesTable.Select()
+	q := r.session.Query(stmt, names).WithContext(ctx)
+	defer q.Release()
+	iter := q.Bind(spaceID, roomID).Iter()
+	defer iter.Close()
+	var out []SpaceRoomUserOverride
+	var row SpaceRoomUserOverride
+	for iter.StructScan(&row) {
+		out = append(out, row)
+	}
+	if err := iter.Close(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (r *repo) DeleteRoomUserOverride(ctx context.Context, spaceID, roomID, userID int64) error {
+	stmt, names := spaceRoomUserOverridesTable.Delete()
+	q := r.session.Query(stmt, names).WithContext(ctx)
+	defer q.Release()
+	return q.Bind(spaceID, roomID, userID).ExecRelease()
 }

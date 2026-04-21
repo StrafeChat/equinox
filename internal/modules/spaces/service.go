@@ -21,10 +21,13 @@ import (
 )
 
 var (
-	ErrSpaceNotFound  = errors.New("space not found")
-	ErrNotMember      = errors.New("not a member of this space")
-	ErrNotSpaceOwner  = errors.New("only the space owner can do this")
-	ErrInviteNotFound = errors.New("invite not found")
+	ErrSpaceNotFound               = errors.New("space not found")
+	ErrNotMember                   = errors.New("not a member of this space")
+	ErrNotSpaceOwner               = errors.New("only the space owner can do this")
+	ErrInviteNotFound              = errors.New("invite not found")
+	ErrInsufficientSpacePermission = errors.New("insufficient permissions for this space")
+	ErrInvalidSpaceName              = errors.New("space name cannot be empty")
+	ErrNothingToPatch                = errors.New("no fields to update")
 )
 
 type Service struct {
@@ -268,6 +271,19 @@ func (s *Service) GetSpaceForUser(ctx context.Context, userID, spaceID int64) (*
 // ListSpacesForUser returns all spaces the user is a member of (via spaces_by_user).
 func (s *Service) ListSpacesForUser(ctx context.Context, userID int64) ([]SpaceMemberRow, error) {
 	return s.repo.ListSpacesByUser(ctx, userID)
+}
+
+// ListSpaceMemberUserIDs returns every member's user ID in a space (for rooms_by_user fan-out on new messages).
+func (s *Service) ListSpaceMemberUserIDs(ctx context.Context, spaceID int64) ([]int64, error) {
+	ms, err := s.repo.ListMembers(ctx, spaceID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]int64, len(ms))
+	for i := range ms {
+		out[i] = ms[i].UserID
+	}
+	return out, nil
 }
 
 // ListSpaceRooms returns rooms in the space (text and voice). User must be a member.

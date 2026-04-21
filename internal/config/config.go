@@ -12,9 +12,18 @@ type Config struct {
 	HTTP     HTTPConfig
 	Session  SessionConfig
 	Stargate StargateConfig
+	Nebula   NebulaConfig
 	Flags    FeatureFlags
 	Database DatabaseConfig
 	Log      LogConfig
+}
+
+// NebulaConfig is optional. When BaseURL and UploadSecret are set, POST /users/@me/avatar uploads to Nebula.
+type NebulaConfig struct {
+	BaseURL        string // internal base URL (e.g. http://nebula:4010)
+	PublicURL      string // browser-facing base for avatar URLs (e.g. https://cdn.example.com); defaults to BaseURL
+	UploadSecret   string // Bearer token for Nebula PUT
+	AvatarMaxBytes int    // max multipart file size for avatars
 }
 
 type LogConfig struct {
@@ -27,17 +36,17 @@ type AppConfig struct {
 }
 
 type HTTPConfig struct {
-	Port          string
-	BodyLimitKB   int      // max request body size in KB (default 1024 = 1MB)
-	CORSOrigins   []string // allowed origins; nil = allow all (dev)
+	Port        string
+	BodyLimitKB int      // max request body size in KB (default 1024 = 1MB)
+	CORSOrigins []string // allowed origins; nil = allow all (dev)
 }
 
 type StargateConfig struct {
 	Port            string   // WebSocket server port (e.g. 4001)
 	Region          string   // instance region for multi-region (e.g. "us-east", "eu-west")
 	AllowedOrigins  []string // allowed origins for CheckOrigin (e.g. https://web.strafe.chat)
-	ReadBufferSize  int     // bytes (default 4096)
-	WriteBufferSize int     // bytes (default 4096)
+	ReadBufferSize  int      // bytes (default 4096)
+	WriteBufferSize int      // bytes (default 4096)
 }
 
 type SessionConfig struct {
@@ -90,6 +99,12 @@ func Load() (*Config, error) {
 			AllowedOrigins:  getEnvArray("STARGATE_ALLOWED_ORIGINS", nil),
 			ReadBufferSize:  getEnvInt("STARGATE_READ_BUFFER", 4096),
 			WriteBufferSize: getEnvInt("STARGATE_WRITE_BUFFER", 4096),
+		},
+		Nebula: NebulaConfig{
+			BaseURL:        getEnvString("NEBULA_BASE_URL", ""),
+			PublicURL:      getEnvString("NEBULA_PUBLIC_URL", ""),
+			UploadSecret:   getEnvString("NEBULA_UPLOAD_SECRET", ""),
+			AvatarMaxBytes: getEnvInt("NEBULA_AVATAR_MAX_MB", 8) * 1024 * 1024,
 		},
 		Flags: FeatureFlags{
 			Captcha:    getEnvBool("CAPTCHA", false),

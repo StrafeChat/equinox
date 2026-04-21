@@ -613,6 +613,11 @@ func (s *Service) GetRoom(ctx context.Context, userID, roomID int64) (*RoomWithP
 	return rwp, nil
 }
 
+// GetUserRoomRow returns the rooms_by_user row for (userID, roomID), if any.
+func (s *Service) GetUserRoomRow(ctx context.Context, userID, roomID int64) (*RoomRow, error) {
+	return s.repo.GetRoomRow(ctx, userID, roomID)
+}
+
 // Ack marks messages up to messageID as read for the user in the room.
 // Publishes MESSAGE_ACK to the user's channel (for multi-session sync).
 func (s *Service) Ack(ctx context.Context, userID, roomID, messageID int64) error {
@@ -638,6 +643,12 @@ func (s *Service) Ack(ctx context.Context, userID, roomID, messageID int64) erro
 	}
 	if !ok {
 		return ErrNotParticipant
+	}
+	if row, err := s.repo.GetRoomRow(ctx, userID, roomID); err == nil && row != nil && row.LastReadMessageID != nil {
+		// ACK cursor is monotonic; ignore stale backwards ACKs.
+		if messageID <= *row.LastReadMessageID {
+			return nil
+		}
 	}
 	if err := s.repo.UpdateReadState(ctx, userID, roomID, messageID); err != nil {
 		return err

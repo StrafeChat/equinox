@@ -11,17 +11,19 @@ import (
 	"github.com/StrafeChat/equinox/internal/id"
 	"github.com/StrafeChat/equinox/internal/logger"
 	"github.com/StrafeChat/equinox/internal/modules/auth"
+	"github.com/StrafeChat/equinox/internal/modules/rooms"
 	"github.com/StrafeChat/equinox/internal/stargate"
 )
 
 type Handler struct {
-	userRepo auth.UserRepository
-	redis    *redis.Client
-	cfg      *config.Config
+	userRepo  auth.UserRepository
+	roomsRepo rooms.Repository
+	redis     *redis.Client
+	cfg       *config.Config
 }
 
-func NewHandler(userRepo auth.UserRepository, redis *redis.Client, cfg *config.Config) *Handler {
-	return &Handler{userRepo: userRepo, redis: redis, cfg: cfg}
+func NewHandler(userRepo auth.UserRepository, roomsRepo rooms.Repository, redis *redis.Client, cfg *config.Config) *Handler {
+	return &Handler{userRepo: userRepo, roomsRepo: roomsRepo, redis: redis, cfg: cfg}
 }
 
 // Me returns the current user's info. Requires auth.
@@ -32,17 +34,17 @@ func (h *Handler) Me(c fiber.Ctx) error {
 	}
 
 	return c.JSON(fiber.Map{
-		"id":             id.Format(user.ID),
-		"email":          user.Email,
-		"username":       user.Username,
-		"discriminator":  fmt.Sprintf("%04d", user.Discriminator),
-		"display_name":   user.DisplayName,
-		"bio":            user.Bio,
-		"about_me":       user.AboutMe,
-		"avatar":         user.Avatar,
-		"banner":         user.Banner,
-		"accent_color":   user.AccentColor,
-		"presence":       auth.ToPublicPresence(user.Presence, false),
+		"id":            id.Format(user.ID),
+		"email":         user.Email,
+		"username":      user.Username,
+		"discriminator": fmt.Sprintf("%04d", user.Discriminator),
+		"display_name":  user.DisplayName,
+		"bio":           user.Bio,
+		"about_me":      user.AboutMe,
+		"avatar":        user.Avatar,
+		"banner":        user.Banner,
+		"accent_color":  user.AccentColor,
+		"presence":      auth.ToPublicPresence(user.Presence, false),
 	})
 }
 
@@ -93,18 +95,22 @@ func (h *Handler) PatchMe(c fiber.Ctx) error {
 		}
 	}
 
+	if hasProfileFieldsForRealtime(&upd) && h.redis != nil {
+		h.broadcastUserProfile(c.Context(), updated)
+	}
+
 	return c.JSON(fiber.Map{
-		"id":             id.Format(updated.ID),
-		"email":          updated.Email,
-		"username":       updated.Username,
-		"discriminator":  fmt.Sprintf("%04d", updated.Discriminator),
-		"display_name":   updated.DisplayName,
-		"bio":            updated.Bio,
-		"about_me":       updated.AboutMe,
-		"avatar":         updated.Avatar,
-		"banner":         updated.Banner,
-		"accent_color":   updated.AccentColor,
-		"presence":       auth.ToPublicPresence(updated.Presence, false),
+		"id":            id.Format(updated.ID),
+		"email":         updated.Email,
+		"username":      updated.Username,
+		"discriminator": fmt.Sprintf("%04d", updated.Discriminator),
+		"display_name":  updated.DisplayName,
+		"bio":           updated.Bio,
+		"about_me":      updated.AboutMe,
+		"avatar":        updated.Avatar,
+		"banner":        updated.Banner,
+		"accent_color":  updated.AccentColor,
+		"presence":      auth.ToPublicPresence(updated.Presence, false),
 	})
 }
 
@@ -117,4 +123,12 @@ func hasProfileUpdate(u *auth.ProfileUpdate) bool {
 		return true
 	}
 	return false
+}
+
+func hasProfileFieldsForRealtime(u *auth.ProfileUpdate) bool {
+	if u == nil {
+		return false
+	}
+	return u.DisplayName != nil || u.Bio != nil || u.AboutMe != nil ||
+		u.Avatar != nil || u.Banner != nil || u.AccentColor != nil
 }

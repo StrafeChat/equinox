@@ -28,6 +28,7 @@ type Room struct {
 	ParentID       *int64    `db:"parent_id" json:"parent_id,omitempty"`
 	Name           string    `db:"name" json:"name,omitempty"`
 	Topic          string    `db:"topic" json:"topic,omitempty"`
+	SlowmodeSeconds int      `db:"slowmode_seconds" json:"slowmode_seconds,omitempty"`
 	Position       int       `db:"position" json:"position"`
 	CreatorID      int64     `db:"creator_id" json:"creator_id,omitempty"`
 	E2EEEnabled    *bool     `db:"e2ee_enabled" json:"e2ee_enabled,omitempty"`
