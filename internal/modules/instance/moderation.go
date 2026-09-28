@@ -132,6 +132,39 @@ func (s *Service) banUser(ctx context.Context, actorID, userID int64, in BanInpu
 	return b, nil
 }
 
+// SetUserBadges replaces a user's profile-badge bitfield. Only the badge bits may be set
+// (auth.AllBadges); anything else is rejected so a caller cannot flip an unrelated user
+// flag through this path. Returns the flags actually stored.
+func (s *Service) SetUserBadges(ctx context.Context, actorID, userID int64, flags int) (int, error) {
+	if err := s.requireAdmin(ctx, actorID); err != nil {
+		return 0, err
+	}
+	if flags&^auth.AllBadges != 0 {
+		return 0, ErrInvalidBadges
+	}
+	u, err := s.mod.Users.GetByID(ctx, userID)
+	if err != nil {
+		return 0, err
+	}
+	if u == nil {
+		return 0, ErrUserNotFound
+	}
+	if u.IsRemote() {
+		// A shadow row's profile is owned by its home instance; badges are ours to grant
+		// only for our own accounts.
+		return 0, ErrCannotBanRemote
+	}
+	updated, err := s.mod.Users.UpdateProfile(ctx, userID, &auth.ProfileUpdate{Flags: &flags})
+	if err != nil {
+		return 0, err
+	}
+	s.audit(ctx, actorID, AuditUserBadges, TargetUser, userID, badgeAuditReason(flags))
+	if updated != nil {
+		return auth.PublicFlags(updated), nil
+	}
+	return flags, nil
+}
+
 func (s *Service) UnbanUser(ctx context.Context, actorID, userID int64) error {
 	if err := s.requireAdmin(ctx, actorID); err != nil {
 		return err
@@ -630,4 +663,26 @@ func (s *Service) onlineCount(ctx context.Context) int64 {
 		return -1
 	}
 	return n
+}
+
+// badgeAuditReason renders the badge set as a stable, readable list for the audit log.
+func badgeAuditReason(flags int) string {
+	names := []struct {
+		bit  int
+		name string
+	}{
+		{auth.BadgeFounder, "founder"}, {auth.BadgeStaff, "staff"}, {auth.BadgeSupport, "support"},
+		{auth.BadgeContributor, "contributor"}, {auth.BadgeTranslator, "translator"},
+		{auth.BadgeBugDiscloser, "bug_discloser"}, {auth.BadgeAlphaTester, "alpha_tester"},
+	}
+	out := make([]string, 0, len(names))
+	for _, n := range names {
+		if flags&n.bit != 0 {
+			out = append(out, n.name)
+		}
+	}
+	if len(out) == 0 {
+		return "none"
+	}
+	return strings.Join(out, ", ")
 }

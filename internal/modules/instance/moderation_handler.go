@@ -21,7 +21,7 @@ func moderationError(c fiber.Ctx, err error) error {
 		return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": err.Error()})
 	case ErrAlreadyBanned, ErrReportClosed, ErrDuplicateReport:
 		return c.Status(http.StatusConflict).JSON(fiber.Map{"error": err.Error()})
-	case ErrInvalidBan, ErrInvalidReport, ErrInvalidAction, ErrInvalidQuery:
+	case ErrInvalidBan, ErrInvalidReport, ErrInvalidAction, ErrInvalidQuery, ErrInvalidBadges:
 		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	default:
 		return errorFor(c, err)
@@ -40,6 +40,8 @@ func userSummaryJSON(u *auth.User) fiber.Map {
 		"display_name":  u.DisplayName,
 		"avatar":        u.Avatar,
 		"home_domain":   u.HomeDomain,
+		"public_flags":  auth.PublicFlags(u),
+		"bot":           u.Bot,
 	}
 }
 
@@ -174,6 +176,29 @@ func (h *Handler) BanUser(c fiber.Ctx) error {
 		return moderationError(c, err)
 	}
 	return c.Status(http.StatusCreated).JSON(b)
+}
+
+// SetBadges PATCH /instance/users/:id/badges
+func (h *Handler) SetBadges(c fiber.Ctx) error {
+	user := auth.GetUser(c)
+	if user == nil {
+		return c.Status(http.StatusUnauthorized).JSON(fiber.Map{"error": "unauthorized"})
+	}
+	uid, ok := parseIDParam(c, "id")
+	if !ok {
+		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "invalid user id"})
+	}
+	var in struct {
+		Flags int `json:"flags"`
+	}
+	if !decodeBody(c, &in) {
+		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "invalid JSON"})
+	}
+	flags, err := h.svc.SetUserBadges(c.Context(), user.ID, uid, in.Flags)
+	if err != nil {
+		return moderationError(c, err)
+	}
+	return c.JSON(fiber.Map{"public_flags": flags})
 }
 
 // UnbanUser DELETE /instance/users/:id/ban

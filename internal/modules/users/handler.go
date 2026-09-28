@@ -57,6 +57,8 @@ func (h *Handler) Me(c fiber.Ctx) error {
 		"avatar":        user.Avatar,
 		"banner":        user.Banner,
 		"accent_color":  user.AccentColor,
+		"public_flags":  auth.PublicFlags(user),
+		"bot":           user.Bot,
 		"presence":      auth.ToPublicPresence(user.Presence, false),
 	})
 }

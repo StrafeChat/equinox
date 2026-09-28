@@ -18,7 +18,6 @@ import (
 	"github.com/StrafeChat/equinox/internal/modules/auth"
 )
 
-
 // SessionResolver validates a token hash and returns user + session or error.
 type SessionResolver interface {
 	Resolve(ctx context.Context, tokenHash string) (*auth.User, *auth.Session, error)
@@ -140,6 +139,8 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		"username":      user.Username,
 		"discriminator": fmt.Sprintf("%04d", user.Discriminator),
 		"display_name":  user.DisplayName,
+		"public_flags":  auth.PublicFlags(user),
+		"bot":           user.Bot,
 	}
 	if user.Avatar != "" {
 		readyUser["avatar"] = user.Avatar

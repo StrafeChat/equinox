@@ -20,6 +20,9 @@ type ProfileUpdate struct {
 	Banner      *string         `json:"banner,omitempty"`
 	AccentColor *string         `json:"accent_color,omitempty"`
 	Presence    *PresenceUpdate `json:"presence,omitempty"`
+	// Flags is the profile-badge bitfield (see badges.go). Set only by the instance
+	// module's admin badge assignment; a nil pointer leaves it unchanged.
+	Flags *int `json:"flags,omitempty"`
 }
 
 // PresenceUpdate holds optional presence fields (status: online, offline, dnd, idle).
@@ -351,6 +354,9 @@ func (r *scyllaUserRepo) UpdateProfile(ctx context.Context, userID int64, upd *P
 	if upd.AccentColor != nil {
 		u.AccentColor = *upd.AccentColor
 	}
+	if upd.Flags != nil {
+		u.Flags = *upd.Flags
+	}
 	if upd.Presence != nil {
 		if upd.Presence.Online != nil {
 			u.Presence.Online = *upd.Presence.Online
@@ -362,7 +368,7 @@ func (r *scyllaUserRepo) UpdateProfile(ctx context.Context, userID int64, upd *P
 			u.Presence.CustomStatus = *upd.Presence.CustomStatus
 		}
 	}
-	stmt, names := userTable.Update("display_name", "bio", "about_me", "avatar", "banner", "accent_color", "presence", "updated_at")
+	stmt, names := userTable.Update("display_name", "bio", "about_me", "avatar", "banner", "accent_color", "flags", "presence", "updated_at")
 	q := r.session.Query(stmt, names).WithContext(ctx)
-	return u, q.Bind(u.DisplayName, u.Bio, u.AboutMe, u.Avatar, u.Banner, u.AccentColor, u.Presence, u.UpdatedAt, u.ID).ExecRelease()
+	return u, q.Bind(u.DisplayName, u.Bio, u.AboutMe, u.Avatar, u.Banner, u.AccentColor, u.Flags, u.Presence, u.UpdatedAt, u.ID).ExecRelease()
 }

@@ -29,6 +29,7 @@ const (
 	AuditReportDismiss = "report_dismiss"
 	AuditInviteCreate  = "invite_create"
 	AuditInviteRevoke  = "invite_revoke"
+	AuditUserBadges    = "user_badges"
 
 	MaxReportDetails = 2000
 	MaxBanReason     = 500
@@ -56,6 +57,7 @@ var (
 	ErrDuplicateReport = errors.New("you already have an open report about this")
 	ErrInvalidAction   = errors.New("unknown resolution action")
 	ErrInvalidQuery    = errors.New("search for an id, an email, name#0001 or a username")
+	ErrInvalidBadges   = errors.New("unknown badge flag")
 )
 
 // Ban keeps an account off the instance: its sessions are revoked when it is written, and

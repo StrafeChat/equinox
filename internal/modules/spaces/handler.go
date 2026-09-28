@@ -251,6 +251,8 @@ func userSummary(u *auth.User) fiber.Map {
 		"discriminator": u.Discriminator,
 		"display_name":  u.DisplayName,
 		"avatar":        u.Avatar,
+		"public_flags":  auth.PublicFlags(u),
+		"bot":           u.Bot,
 	}
 }
 
@@ -329,6 +331,8 @@ func (h *Handler) Members(c fiber.Ctx) error {
 			"joined_at":     m.Member.JoinedAt,
 			"roles":         roleStrs,
 			"presence":      auth.ToPublicPresence(u.Presence, true),
+			"public_flags":  auth.PublicFlags(u),
+			"bot":           u.Bot,
 		})
 	}
 	return c.JSON(out)
