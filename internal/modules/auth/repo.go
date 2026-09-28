@@ -41,6 +41,7 @@ type UserRepository interface {
 	EmailExists(ctx context.Context, email string) (bool, error)
 	DiscriminatorsForUsername(ctx context.Context, username string) ([]int, error)
 	UpdateRelationships(ctx context.Context, userID int64, add, remove []int64) error
+	UpdateBlocks(ctx context.Context, userID int64, add, remove []int64) error
 	UpdateProfile(ctx context.Context, userID int64, upd *ProfileUpdate) (*User, error)
 
 	// Federation shadows (see User.HomeDomain). UpsertShadow writes the users row and the
@@ -67,6 +68,7 @@ var userTable = table.New(table.Metadata{
 		"flags",
 		"relationships",
 		"spaces",
+		"blocks",
 		"date_of_birth",
 		"verified_email",
 		"about_me",
@@ -299,6 +301,32 @@ func (r *scyllaUserRepo) DiscriminatorsForUsername(ctx context.Context, username
 		return nil, err
 	}
 	return out, nil
+}
+
+func (r *scyllaUserRepo) UpdateBlocks(ctx context.Context, userID int64, add, remove []int64) error {
+	for _, blockedID := range add {
+		q := r.session.Session.Query(
+			"UPDATE users SET blocks = blocks + ? WHERE id = ?",
+			[]int64{blockedID}, userID,
+		).WithContext(ctx)
+		err := q.Exec()
+		q.Release()
+		if err != nil {
+			return err
+		}
+	}
+	for _, blockedID := range remove {
+		q := r.session.Session.Query(
+			"UPDATE users SET blocks = blocks - ? WHERE id = ?",
+			[]int64{blockedID}, userID,
+		).WithContext(ctx)
+		err := q.Exec()
+		q.Release()
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (r *scyllaUserRepo) UpdateRelationships(ctx context.Context, userID int64, add, remove []int64) error {

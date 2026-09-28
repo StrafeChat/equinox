@@ -20,19 +20,20 @@ import (
 const relListCacheTTL = 3 * time.Minute
 
 var (
-	ErrUserNotFound        = errors.New("user not found")
+	ErrUserNotFound         = errors.New("user not found")
 	ErrInvalidDiscriminator = errors.New("invalid discriminator")
-	ErrSelfRequest         = errors.New("cannot send request to yourself")
-	ErrAlreadyFriends      = errors.New("already friends")
-	ErrRequestExists       = errors.New("request already sent")
-	ErrRequestNotFound     = errors.New("request not found")
+	ErrSelfRequest          = errors.New("cannot send request to yourself")
+	ErrAlreadyFriends       = errors.New("already friends")
+	ErrBlocked              = errors.New("blocked")
+	ErrRequestExists        = errors.New("request already sent")
+	ErrRequestNotFound      = errors.New("request not found")
 )
 
 type Service struct {
-	repo   Repository
-	user   auth.UserRepository
-	redis  *redis.Client
-	cfg    *config.Config
+	repo  Repository
+	user  auth.UserRepository
+	redis *redis.Client
+	cfg   *config.Config
 }
 
 func NewService(repo Repository, user auth.UserRepository, redis *redis.Client, cfg *config.Config) *Service {
@@ -87,6 +88,10 @@ func (s *Service) SendRequest(ctx context.Context, actorID int64, in SendRequest
 	me, err := s.user.GetByID(ctx, actorID)
 	if err != nil || me == nil {
 		return ErrUserNotFound
+	}
+
+	if s.blockedBetween(me, target) {
+		return ErrBlocked
 	}
 
 	// Already friends?
@@ -147,6 +152,10 @@ func (s *Service) SendRequestByID(ctx context.Context, actorID, targetID int64) 
 	target, err := s.user.GetByID(ctx, targetID)
 	if err != nil || target == nil {
 		return ErrUserNotFound
+	}
+
+	if s.blockedBetween(me, target) {
+		return ErrBlocked
 	}
 
 	for _, r := range me.Relationships {
@@ -251,6 +260,61 @@ func (s *Service) RejectRequest(ctx context.Context, actorID, fromUserID int64) 
 }
 
 // partialUser builds a partial user object. Presence uses status/custom_status only (never online).
+// blockedBetween reports whether either user has blocked the other.
+func (s *Service) blockedBetween(a, b *auth.User) bool {
+	if a == nil || b == nil {
+		return false
+	}
+	for _, uid := range a.Blocks {
+		if uid == b.ID {
+			return true
+		}
+	}
+	for _, uid := range b.Blocks {
+		if uid == a.ID {
+			return true
+		}
+	}
+	return false
+}
+
+// Block adds targetID to the actor's block set, first tearing down any friendship or pending
+// request between the two. Blocks are one-directional and the target is not notified; only
+// the blocker's own devices receive the new blocked relationship.
+func (s *Service) Block(ctx context.Context, actorID, targetID int64) error {
+	if actorID == targetID {
+		return ErrSelfRequest
+	}
+	target, err := s.user.GetByID(ctx, targetID)
+	if err != nil || target == nil {
+		return ErrUserNotFound
+	}
+	_ = s.RemoveFriend(ctx, actorID, targetID)   // no-op + no event if they weren't friends
+	_ = s.repo.DeleteRequest(ctx, actorID, targetID)
+	_ = s.repo.DeleteRequest(ctx, targetID, actorID)
+	if err := s.user.UpdateBlocks(ctx, actorID, []int64{targetID}, nil); err != nil {
+		return err
+	}
+	payload := map[string]interface{}{
+		"id":   id.Format(targetID),
+		"type": TypeBlocked,
+		"user": partialUser(target),
+	}
+	stargate.PublishToUser(ctx, s.redis, actorID, "RELATIONSHIP_ADD", payload, s.cfg.Stargate.Region)
+	s.invalidateRelList(ctx, actorID, targetID)
+	return nil
+}
+
+// Unblock removes targetID from the actor's block set.
+func (s *Service) Unblock(ctx context.Context, actorID, targetID int64) error {
+	if err := s.user.UpdateBlocks(ctx, actorID, nil, []int64{targetID}); err != nil {
+		return err
+	}
+	stargate.PublishToUser(ctx, s.redis, actorID, "RELATIONSHIP_REMOVE", map[string]interface{}{"id": id.Format(targetID)}, s.cfg.Stargate.Region)
+	s.invalidateRelList(ctx, actorID, targetID)
+	return nil
+}
+
 func partialUser(u *auth.User) map[string]interface{} {
 	if u == nil {
 		return nil
@@ -310,6 +374,7 @@ func (s *Service) ListRelationships(ctx context.Context, actorID int64) ([]Relat
 
 	var ids []int64
 	ids = append(ids, u.Relationships...)
+	ids = append(ids, u.Blocks...)
 
 	inReqs, err := s.repo.GetIncoming(ctx, actorID)
 	if err != nil {
@@ -350,6 +415,11 @@ func (s *Service) ListRelationships(ctx context.Context, actorID int64) ([]Relat
 			nick = &n
 		}
 		if r := buildRelationshipFromUser(byID[friendID], friendID, TypeFriend, nil, nick, false); r != nil {
+			out = append(out, *r)
+		}
+	}
+	for _, blockedID := range u.Blocks {
+		if r := buildRelationshipFromUser(byID[blockedID], blockedID, TypeBlocked, nil, nil, false); r != nil {
 			out = append(out, *r)
 		}
 	}

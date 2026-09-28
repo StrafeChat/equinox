@@ -61,6 +61,8 @@ func (h *Handler) Post(c fiber.Ctx) error {
 			return c.Status(http.StatusConflict).JSON(fiber.Map{"error": "already friends"})
 		case ErrRequestExists:
 			return c.Status(http.StatusConflict).JSON(fiber.Map{"error": "request already sent"})
+		case ErrBlocked:
+			return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": "you cannot add this user"})
 		default:
 			logger.Err("relationships", err, map[string]any{"actor_id": user.ID})
 			return c.Status(http.StatusInternalServerError).JSON(fiber.Map{"error": "internal error"})
@@ -92,6 +94,8 @@ func (h *Handler) PutByID(c fiber.Ctx) error {
 			return c.Status(http.StatusConflict).JSON(fiber.Map{"error": "already friends"})
 		case ErrRequestExists:
 			return c.Status(http.StatusConflict).JSON(fiber.Map{"error": "request already sent"})
+		case ErrBlocked:
+			return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": "you cannot add this user"})
 		default:
 			logger.Err("relationships", err, map[string]any{"actor_id": user.ID})
 			return c.Status(http.StatusInternalServerError).JSON(fiber.Map{"error": "internal error"})
@@ -123,6 +127,47 @@ func (h *Handler) Delete(c fiber.Ctx) error {
 		}
 	}
 
+	return c.SendStatus(http.StatusNoContent)
+}
+
+// PutBlock blocks a user, removing any friendship or pending request between them.
+func (h *Handler) PutBlock(c fiber.Ctx) error {
+	user := auth.GetUser(c)
+	if user == nil {
+		return c.Status(http.StatusUnauthorized).JSON(fiber.Map{"error": "unauthorized"})
+	}
+	targetID, err := id.Parse(c.Params("user_id"))
+	if err != nil {
+		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "invalid user id"})
+	}
+	if err := h.svc.Block(c.Context(), user.ID, targetID); err != nil {
+		switch err {
+		case ErrSelfRequest:
+			return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "cannot block yourself"})
+		case ErrUserNotFound:
+			return c.Status(http.StatusNotFound).JSON(fiber.Map{"error": "user not found"})
+		default:
+			logger.Err("relationships", err, map[string]any{"actor_id": user.ID})
+			return c.Status(http.StatusInternalServerError).JSON(fiber.Map{"error": "internal error"})
+		}
+	}
+	return c.SendStatus(http.StatusNoContent)
+}
+
+// DeleteBlock unblocks a user.
+func (h *Handler) DeleteBlock(c fiber.Ctx) error {
+	user := auth.GetUser(c)
+	if user == nil {
+		return c.Status(http.StatusUnauthorized).JSON(fiber.Map{"error": "unauthorized"})
+	}
+	targetID, err := id.Parse(c.Params("user_id"))
+	if err != nil {
+		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "invalid user id"})
+	}
+	if err := h.svc.Unblock(c.Context(), user.ID, targetID); err != nil {
+		logger.Err("relationships", err, map[string]any{"actor_id": user.ID})
+		return c.Status(http.StatusInternalServerError).JSON(fiber.Map{"error": "internal error"})
+	}
 	return c.SendStatus(http.StatusNoContent)
 }
 

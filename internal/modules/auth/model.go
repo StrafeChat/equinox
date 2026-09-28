@@ -54,6 +54,7 @@ type User struct {
 	Flags         int          `db:"flags" json:"flags"`
 	Relationships []int64      `db:"relationships" json:"relationships"`
 	Spaces        []int64      `db:"spaces" json:"spaces"`
+	Blocks        []int64      `db:"blocks" json:"blocks,omitempty"`
 	DateOfBirth   time.Time    `db:"date_of_birth" json:"date_of_birth"`
 	VerifiedEmail bool         `db:"verified_email" json:"verified_email"`
 	AboutMe       string       `db:"about_me" json:"about_me"`

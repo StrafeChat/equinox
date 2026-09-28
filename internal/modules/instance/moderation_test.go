@@ -156,6 +156,7 @@ func (f *fakeUsers) DiscriminatorsForUsername(_ context.Context, name string) ([
 	return out, nil
 }
 func (f *fakeUsers) UpdateRelationships(context.Context, int64, []int64, []int64) error { return nil }
+func (f *fakeUsers) UpdateBlocks(context.Context, int64, []int64, []int64) error         { return nil }
 func (f *fakeUsers) UpdateProfile(context.Context, int64, *auth.ProfileUpdate) (*auth.User, error) {
 	return nil, nil
 }

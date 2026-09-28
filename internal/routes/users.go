@@ -35,6 +35,8 @@ func SetupUsersRoutes(d Deps) {
 	r.Get("", relHandler.Get)
 	r.Post("", relHandler.Post)
 	r.Put("/:user_id", relHandler.PutByID)
+	r.Put("/:user_id/block", relHandler.PutBlock)
+	r.Delete("/:user_id/block", relHandler.DeleteBlock)
 	r.Put("/:user_id/ignore", relHandler.PutIgnore)
 	r.Delete("/:user_id/ignore", relHandler.DeleteIgnore)
 	r.Delete("/:user_id", relHandler.Delete)

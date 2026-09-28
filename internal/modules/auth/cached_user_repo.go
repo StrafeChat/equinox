@@ -37,6 +37,7 @@ type cachedUser struct {
 	Flags         int            `json:"flags"`
 	Relationships []int64        `json:"relationships"`
 	Spaces        []int64        `json:"spaces"`
+	Blocks        []int64        `json:"blocks,omitempty"`
 	DateOfBirth   time.Time      `json:"date_of_birth"`
 	VerifiedEmail bool           `json:"verified_email"`
 	AboutMe       string         `json:"about_me"`
@@ -68,6 +69,7 @@ func userToCached(u *User) *cachedUser {
 		Flags:         u.Flags,
 		Relationships: u.Relationships,
 		Spaces:        u.Spaces,
+		Blocks:        u.Blocks,
 		DateOfBirth:   u.DateOfBirth,
 		VerifiedEmail: u.VerifiedEmail,
 		AboutMe:       u.AboutMe,
@@ -105,6 +107,7 @@ func cachedToUser(c *cachedUser, passwordHash string) *User {
 		Flags:         c.Flags,
 		Relationships: c.Relationships,
 		Spaces:        c.Spaces,
+		Blocks:        c.Blocks,
 		DateOfBirth:   c.DateOfBirth,
 		VerifiedEmail: c.VerifiedEmail,
 		AboutMe:       c.AboutMe,
@@ -285,6 +288,14 @@ func (r *CachedUserRepository) EmailExists(ctx context.Context, email string) (b
 
 func (r *CachedUserRepository) DiscriminatorsForUsername(ctx context.Context, username string) ([]int, error) {
 	return r.repo.DiscriminatorsForUsername(ctx, username)
+}
+
+func (r *CachedUserRepository) UpdateBlocks(ctx context.Context, userID int64, add, remove []int64) error {
+	if err := r.repo.UpdateBlocks(ctx, userID, add, remove); err != nil {
+		return err
+	}
+	r.invalidateUser(context.Background(), userID)
+	return nil
 }
 
 func (r *CachedUserRepository) UpdateRelationships(ctx context.Context, userID int64, add, remove []int64) error {
