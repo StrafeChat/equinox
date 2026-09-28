@@ -13,7 +13,7 @@ StrafeChat is a Discord-alternative built around: **privacy** (minimum data coll
 trackers, no silent telemetry), **real end-to-end encryption** (an actual Double
 Ratchet/Megolm, not a static-key stand-in — the E2EE layer is mid-overhaul toward
 vodozemac; see `internal/modules/devices`), **federation** (independent instances talk
-over signed HTTP, see `docs/FEDERATION.md`), **self-hosting** (env-var configuration,
+over signed HTTP, see [`docs/FEDERATION.md`](https://github.com/StrafeChat/deploy/blob/main/docs/FEDERATION.md)), **self-hosting** (env-var configuration,
 `docker-compose.yml`, `deploy/`), and **client customization**. Don't trade any of these
 away for convenience — flag the conflict instead.
 
@@ -88,7 +88,7 @@ Go identifiers, error strings, docs:
   the client only mirrors them), PM call ringing, and cleanup (LiveKit webhooks plus a
   30 s reconciler). Moderator actions go through `spaces.Service.RecordAudit`. New
   voice behaviour belongs here, gated by a permission bit and enforced at LiveKit where
-  it can be, not in the client. `docs/VOICE.md` has the map.
+  it can be, not in the client. [`docs/VOICE.md`](https://github.com/StrafeChat/deploy/blob/main/docs/VOICE.md) has the map.
 - **One-shot data fixes** (`spaces/backfill.go`): claim a name in `data_migrations` with
   `ClaimDataMigration` (a lightweight transaction), do the work, release the claim on
   failure. CQL migrations cannot express "OR a bit into every existing row"; this can.
