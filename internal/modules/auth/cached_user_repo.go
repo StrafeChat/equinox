@@ -27,9 +27,9 @@ type cachedUser struct {
 	Email         string         `json:"email"`
 	Username      string         `json:"username"`
 	Discriminator int            `json:"discriminator"`
-	DisplayName   string          `json:"display_name"`
-	Avatar        string          `json:"avatar"`
-	Banner        string          `json:"banner"`
+	DisplayName   string         `json:"display_name"`
+	Avatar        string         `json:"avatar"`
+	Banner        string         `json:"banner"`
 	Bot           bool           `json:"bot"`
 	Bots          []string       `json:"bots"`
 	System        bool           `json:"system"`
@@ -45,6 +45,8 @@ type cachedUser struct {
 	Presence      cachedPresence `json:"presence"`
 	CreatedAt     time.Time      `json:"created_at"`
 	UpdatedAt     time.Time      `json:"updated_at"`
+	HomeDomain    string         `json:"home_domain,omitempty"`
+	RemoteID      *int64         `json:"remote_id,omitempty"`
 }
 
 func userToCached(u *User) *cachedUser {
@@ -76,8 +78,10 @@ func userToCached(u *User) *cachedUser {
 			Status:       u.Presence.Status,
 			CustomStatus: u.Presence.CustomStatus,
 		},
-		CreatedAt: u.CreatedAt,
-		UpdatedAt: u.UpdatedAt,
+		CreatedAt:  u.CreatedAt,
+		UpdatedAt:  u.UpdatedAt,
+		HomeDomain: u.HomeDomain,
+		RemoteID:   u.RemoteID,
 	}
 }
 
@@ -111,8 +115,10 @@ func cachedToUser(c *cachedUser, passwordHash string) *User {
 			Status:       c.Presence.Status,
 			CustomStatus: c.Presence.CustomStatus,
 		},
-		CreatedAt: c.CreatedAt,
-		UpdatedAt: c.UpdatedAt,
+		CreatedAt:  c.CreatedAt,
+		UpdatedAt:  c.UpdatedAt,
+		HomeDomain: c.HomeDomain,
+		RemoteID:   c.RemoteID,
 	}
 }
 
@@ -155,6 +161,18 @@ func (r *CachedUserRepository) Create(ctx context.Context, u *User) error {
 	return r.repo.Create(ctx, u)
 }
 
+func (r *CachedUserRepository) UpsertShadow(ctx context.Context, u *User) error {
+	if err := r.repo.UpsertShadow(ctx, u); err != nil {
+		return err
+	}
+	r.invalidateUser(ctx, u.ID)
+	return nil
+}
+
+func (r *CachedUserRepository) GetByRemote(ctx context.Context, homeDomain string, remoteID int64) (*User, error) {
+	return r.repo.GetByRemote(ctx, homeDomain, remoteID)
+}
+
 func (r *CachedUserRepository) GetByID(ctx context.Context, id int64) (*User, error) {
 	key := r.userKey(id)
 	val, err := r.redis.Get(ctx, key).Bytes()
@@ -179,7 +197,7 @@ func (r *CachedUserRepository) GetByIDs(ctx context.Context, ids []int64) ([]*Us
 	if len(ids) == 0 {
 		return nil, nil
 	}
-	seen := make(map[int64]bool)
+	seen := make(map[int64]bool, len(ids))
 	unique := make([]int64, 0, len(ids))
 	for _, id := range ids {
 		if !seen[id] {
@@ -187,20 +205,48 @@ func (r *CachedUserRepository) GetByIDs(ctx context.Context, ids []int64) ([]*Us
 			unique = append(unique, id)
 		}
 	}
-	out := make([]*User, len(unique))
-	for i, id := range unique {
-		u, err := r.GetByID(ctx, id)
+
+	// Pipeline the cache reads instead of one Redis round trip per user.
+	byID := make(map[int64]*User, len(unique))
+	cmds := make(map[int64]*redis.StringCmd, len(unique))
+	pipe := r.redis.Pipeline()
+	for _, id := range unique {
+		cmds[id] = pipe.Get(ctx, r.userKey(id))
+	}
+	_, _ = pipe.Exec(ctx) // per-key misses surface as errors on the individual cmds below
+
+	var missing []int64
+	for _, id := range unique {
+		val, err := cmds[id].Bytes()
+		if err != nil {
+			missing = append(missing, id)
+			continue
+		}
+		var c cachedUser
+		if json.Unmarshal(val, &c) != nil {
+			missing = append(missing, id)
+			continue
+		}
+		byID[id] = cachedToUser(&c, "")
+	}
+
+	if len(missing) > 0 {
+		users, err := r.repo.GetByIDs(ctx, missing)
 		if err != nil {
 			return nil, err
 		}
-		out[i] = u
-	}
-	byID := make(map[int64]*User)
-	for _, u := range out {
-		if u != nil {
-			byID[u.ID] = u
+		setPipe := r.redis.Pipeline()
+		for i, u := range users {
+			if u == nil {
+				continue
+			}
+			byID[missing[i]] = u
+			b, _ := json.Marshal(userToCached(u))
+			setPipe.Set(ctx, r.userKey(u.ID), b, userCacheTTL)
 		}
+		_, _ = setPipe.Exec(ctx)
 	}
+
 	result := make([]*User, len(ids))
 	for i, id := range ids {
 		result[i] = byID[id]

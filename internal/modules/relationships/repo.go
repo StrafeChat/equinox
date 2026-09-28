@@ -92,11 +92,7 @@ func (r *repo) GetOutgoing(ctx context.Context, fromUserID int64) ([]Request, er
 	var out []Request
 	var row OutgoingRow
 	for iter.StructScan(&row) {
-		out = append(out, Request{
-			FromUserID: row.FromUserID,
-			ToUserID:   row.ToUserID,
-			CreatedAt:  row.CreatedAt,
-		})
+		out = append(out, Request(row))
 	}
 	return out, iter.Close()
 }

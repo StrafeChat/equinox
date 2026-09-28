@@ -19,17 +19,7 @@ func (s *Service) publishSpaceEvent(ctx context.Context, spaceID int64, eventTyp
 }
 
 func spaceRoleEventData(r *SpaceRole) map[string]interface{} {
-	return map[string]interface{}{
-		"id":            id.Format(r.ID),
-		"name":          r.Name,
-		"permissions":   r.Permissions,
-		"position":      r.Position,
-		"color":         r.Color,
-		"hoist":         r.Hoist,
-		"mentionable":   r.Mentionable,
-		"created_at":    r.CreatedAt,
-		"updated_at":    r.UpdatedAt,
-	}
+	return RoleMap(r)
 }
 
 func formatRoleIDStrings(ids []int64) []string {

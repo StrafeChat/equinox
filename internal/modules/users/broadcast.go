@@ -11,6 +11,9 @@ import (
 
 // broadcastUserProfile sends USER_UPDATE over Redis so Stargate fans out to subscribers (self, friends, shared rooms).
 func (h *Handler) broadcastUserProfile(ctx context.Context, u *auth.User) {
+	if u != nil && h.federator != nil {
+		h.federator.AfterProfileUpdated(ctx, u)
+	}
 	if h.redis == nil || u == nil {
 		return
 	}

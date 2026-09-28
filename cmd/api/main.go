@@ -2,6 +2,7 @@ package main
 
 import (
 	"log"
+	"os"
 
 	"github.com/StrafeChat/equinox/internal/app"
 	"github.com/StrafeChat/equinox/internal/config"
@@ -10,9 +11,16 @@ import (
 	"github.com/joho/godotenv"
 )
 
+// main runs the REST API. Configuration comes from the environment, optionally seeded
+// from an env file; see internal/config for every variable.
 func main() {
-	err := godotenv.Load()
-	if err != nil {
+	// ENV_FILE picks an alternative env file (e.g. a second instance on the same machine).
+	// A missing file is fine: containers pass configuration through the environment.
+	envFile := os.Getenv("ENV_FILE")
+	if envFile == "" {
+		envFile = ".env"
+	}
+	if err := godotenv.Load(envFile); err != nil && !os.IsNotExist(err) {
 		log.Fatal(err)
 	}
 

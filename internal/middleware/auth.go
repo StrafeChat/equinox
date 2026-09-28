@@ -61,20 +61,21 @@ func RequireAuth(sessionRepo auth.SessionRepository, userRepo auth.UserRepositor
 	}
 }
 
+// extractToken reads the session token from the Authorization header, and only from
+// there.
+//
+// A ?token= query parameter is deliberately not accepted: URLs end up in proxy logs,
+// browser history and Referer headers, so a token there leaks. Neither is a cookie: nothing
+// on the server ever sets one, the client authenticates with a Bearer header, and honouring
+// a cookie that is never issued would only add an ambient-credential path - one that, with
+// credentialed CORS enabled, turns any future cookie into a cross-site request forgery
+// surface with no SameSite or CSRF-token check behind it. The WebSocket gateway (which
+// browsers cannot send headers to) has its own extractor.
 func extractToken(c fiber.Ctx) string {
-	// Authorization: Bearer <token>
 	if h := c.Get("Authorization"); h != "" {
 		if prefix := "Bearer "; strings.HasPrefix(h, prefix) {
 			return strings.TrimSpace(strings.TrimPrefix(h, prefix))
 		}
-	}
-	// Cookie (optional, same-origin WebSocket)
-	if t := c.Cookies("session_token"); t != "" {
-		return t
-	}
-	// Query param (for WebSocket from clients that can't set headers)
-	if t := c.Query("token"); t != "" {
-		return t
 	}
 	return ""
 }

@@ -2,6 +2,8 @@ package auth
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"time"
 
 	"github.com/gocql/gocql"
@@ -11,12 +13,12 @@ import (
 
 // ProfileUpdate holds optional fields for PATCH /users/@me.
 type ProfileUpdate struct {
-	DisplayName *string       `json:"display_name,omitempty"`
-	Bio         *string       `json:"bio,omitempty"`
-	AboutMe     *string       `json:"about_me,omitempty"`
-	Avatar      *string       `json:"avatar,omitempty"`
-	Banner      *string       `json:"banner,omitempty"`
-	AccentColor *string       `json:"accent_color,omitempty"`
+	DisplayName *string         `json:"display_name,omitempty"`
+	Bio         *string         `json:"bio,omitempty"`
+	AboutMe     *string         `json:"about_me,omitempty"`
+	Avatar      *string         `json:"avatar,omitempty"`
+	Banner      *string         `json:"banner,omitempty"`
+	AccentColor *string         `json:"accent_color,omitempty"`
 	Presence    *PresenceUpdate `json:"presence,omitempty"`
 }
 
@@ -37,10 +39,15 @@ type UserRepository interface {
 	DiscriminatorsForUsername(ctx context.Context, username string) ([]int, error)
 	UpdateRelationships(ctx context.Context, userID int64, add, remove []int64) error
 	UpdateProfile(ctx context.Context, userID int64, upd *ProfileUpdate) (*User, error)
+
+	// Federation shadows (see User.HomeDomain). UpsertShadow writes the users row and the
+	// users_by_remote lookup; it never touches the email/username lookup tables.
+	UpsertShadow(ctx context.Context, u *User) error
+	GetByRemote(ctx context.Context, homeDomain string, remoteID int64) (*User, error)
 }
 
 var userTable = table.New(table.Metadata{
-	Name:    "users",
+	Name: "users",
 	Columns: []string{
 		"id",
 		"email",
@@ -65,8 +72,17 @@ var userTable = table.New(table.Metadata{
 		"presence",
 		"created_at",
 		"updated_at",
+		"home_domain",
+		"remote_id",
 	},
 	PartKey: []string{"id"},
+})
+
+var usersByRemoteTable = table.New(table.Metadata{
+	Name:    "users_by_remote",
+	Columns: []string{"home_domain", "remote_id", "user_id"},
+	PartKey: []string{"home_domain"},
+	SortKey: []string{"remote_id"},
 })
 
 var usersByEmailTable = table.New(table.Metadata{
@@ -90,31 +106,90 @@ func NewUserRepository(session gocqlx.Session) UserRepository {
 	return &scyllaUserRepo{session: session}
 }
 
+// Create registers a user. The email and username#discriminator lookup rows are claimed
+// first with lightweight transactions (IF NOT EXISTS), so two registrations racing on the
+// same address or tag cannot both succeed - the service's EmailExists check is only a
+// fast path. Claims are released again if a later step fails.
 func (r *scyllaUserRepo) Create(ctx context.Context, u *User) error {
 	u.CreatedAt = time.Now().UTC()
 	u.UpdatedAt = u.CreatedAt
 
+	applied, err := r.claim(ctx,
+		"INSERT INTO users_by_email (email, user_id) VALUES (?, ?) IF NOT EXISTS",
+		u.Email, u.ID)
+	if err != nil {
+		return err
+	}
+	if !applied {
+		return ErrEmailInUse
+	}
+
+	applied, err = r.claim(ctx,
+		"INSERT INTO users_by_username_discriminator (username, discriminator, user_id) VALUES (?, ?, ?) IF NOT EXISTS",
+		u.Username, u.Discriminator, u.ID)
+	if err != nil {
+		r.release(ctx, "DELETE FROM users_by_email WHERE email = ?", u.Email)
+		return err
+	}
+	if !applied {
+		r.release(ctx, "DELETE FROM users_by_email WHERE email = ?", u.Email)
+		return ErrDiscriminatorInUse
+	}
+
 	stmt, names := userTable.Insert()
 	q := r.session.Query(stmt, names).WithContext(ctx)
 	if err := q.BindStruct(u).ExecRelease(); err != nil {
+		r.release(ctx, "DELETE FROM users_by_email WHERE email = ?", u.Email)
+		r.release(ctx, "DELETE FROM users_by_username_discriminator WHERE username = ? AND discriminator = ?", u.Username, u.Discriminator)
 		return err
 	}
+	return nil
+}
 
-	byEmail := UserByEmail{Email: u.Email, UserID: u.ID}
-	stmt, names = usersByEmailTable.Insert()
-	q = r.session.Query(stmt, names).WithContext(ctx)
-	if err := q.BindStruct(&byEmail).ExecRelease(); err != nil {
+// claim runs an INSERT ... IF NOT EXISTS and reports whether it was applied.
+func (r *scyllaUserRepo) claim(ctx context.Context, stmt string, args ...interface{}) (bool, error) {
+	q := r.session.Session.Query(stmt, args...).WithContext(ctx)
+	defer q.Release()
+	return q.MapScanCAS(map[string]interface{}{})
+}
+
+// release best-effort deletes a lookup row claimed by a registration that then failed.
+func (r *scyllaUserRepo) release(ctx context.Context, stmt string, args ...interface{}) {
+	q := r.session.Session.Query(stmt, args...).WithContext(ctx)
+	_ = q.Exec()
+	q.Release()
+}
+
+func (r *scyllaUserRepo) UpsertShadow(ctx context.Context, u *User) error {
+	if u == nil || u.HomeDomain == "" || u.RemoteID == nil {
+		return errors.New("shadow user needs home_domain and remote_id")
+	}
+	now := time.Now().UTC()
+	if u.CreatedAt.IsZero() {
+		u.CreatedAt = now
+	}
+	u.UpdatedAt = now
+	stmt, names := userTable.Insert()
+	if err := r.session.Query(stmt, names).WithContext(ctx).BindStruct(u).ExecRelease(); err != nil {
 		return err
 	}
+	ref := UserByRemote{HomeDomain: u.HomeDomain, RemoteID: *u.RemoteID, UserID: u.ID}
+	stmt, names = usersByRemoteTable.Insert()
+	return r.session.Query(stmt, names).WithContext(ctx).BindStruct(&ref).ExecRelease()
+}
 
-	byUD := UserByUsernameDiscriminator{
-		Username:      u.Username,
-		Discriminator: u.Discriminator,
-		UserID:        u.ID,
+func (r *scyllaUserRepo) GetByRemote(ctx context.Context, homeDomain string, remoteID int64) (*User, error) {
+	var row UserByRemote
+	stmt, names := usersByRemoteTable.Get()
+	q := r.session.Query(stmt, names).WithContext(ctx)
+	defer q.Release()
+	if err := q.Bind(homeDomain, remoteID).GetRelease(&row); err != nil {
+		if err == gocql.ErrNotFound {
+			return nil, nil
+		}
+		return nil, err
 	}
-	stmt, names = usersByUsernameDiscriminatorTable.Insert()
-	q = r.session.Query(stmt, names).WithContext(ctx)
-	return q.BindStruct(&byUD).ExecRelease()
+	return r.GetByID(ctx, row.UserID)
 }
 
 func (r *scyllaUserRepo) GetByID(ctx context.Context, id int64) (*User, error) {
@@ -131,12 +206,12 @@ func (r *scyllaUserRepo) GetByID(ctx context.Context, id int64) (*User, error) {
 	return &u, nil
 }
 
-// GetByIDs fetches multiple users by ID. Returns a slice ordered by input; nil for missing users.
+// GetByIDs fetches multiple users by ID in a single query. Returns a slice ordered by input; nil for missing users.
 func (r *scyllaUserRepo) GetByIDs(ctx context.Context, ids []int64) ([]*User, error) {
 	if len(ids) == 0 {
 		return nil, nil
 	}
-	seen := make(map[int64]bool)
+	seen := make(map[int64]bool, len(ids))
 	unique := make([]int64, 0, len(ids))
 	for _, id := range ids {
 		if !seen[id] {
@@ -144,20 +219,17 @@ func (r *scyllaUserRepo) GetByIDs(ctx context.Context, ids []int64) ([]*User, er
 			unique = append(unique, id)
 		}
 	}
-	out := make([]*User, len(unique))
-	for i, id := range unique {
-		u, err := r.GetByID(ctx, id)
-		if err != nil {
-			return nil, err
-		}
-		out[i] = u
+	stmt := "SELECT " + strings.Join(userTable.Metadata().Columns, ", ") + " FROM users WHERE id IN ?"
+	q := r.session.Query(stmt, nil).WithContext(ctx).Bind(unique)
+	defer q.Release()
+	var rows []User
+	if err := q.Select(&rows); err != nil {
+		return nil, err
 	}
-	// Build id->user map and reorder to match input
-	byID := make(map[int64]*User)
-	for _, u := range out {
-		if u != nil {
-			byID[u.ID] = u
-		}
+	// Build id->user map and reorder to match input (nil for missing users)
+	byID := make(map[int64]*User, len(rows))
+	for i := range rows {
+		byID[rows[i].ID] = &rows[i]
 	}
 	result := make([]*User, len(ids))
 	for i, id := range ids {

@@ -12,7 +12,7 @@ type UserPresence struct {
 	CustomStatus string `db:"custom_status" json:"custom_status"`
 }
 
-	func (u UserPresence) MarshalUDT(name string, info gocql.TypeInfo) ([]byte, error) {
+func (u UserPresence) MarshalUDT(name string, info gocql.TypeInfo) ([]byte, error) {
 	switch name {
 	case "online":
 		return gocql.Marshal(info, u.Online)
@@ -62,6 +62,32 @@ type User struct {
 	Presence      UserPresence `db:"presence" json:"presence"`
 	CreatedAt     time.Time    `db:"created_at" json:"created_at"`
 	UpdatedAt     time.Time    `db:"updated_at" json:"updated_at"`
+	// Federation: set only on "shadow" rows - local copies of users whose home is another
+	// instance. HomeDomain is that instance and RemoteID the id it knows them by; every
+	// other column is a cached copy of their profile. Shadows have no email/password and
+	// are absent from the email/username lookup tables (they can't log in here).
+	HomeDomain string `db:"home_domain" json:"home_domain,omitempty"`
+	RemoteID   *int64 `db:"remote_id" json:"-"`
+}
+
+// IsRemote reports whether this row is a shadow of a user on another instance.
+func (u *User) IsRemote() bool {
+	return u != nil && u.HomeDomain != "" && u.RemoteID != nil
+}
+
+// OriginID is the id the user's home instance knows them by (their own id for local users).
+func (u *User) OriginID() int64 {
+	if u.IsRemote() {
+		return *u.RemoteID
+	}
+	return u.ID
+}
+
+// UserByRemote maps a federated identity (@remote_id:home_domain) to its local shadow row.
+type UserByRemote struct {
+	HomeDomain string `db:"home_domain"`
+	RemoteID   int64  `db:"remote_id"`
+	UserID     int64  `db:"user_id"`
 }
 
 type UserByEmail struct {
@@ -80,7 +106,10 @@ type RegisterInput struct {
 	Username      string    `json:"username"`
 	Password      string    `json:"password"`
 	DateOfBirth   time.Time `json:"date_of_birth"`
-	Discriminator *int      `json:"discriminator,omitempty"`
+	Discriminator *int      `json:"discriminator"`
+	// CaptchaToken is the challenge response from the client widget. Only looked at when
+	// the instance has a captcha configured; ignored entirely otherwise.
+	CaptchaToken string `json:"captcha_token"`
 }
 
 // Session is stored in sessions_by_user and sessions_by_token (token_hash is the raw hash).

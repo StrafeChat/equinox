@@ -36,7 +36,7 @@ type Server struct {
 // ReadyDataProvider fetches initial data (rooms, relationships, spaces, space_rooms) for the READY payload.
 // If nil, only user and session_id are sent.
 type ReadyDataProvider interface {
-	GetReadyData(ctx context.Context, userID int64) (rooms interface{}, relationships interface{}, spaces interface{}, spaceRooms interface{}, err error)
+	GetReadyData(ctx context.Context, userID int64) (*ReadyData, error)
 }
 
 // ServerConfig configures the WebSocket server.
@@ -156,13 +156,15 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if s.readyData != nil {
 		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
-		rooms, rels, spaces, spaceRooms, err := s.readyData.GetReadyData(ctx, user.ID)
+		data, err := s.readyData.GetReadyData(ctx, user.ID)
 		cancel()
-		if err == nil {
-			readyPayload.Rooms = rooms
-			readyPayload.Relationships = rels
-			readyPayload.Spaces = spaces
-			readyPayload.SpaceRooms = spaceRooms
+		if err == nil && data != nil {
+			readyPayload.Rooms = data.Rooms
+			readyPayload.Relationships = data.Relationships
+			readyPayload.Spaces = data.Spaces
+			readyPayload.SpaceRooms = data.SpaceRooms
+			readyPayload.VoiceStates = data.VoiceStates
+			readyPayload.Calls = data.Calls
 		}
 	}
 	client.sendOp(OpReady, readyPayload)

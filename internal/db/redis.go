@@ -14,6 +14,7 @@ func NewRedis(conf config.RedisConfig) *redis.Client {
 	}
 	opts := &redis.Options{
 		Addr: addr,
+		DB:   conf.DB,
 	}
 	if conf.PoolSize > 0 {
 		opts.PoolSize = conf.PoolSize

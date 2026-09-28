@@ -6,6 +6,7 @@ import (
 	"github.com/scylladb/gocqlx/v3"
 
 	"github.com/StrafeChat/equinox/internal/config"
+	"github.com/StrafeChat/equinox/internal/federation"
 )
 
 type Deps struct {
@@ -13,4 +14,7 @@ type Deps struct {
 	Config *config.Config
 	Scylla gocqlx.Session
 	Redis  *redis.Client
+	// Federation is nil unless FEDERATION_DOMAIN is configured. Route setups that own
+	// federating services wire it in with their SetFederator/SetRouter hooks.
+	Federation *federation.Service
 }

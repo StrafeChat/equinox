@@ -190,16 +190,13 @@ func (h *Handler) BulkDelete(c fiber.Ctx) error {
 	return c.SendStatus(http.StatusNoContent)
 }
 
-// PutIgnore ignores a user.
+// PutIgnore ignores a user. Not implemented yet: answer honestly instead of a 204 that
+// would make a client believe the user is now ignored.
 func (h *Handler) PutIgnore(c fiber.Ctx) error {
-	_ = auth.GetUser(c)
-	_ = c.Params("user_id")
-	return c.SendStatus(http.StatusNoContent)
+	return c.Status(http.StatusNotImplemented).JSON(fiber.Map{"error": "ignoring users is not implemented yet"})
 }
 
-// DeleteIgnore unignores a user.
+// DeleteIgnore unignores a user. See PutIgnore.
 func (h *Handler) DeleteIgnore(c fiber.Ctx) error {
-	_ = auth.GetUser(c)
-	_ = c.Params("user_id")
-	return c.SendStatus(http.StatusNoContent)
+	return c.Status(http.StatusNotImplemented).JSON(fiber.Map{"error": "ignoring users is not implemented yet"})
 }

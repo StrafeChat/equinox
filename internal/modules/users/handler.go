@@ -1,8 +1,10 @@
 package users
 
 import (
+	"context"
 	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/redis/go-redis/v9"
@@ -12,18 +14,29 @@ import (
 	"github.com/StrafeChat/equinox/internal/logger"
 	"github.com/StrafeChat/equinox/internal/modules/auth"
 	"github.com/StrafeChat/equinox/internal/modules/rooms"
+	"github.com/StrafeChat/equinox/internal/nebula"
 	"github.com/StrafeChat/equinox/internal/stargate"
 )
+
+// ProfileFederator relays profile changes to the instances holding a shadow of the user.
+type ProfileFederator interface {
+	AfterProfileUpdated(ctx context.Context, u *auth.User)
+}
 
 type Handler struct {
 	userRepo  auth.UserRepository
 	roomsRepo rooms.Repository
 	redis     *redis.Client
 	cfg       *config.Config
+	federator ProfileFederator
 }
 
 func NewHandler(userRepo auth.UserRepository, roomsRepo rooms.Repository, redis *redis.Client, cfg *config.Config) *Handler {
 	return &Handler{userRepo: userRepo, roomsRepo: roomsRepo, redis: redis, cfg: cfg}
+}
+
+func (h *Handler) SetFederator(f ProfileFederator) {
+	h.federator = f
 }
 
 // Me returns the current user's info. Requires auth.
@@ -62,6 +75,16 @@ func (h *Handler) PatchMe(c fiber.Ctx) error {
 	}
 	if !hasProfileUpdate(&upd) {
 		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "no fields to update"})
+	}
+	// Avatars and banners are uploaded through POST /users/@me/avatar|banner; PATCH may
+	// only clear them or point at something this instance's CDN already hosts. An
+	// arbitrary URL here would be loaded by everyone who views the profile - a tracking
+	// pixel that reports each viewer's IP to whoever set it.
+	if upd.Avatar != nil && !h.isOwnAssetURL(*upd.Avatar) {
+		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "avatar must be uploaded via POST /users/@me/avatar"})
+	}
+	if upd.Banner != nil && !h.isOwnAssetURL(*upd.Banner) {
+		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "banner must be uploaded via POST /users/@me/banner"})
 	}
 
 	updated, err := h.userRepo.UpdateProfile(c.Context(), user.ID, &upd)
@@ -112,6 +135,19 @@ func (h *Handler) PatchMe(c fiber.Ctx) error {
 		"accent_color":  updated.AccentColor,
 		"presence":      auth.ToPublicPresence(updated.Presence, false),
 	})
+}
+
+// isOwnAssetURL reports whether u is empty (clear the field) or an object on this
+// instance's own CDN.
+func (h *Handler) isOwnAssetURL(u string) bool {
+	if u == "" {
+		return true
+	}
+	if h.cfg == nil {
+		return false
+	}
+	base := nebula.PublicBase(h.cfg.Nebula.BaseURL, h.cfg.Nebula.PublicURL)
+	return base != "" && strings.HasPrefix(u, base+"/v1/")
 }
 
 func hasProfileUpdate(u *auth.ProfileUpdate) bool {

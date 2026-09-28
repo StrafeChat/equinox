@@ -3,7 +3,6 @@ package spaces
 import (
 	"crypto/rand"
 	"encoding/hex"
-	"errors"
 	"net/http"
 	"path"
 	"strings"
@@ -42,6 +41,10 @@ func (h *Handler) PostSpaceIcon(c fiber.Ctx) error {
 	spaceID, err := id.Parse(c.Params("id"))
 	if err != nil {
 		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "invalid space id"})
+	}
+	// Permission first, upload second (same order as PostEmoji).
+	if err := h.svc.CanManageSpace(c.Context(), user.ID, spaceID); err != nil {
+		return spaceError(c, err, map[string]any{"space_id": spaceID})
 	}
 
 	fh, err := c.FormFile("file")
@@ -82,17 +85,7 @@ func (h *Handler) PostSpaceIcon(c fiber.Ctx) error {
 	iconURL := publicBase + "/v1/" + key
 	space, err := h.svc.UpdateSpaceIcon(c.Context(), user.ID, spaceID, iconURL)
 	if err != nil {
-		if errors.Is(err, ErrNotMember) {
-			return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": "not a member of this space"})
-		}
-		if errors.Is(err, ErrInsufficientSpacePermission) {
-			return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": "forbidden"})
-		}
-		if errors.Is(err, ErrSpaceNotFound) {
-			return c.Status(http.StatusNotFound).JSON(fiber.Map{"error": "space not found"})
-		}
-		logger.Err("spaces", err, map[string]any{"space_id": spaceID})
-		return c.Status(http.StatusInternalServerError).JSON(fiber.Map{"error": "internal error"})
+		return spaceError(c, err, map[string]any{"space_id": spaceID})
 	}
 	return c.JSON(spaceToJSON(space))
 }

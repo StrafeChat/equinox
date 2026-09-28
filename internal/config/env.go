@@ -41,9 +41,23 @@ func getEnvBool(key string, fallback bool) bool {
 	return fallback
 }
 
+// getEnvArray splits a comma-separated variable, trimming whitespace around each entry
+// and dropping empty ones ("a, b," -> ["a","b"]). An unset or blank variable yields
+// fallback, so CORS_ORIGINS="" behaves like "not configured" rather than one empty origin.
 func getEnvArray(key string, fallback []string) []string {
-	if v, ok := os.LookupEnv(key); ok {
-		return strings.Split(v, ",")
+	v, ok := os.LookupEnv(key)
+	if !ok || strings.TrimSpace(v) == "" {
+		return fallback
 	}
-	return fallback
+	parts := strings.Split(v, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	if len(out) == 0 {
+		return fallback
+	}
+	return out
 }

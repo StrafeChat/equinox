@@ -40,7 +40,7 @@ func NewSessionRepository(session gocqlx.Session) SessionRepository {
 }
 
 func (r *scyllaSessionRepo) Create(ctx context.Context, s *Session) error {
-	b := r.session.NewBatch(gocql.LoggedBatch).WithContext(ctx)
+	b := r.session.Batch(gocql.LoggedBatch).WithContext(ctx)
 	stmt1, _ := sessionsByUserTable.Insert()
 	b.Query(stmt1, s.UserID, s.SessionID, s.TokenHash, s.CreatedAt, s.ExpiresAt, s.IPAddress, s.UserAgent, s.DeviceName, s.RevokedAt)
 	stmt2, _ := sessionsByTokenTable.Insert()

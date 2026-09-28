@@ -261,6 +261,9 @@ func partialUser(u *auth.User) map[string]interface{} {
 		"discriminator": fmt.Sprintf("%04d", u.Discriminator),
 		"display_name":  u.DisplayName,
 		"avatar":        u.Avatar,
+		"banner":        u.Banner,
+		"bio":           u.Bio,
+		"about_me":      u.AboutMe,
 	}
 	pub := auth.ToPublicPresence(u.Presence, true)
 	m["presence"] = pub

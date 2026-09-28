@@ -10,54 +10,27 @@ import (
 
 // EffectiveChannelPermissions returns merged space role bits plus room allow/deny overwrites.
 // Space owner gets full channel permissions (bypasses room denies). Administrator bit bypasses room denies.
+//
+// Roles and overrides come from the space snapshot (one Redis read when cached); the only
+// per-call database read is the member row.
 func (s *Service) EffectiveChannelPermissions(ctx context.Context, userID, spaceID, roomID int64) (int64, error) {
-	sp, err := s.repo.GetByID(ctx, spaceID)
-	if err != nil || sp == nil {
-		return 0, ErrSpaceNotFound
-	}
-	if sp.OwnerID == userID {
-		return permissions.AllRoom, nil
-	}
-	everyoneID, err := s.ensureEveryoneRoleID(ctx, sp)
+	snap, err := s.permissionSnapshot(ctx, spaceID, roomID)
 	if err != nil {
 		return 0, err
+	}
+	if snap.OwnerID == userID {
+		return permissions.AllRoom, nil
 	}
 	mem, err := s.repo.GetMember(ctx, spaceID, userID)
 	if err != nil || mem == nil {
 		return 0, ErrNotMember
 	}
-	roleRows, err := s.repo.ListSpaceRoles(ctx, spaceID)
-	if err != nil {
-		return 0, err
-	}
-	byID := make(map[int64]*SpaceRole, len(roleRows))
-	for i := range roleRows {
-		byID[roleRows[i].ID] = &roleRows[i]
-	}
-	var base int64
-	if r := byID[everyoneID]; r != nil {
-		base = r.Permissions
-	}
-	for _, rid := range mem.RoleIDs {
-		if rid == everyoneID {
-			continue
-		}
-		if r := byID[rid]; r != nil {
-			base |= r.Permissions
-		}
-	}
+	base := snap.basePermissions(mem.RoleIDs)
 	if permissions.Has(base, permissions.PermAdministrator) {
 		return permissions.AllRoom, nil
 	}
-	roleOverrides, err := s.repo.ListRoomRoleOverrides(ctx, spaceID, roomID)
-	if err != nil {
-		return 0, err
-	}
-	userOverrides, err := s.repo.ListRoomUserOverrides(ctx, spaceID, roomID)
-	if err != nil {
-		return 0, err
-	}
-	return resolveEffectiveRoomPermissions(base, everyoneID, mem.RoleIDs, userID, roleOverrides, userOverrides), nil
+	ov := snap.RoomOverridesFor(roomID)
+	return resolveEffectiveRoomPermissions(base, snap.EveryoneRoleID, mem.RoleIDs, userID, ov.Roles, ov.Users), nil
 }
 
 func resolveEffectiveRoomPermissions(
@@ -114,42 +87,18 @@ func resolveEffectiveRoomPermissions(
 
 // SpacePermissionBase is OR of @everyone + member roles (no room overrides). For management checks.
 func (s *Service) SpacePermissionBase(ctx context.Context, userID, spaceID int64) (int64, error) {
-	sp, err := s.repo.GetByID(ctx, spaceID)
-	if err != nil || sp == nil {
-		return 0, ErrSpaceNotFound
-	}
-	if sp.OwnerID == userID {
-		return permissions.AllSpace, nil
-	}
-	everyoneID, err := s.ensureEveryoneRoleID(ctx, sp)
+	snap, err := s.permissionSnapshot(ctx, spaceID, 0)
 	if err != nil {
 		return 0, err
+	}
+	if snap.OwnerID == userID {
+		return permissions.AllSpace, nil
 	}
 	mem, err := s.repo.GetMember(ctx, spaceID, userID)
 	if err != nil || mem == nil {
 		return 0, ErrNotMember
 	}
-	roleRows, err := s.repo.ListSpaceRoles(ctx, spaceID)
-	if err != nil {
-		return 0, err
-	}
-	byID := make(map[int64]*SpaceRole, len(roleRows))
-	for i := range roleRows {
-		byID[roleRows[i].ID] = &roleRows[i]
-	}
-	var base int64
-	if r := byID[everyoneID]; r != nil {
-		base = r.Permissions
-	}
-	for _, rid := range mem.RoleIDs {
-		if rid == everyoneID {
-			continue
-		}
-		if r := byID[rid]; r != nil {
-			base |= r.Permissions
-		}
-	}
-	return base, nil
+	return snap.basePermissions(mem.RoleIDs), nil
 }
 
 func (s *Service) ensureEveryoneRoleID(ctx context.Context, sp *Space) (int64, error) {
@@ -184,6 +133,7 @@ func (s *Service) bootstrapEveryoneRole(ctx context.Context, spaceID int64) (int
 	if err := s.repo.UpdateEveryoneRoleID(ctx, spaceID, rid); err != nil {
 		return 0, err
 	}
+	s.invalidateSnapshot(ctx, spaceID)
 	return rid, nil
 }
 

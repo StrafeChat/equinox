@@ -2,3 +2,5 @@
 /tmp
 /bin
 /docs/*
+# Instance federation signing keys - runtime secrets, never committed.
+federation*.key

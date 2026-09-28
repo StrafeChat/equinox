@@ -21,16 +21,22 @@ type SendRequestInput struct {
 }
 
 // CreateRelationshipInput - PUT body for create relationship by ID.
+// z.Ptr wrappers, not bare z.Int()/z.Bool(): the struct fields are pointers, and handing
+// zog a non-pointer schema for a pointer field is a type-cast panic rather than a
+// validation error.
 var createRelationshipSchema = z.Struct(z.Shape{
-	"Type":                    z.Int().Optional(),
-	"FromFriendSuggestion":    z.Bool().Optional(),
-	"ConfirmStrangerRequest":  z.Bool().Optional(),
+	"Type":                   z.Ptr(z.Int()),
+	"FromFriendSuggestion":   z.Ptr(z.Bool()),
+	"ConfirmStrangerRequest": z.Ptr(z.Bool()),
 })
 
+// NB: no `,omitempty` on these tags. Zog resolves a shape key to a struct field by the
+// entire json tag string, so "type,omitempty" makes the field unreachable - the value is
+// dropped, and a type mismatch during that lookup panics the handler outright.
 type CreateRelationshipInput struct {
-	Type                   *int  `json:"type,omitempty"`
-	FromFriendSuggestion   *bool `json:"from_friend_suggestion,omitempty"`
-	ConfirmStrangerRequest *bool `json:"confirm_stranger_request,omitempty"`
+	Type                   *int  `json:"type"`
+	FromFriendSuggestion   *bool `json:"from_friend_suggestion"`
+	ConfirmStrangerRequest *bool `json:"confirm_stranger_request"`
 }
 
 // BulkDeleteInput - DELETE body for bulk remove.

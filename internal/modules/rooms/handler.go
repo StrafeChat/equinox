@@ -1,9 +1,12 @@
 package rooms
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/gofiber/fiber/v3"
 
@@ -12,12 +15,51 @@ import (
 	"github.com/StrafeChat/equinox/internal/modules/auth"
 )
 
+// HandleResolver turns "name#0001@domain" into a local user row (a shadow for remote
+// users). Provided by internal/federation; without it only local handles resolve.
+type HandleResolver interface {
+	ResolveHandle(ctx context.Context, handle string) (*auth.User, error)
+}
+
 type Handler struct {
-	svc *Service
+	svc      *Service
+	resolver HandleResolver
 }
 
 func NewHandler(svc *Service) *Handler {
 	return &Handler{svc: svc}
+}
+
+func (h *Handler) SetHandleResolver(r HandleResolver) {
+	h.resolver = r
+}
+
+// resolveHandle finds the user behind a handle. Handles with a domain need federation.
+func (h *Handler) resolveHandle(c fiber.Ctx, handle string) (*auth.User, int, string) {
+	handle = strings.TrimSpace(handle)
+	if h.resolver != nil {
+		u, err := h.resolver.ResolveHandle(c.Context(), handle)
+		if err != nil {
+			return nil, http.StatusNotFound, err.Error()
+		}
+		return u, 0, ""
+	}
+	if strings.Contains(handle, "@") {
+		return nil, http.StatusBadRequest, "this instance does not federate; use a local username#0001"
+	}
+	name, disc, ok := strings.Cut(strings.TrimPrefix(handle, "@"), "#")
+	d, err := strconv.Atoi(strings.TrimSpace(disc))
+	if !ok || err != nil || strings.TrimSpace(name) == "" {
+		return nil, http.StatusBadRequest, "expected username#0001"
+	}
+	u, err := h.svc.FindLocalUser(c.Context(), strings.TrimSpace(name), d)
+	if err != nil {
+		return nil, http.StatusInternalServerError, "internal error"
+	}
+	if u == nil {
+		return nil, http.StatusNotFound, "user not found"
+	}
+	return u, 0, ""
 }
 
 // List returns rooms the current user participates in.
@@ -73,8 +115,8 @@ func (h *Handler) Ack(c fiber.Ctx) error {
 		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "invalid room id"})
 	}
 	var body struct {
-		MessageID      string `json:"message_id"`
-		LastReadID     string `json:"last_read_message_id"`
+		MessageID  string `json:"message_id"`
+		LastReadID string `json:"last_read_message_id"`
 	}
 	if err := json.Unmarshal(c.Body(), &body); err != nil {
 		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "invalid body"})
@@ -93,6 +135,75 @@ func (h *Handler) Ack(c fiber.Ctx) error {
 	if err := h.svc.Ack(c.Context(), user.ID, roomID, msgID); err != nil {
 		if err == ErrNotParticipant {
 			return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": "not a participant"})
+		}
+		logger.Err("rooms", err, map[string]any{"user_id": user.ID, "room_id": roomID})
+		return c.Status(http.StatusInternalServerError).JSON(fiber.Map{"error": "internal error"})
+	}
+	return c.Status(http.StatusNoContent).Send(nil)
+}
+
+// SetNotifySettings updates the caller's own mute/notify-mode override for a room.
+// PATCH /rooms/:id/notify-settings. Body: { "muted"?: bool, "muted_until"?: string|null,
+// "notify_mode"?: 0-3 }. Any field not present keeps its current value.
+func (h *Handler) SetNotifySettings(c fiber.Ctx) error {
+	user := auth.GetUser(c)
+	if user == nil {
+		return c.Status(http.StatusUnauthorized).JSON(fiber.Map{"error": "unauthorized"})
+	}
+	roomID, err := id.Parse(c.Params("id"))
+	if err != nil {
+		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "invalid room id"})
+	}
+	// Decoded as raw fields (not a plain struct with *string) so a JSON `null` for
+	// muted_until ("clear the timed mute") can be told apart from the key being absent
+	// ("leave it alone") - a plain *string field unmarshals both to nil, which previously
+	// meant PATCHing {"muted_until": null} silently kept the old value forever.
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(c.Body(), &raw); err != nil {
+		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "invalid body"})
+	}
+	row, err := h.svc.GetUserRoomRow(c.Context(), user.ID, roomID)
+	if err != nil {
+		logger.Err("rooms", err, map[string]any{"user_id": user.ID, "room_id": roomID})
+		return c.Status(http.StatusInternalServerError).JSON(fiber.Map{"error": "internal error"})
+	}
+	muted, mutedUntil, notifyMode := false, (*time.Time)(nil), NotifyModeDefault
+	if row != nil {
+		muted, mutedUntil, notifyMode = row.Muted, row.MutedUntil, row.NotifyMode
+	}
+	if v, ok := raw["muted"]; ok {
+		if err := json.Unmarshal(v, &muted); err != nil {
+			return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "invalid muted"})
+		}
+	}
+	if v, ok := raw["muted_until"]; ok {
+		var s *string
+		if err := json.Unmarshal(v, &s); err != nil {
+			return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "invalid muted_until"})
+		}
+		if s == nil || *s == "" {
+			mutedUntil = nil
+		} else {
+			parsed, err := time.Parse(time.RFC3339, *s)
+			if err != nil {
+				return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "invalid muted_until"})
+			}
+			mutedUntil = &parsed
+		}
+	}
+	if v, ok := raw["notify_mode"]; ok {
+		if err := json.Unmarshal(v, &notifyMode); err != nil {
+			return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "invalid notify_mode"})
+		}
+	}
+	if err := h.svc.SetRoomNotifySettings(c.Context(), user.ID, roomID, muted, mutedUntil, notifyMode); err != nil {
+		switch err {
+		case ErrRoomNotFound:
+			return c.Status(http.StatusNotFound).JSON(fiber.Map{"error": "room not found"})
+		case ErrNotParticipant:
+			return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": "not a participant"})
+		case ErrInvalidNotifyMode:
+			return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 		}
 		logger.Err("rooms", err, map[string]any{"user_id": user.ID, "room_id": roomID})
 		return c.Status(http.StatusInternalServerError).JSON(fiber.Map{"error": "internal error"})
@@ -145,9 +256,27 @@ func (h *Handler) CreatePM(c fiber.Ctx) error {
 		RecipientID  string   `json:"recipient_id"`
 		Name         string   `json:"name"`
 		RecipientIDs []string `json:"recipient_ids"`
+		// Handles ("name#0001" or "name#0001@other.instance") as an alternative to ids -
+		// the way to reach someone on another instance for the first time.
+		RecipientHandle  string   `json:"recipient_handle"`
+		RecipientHandles []string `json:"recipient_handles"`
 	}
 	if err := json.Unmarshal(c.Body(), &body); err != nil {
 		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "invalid body"})
+	}
+	if body.RecipientID == "" && body.RecipientHandle != "" {
+		target, status, msg := h.resolveHandle(c, body.RecipientHandle)
+		if target == nil {
+			return c.Status(status).JSON(fiber.Map{"error": msg})
+		}
+		body.RecipientID = id.Format(target.ID)
+	}
+	for _, handle := range body.RecipientHandles {
+		target, status, msg := h.resolveHandle(c, handle)
+		if target == nil {
+			return c.Status(status).JSON(fiber.Map{"error": msg})
+		}
+		body.RecipientIDs = append(body.RecipientIDs, id.Format(target.ID))
 	}
 	if body.RecipientID != "" {
 		targetID, err := id.Parse(body.RecipientID)
@@ -156,6 +285,9 @@ func (h *Handler) CreatePM(c fiber.Ctx) error {
 		}
 		room, created, err := h.svc.CreatePM(c.Context(), user.ID, targetID)
 		if err != nil {
+			if err == ErrUserNotFound {
+				return c.Status(http.StatusNotFound).JSON(fiber.Map{"error": "user not found"})
+			}
 			logger.Err("rooms", err, map[string]any{"actor_id": user.ID, "target_id": targetID})
 			return c.Status(http.StatusInternalServerError).JSON(fiber.Map{"error": "internal error"})
 		}
@@ -177,8 +309,10 @@ func (h *Handler) CreatePM(c fiber.Ctx) error {
 		room, err := h.svc.CreateGroupPM(c.Context(), user.ID, name, ids)
 		if err != nil {
 			switch err {
-			case ErrMinParticipants:
+			case ErrMinParticipants, ErrTooManyParticipants, ErrInvalidName:
 				return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+			case ErrUserNotFound:
+				return c.Status(http.StatusNotFound).JSON(fiber.Map{"error": "user not found"})
 			default:
 				logger.Err("rooms", err, map[string]any{"actor_id": user.ID})
 				return c.Status(http.StatusInternalServerError).JSON(fiber.Map{"error": "internal error"})
@@ -201,9 +335,17 @@ func (h *Handler) AddParticipant(c fiber.Ctx) error {
 	}
 	var body struct {
 		UserID string `json:"user_id"`
+		Handle string `json:"handle"`
 	}
-	if err := json.Unmarshal(c.Body(), &body); err != nil || body.UserID == "" {
-		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "user_id required"})
+	if err := json.Unmarshal(c.Body(), &body); err != nil || (body.UserID == "" && body.Handle == "") {
+		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "user_id or handle required"})
+	}
+	if body.UserID == "" {
+		target, status, msg := h.resolveHandle(c, body.Handle)
+		if target == nil {
+			return c.Status(status).JSON(fiber.Map{"error": msg})
+		}
+		body.UserID = id.Format(target.ID)
 	}
 	targetID, err := id.Parse(body.UserID)
 	if err != nil {
@@ -219,6 +361,10 @@ func (h *Handler) AddParticipant(c fiber.Ctx) error {
 			return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "not a group room"})
 		case ErrAlreadyInGroup:
 			return c.Status(http.StatusConflict).JSON(fiber.Map{"error": "user already in group"})
+		case ErrTooManyParticipants:
+			return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+		case ErrUserNotFound:
+			return c.Status(http.StatusNotFound).JSON(fiber.Map{"error": "user not found"})
 		default:
 			logger.Err("rooms", err, map[string]any{"room_id": roomID, "target_id": targetID})
 			return c.Status(http.StatusInternalServerError).JSON(fiber.Map{"error": "internal error"})
@@ -295,6 +441,8 @@ func (h *Handler) UpdateRoom(c fiber.Ctx) error {
 				return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "not a group room"})
 			case ErrNotCreator:
 				return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": "only the group creator can rename the group"})
+			case ErrInvalidName:
+				return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 			default:
 				logger.Err("rooms", err, map[string]any{"room_id": roomID})
 				return c.Status(http.StatusInternalServerError).JSON(fiber.Map{"error": "internal error"})
@@ -327,8 +475,8 @@ func (h *Handler) UpdateRoom(c fiber.Ctx) error {
 
 func roomToJSON(r RoomWithParticipants) fiber.Map {
 	m := fiber.Map{
-		"id":   id.Format(r.ID),
-		"type": r.Type,
+		"id":         id.Format(r.ID),
+		"type":       r.Type,
 		"recipients": recipientIDsToJSON(r.ParticipantIDs),
 		"created_at": r.CreatedAt,
 	}
@@ -372,6 +520,18 @@ func roomToJSON(r RoomWithParticipants) fiber.Map {
 	m["e2ee_enabled"] = e2eeEnabled
 	if len(r.Participants) > 0 {
 		m["participants"] = r.Participants
+	}
+	if r.Federation != nil {
+		m["federation"] = r.Federation
+	}
+	if r.Muted {
+		m["muted"] = true
+	}
+	if r.MutedUntil != nil {
+		m["muted_until"] = r.MutedUntil
+	}
+	if r.NotifyMode != 0 {
+		m["notify_mode"] = r.NotifyMode
 	}
 	return m
 }

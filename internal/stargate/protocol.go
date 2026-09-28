@@ -52,6 +52,20 @@ type ReadyPayload struct {
 	Relationships interface{} `json:"relationships,omitempty"`
 	Spaces        interface{} `json:"spaces,omitempty"`
 	SpaceRooms    interface{} `json:"space_rooms,omitempty"` // map: space_id -> []room
+	// VoiceStates is everyone currently in a voice room the user can see (their spaces'
+	// voice rooms, their PMs); Calls the ringing/running PM calls among those rooms.
+	VoiceStates interface{} `json:"voice_states,omitempty"`
+	Calls       interface{} `json:"calls,omitempty"`
+}
+
+// ReadyData is what a ReadyDataProvider contributes to READY.
+type ReadyData struct {
+	Rooms         interface{}
+	Relationships interface{}
+	Spaces        interface{}
+	SpaceRooms    interface{}
+	VoiceStates   interface{}
+	Calls         interface{}
 }
 
 // Server outbound: EVENT

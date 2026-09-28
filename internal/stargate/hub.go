@@ -3,7 +3,9 @@ package stargate
 import (
 	"context"
 	"encoding/json"
+	"strconv"
 	"sync"
+	"time"
 
 	"github.com/redis/go-redis/v9"
 
@@ -23,10 +25,21 @@ type PresenceNotifier interface {
 	OnDisconnect(ctx context.Context, userID int64)
 }
 
+// ChannelAuthorizer decides whether a user may subscribe to (and therefore send
+// into) a "space" channel - a room ID for PMs/group PMs, or a room ID for a space
+// text/voice room. "user" channels never reach this: a client may only ever
+// subscribe to its own user ID, which the Hub checks directly.
+type ChannelAuthorizer interface {
+	CanAccessRoom(ctx context.Context, userID int64, roomID string) (bool, error)
+}
+
+const authzTimeout = 5 * time.Second
+
 type HubConfig struct {
-	Redis             *redis.Client
-	Region            string
-	PresenceNotifier  PresenceNotifier // optional; if set, called on connect/disconnect
+	Redis            *redis.Client
+	Region           string
+	PresenceNotifier PresenceNotifier  // optional; if set, called on connect/disconnect
+	Authorizer       ChannelAuthorizer // required to allow "space" subscriptions; nil denies all of them
 }
 
 func NewHub(redis *redis.Client, region string) *Hub {
@@ -38,11 +51,12 @@ func NewHubWithConfig(cfg HubConfig) *Hub {
 		cfg.Region = "default"
 	}
 	h := &Hub{
-		region:          cfg.Region,
-		redis:           cfg.Redis,
-		presenceNotify:  cfg.PresenceNotifier,
-		clients:         make(map[*Client]struct{}),
-		subs:            make(map[string]map[*Client]struct{}),
+		region:         cfg.Region,
+		redis:          cfg.Redis,
+		presenceNotify: cfg.PresenceNotifier,
+		authorizer:     cfg.Authorizer,
+		clients:        make(map[*Client]struct{}),
+		subs:           make(map[string]map[*Client]struct{}),
 	}
 	return h
 }
@@ -51,10 +65,38 @@ type Hub struct {
 	region         string
 	redis          *redis.Client
 	presenceNotify PresenceNotifier
+	authorizer     ChannelAuthorizer
 	clients        map[*Client]struct{}
 	subs           map[string]map[*Client]struct{} // channel -> clients
 	subMu          sync.RWMutex
 	regMu          sync.RWMutex
+}
+
+// authorizeSubscribe reports whether userID may subscribe to (and send into) typ:id.
+// "user" channels carry private per-user events (relationship requests, new PMs,
+// read receipts, true presence) so a client may only ever subscribe to its own.
+// "space" channels carry room/PM events, gated on room participation or space
+// membership via the injected ChannelAuthorizer.
+func (h *Hub) authorizeSubscribe(ctx context.Context, userID int64, typ, id string) bool {
+	switch typ {
+	case "user":
+		return id == strconv.FormatInt(userID, 10)
+	case "space":
+		if h.authorizer == nil {
+			logger.Warn("stargate", "no ChannelAuthorizer configured; denying space subscription for user_id=%d", userID)
+			return false
+		}
+		ctx, cancel := context.WithTimeout(ctx, authzTimeout)
+		defer cancel()
+		ok, err := h.authorizer.CanAccessRoom(ctx, userID, id)
+		if err != nil {
+			logger.Err("stargate", err, map[string]any{"user_id": userID, "room_id": id})
+			return false
+		}
+		return ok
+	default:
+		return false
+	}
 }
 
 func (h *Hub) Run(ctx context.Context) {

@@ -8,4 +8,6 @@ func SetupRoutes(d Deps) {
 	SetupSpacesRoutes(d)
 	SetupDevicesRoutes(d)
 	SetupMessagesRoutes(d)
+	SetupFederationRoutes(d)
+	SetupVoiceRoutes(d)
 }

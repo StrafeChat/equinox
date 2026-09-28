@@ -20,6 +20,9 @@ var registerSchema = z.Struct(z.Shape{
 	"Password":      z.String().Min(8, z.Message("password must be at least 8 characters")).Required(z.Message("password is required")),
 	"DateOfBirth":   z.Time().Optional(),
 	"Discriminator": z.Ptr(z.Int().GTE(1).LTE(9999)),
+	// Optional here: whether a token is actually required depends on instance config, so
+	// the handler decides and can return a captcha-specific error rather than "validation failed".
+	"CaptchaToken":  z.String().Optional(),
 })
 
 func ParseLoginBody(body []byte, out *LoginInput) z.ZogIssueList {

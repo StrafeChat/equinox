@@ -3,8 +3,8 @@ package auth
 // PublicPresence is the presence object exposed to the API and WebSocket.
 // It never includes the internal "online" boolean so others cannot detect invisible users.
 type PublicPresence struct {
-	Status       string `json:"status"`                   // "online" | "idle" | "dnd" | "offline"
-	CustomStatus string `json:"custom_status,omitempty"`   // Optional status text
+	Status       string `json:"status"`                  // "online" | "idle" | "dnd" | "offline"
+	CustomStatus string `json:"custom_status,omitempty"` // Optional status text
 }
 
 // ToPublicPresence converts UserPresence to PublicPresence for API/WS responses.

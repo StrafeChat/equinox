@@ -19,12 +19,16 @@ func SetupUsersRoutes(d Deps) {
 
 	roomsRepo := rooms.NewRepository(d.Scylla)
 	usersHandler := users.NewHandler(userRepo, roomsRepo, d.Redis, d.Config)
+	if d.Federation != nil {
+		usersHandler.SetFederator(d.Federation)
+	}
 
 	// /users/@me - current user
 	me := d.App.Group("/users/@me", requireAuth)
 	me.Get("", usersHandler.Me)
 	me.Patch("", usersHandler.PatchMe)
 	me.Post("/avatar", usersHandler.PostAvatar)
+	me.Post("/banner", usersHandler.PostBanner)
 
 	// /users/@me/relationships
 	r := me.Group("/relationships")
