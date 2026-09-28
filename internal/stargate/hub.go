@@ -35,6 +35,11 @@ type ChannelAuthorizer interface {
 
 const authzTimeout = 5 * time.Second
 
+// presenceGrace delays marking a user offline after their last socket drops, so a brief
+// disconnect (a backgrounded mobile browser, a network blip) that reconnects right away
+// doesn't flicker them offline for everyone who can see them.
+const presenceGrace = 10 * time.Second
+
 type HubConfig struct {
 	Redis            *redis.Client
 	Region           string
@@ -57,6 +62,7 @@ func NewHubWithConfig(cfg HubConfig) *Hub {
 		authorizer:     cfg.Authorizer,
 		clients:        make(map[*Client]struct{}),
 		subs:           make(map[string]map[*Client]struct{}),
+		pendingOffline: make(map[int64]int64),
 	}
 	return h
 }
@@ -70,6 +76,10 @@ type Hub struct {
 	subs           map[string]map[*Client]struct{} // channel -> clients
 	subMu          sync.RWMutex
 	regMu          sync.RWMutex
+	// pendingOffline holds the generation of the latest scheduled offline per user (grace
+	// period); a reconnect deletes the entry to cancel it. Guarded by regMu.
+	pendingOffline map[int64]int64
+	offlineGen     int64
 }
 
 // authorizeSubscribe reports whether userID may subscribe to (and send into) typ:id.
@@ -215,12 +225,28 @@ func (h *Hub) hasOtherClientLocked(userID int64, exclude *Client) bool {
 	return false
 }
 
+// hasAnyClientLocked reports whether the user has at least one connected client.
+func (h *Hub) hasAnyClientLocked(userID int64) bool {
+	for cl := range h.clients {
+		if cl.userID == userID {
+			return true
+		}
+	}
+	return false
+}
+
 func (h *Hub) register(c *Client) {
 	h.regMu.Lock()
+	had := h.hasAnyClientLocked(c.userID)
 	h.clients[c] = struct{}{}
+	_, wasPending := h.pendingOffline[c.userID]
+	delete(h.pendingOffline, c.userID) // a reconnect cancels a pending offline
 	h.regMu.Unlock()
 	logger.Info("stargate", "client connected: user_id=%d", c.userID)
-	if h.presenceNotify != nil {
+	// OnConnect only on a genuine offline->online transition: not for a second device (the
+	// user is already online) and not for a reconnect within the grace window (they never
+	// actually went offline, so no PRESENCE_UPDATE is needed).
+	if h.presenceNotify != nil && !had && !wasPending {
 		go h.presenceNotify.OnConnect(context.Background(), c.userID)
 	}
 }
@@ -229,12 +255,32 @@ func (h *Hub) unregister(c *Client) {
 	userID := c.userID
 	h.regMu.Lock()
 	delete(h.clients, c)
-	// Only notify offline when no other clients for this user remain
+	// Only schedule offline when no other clients for this user remain.
 	hasOther := h.hasOtherClientLocked(userID, c)
+	var gen int64 = -1
+	if h.presenceNotify != nil && !hasOther {
+		h.offlineGen++
+		gen = h.offlineGen
+		h.pendingOffline[userID] = gen
+	}
 	h.regMu.Unlock()
 
-	if h.presenceNotify != nil && !hasOther {
-		go h.presenceNotify.OnDisconnect(context.Background(), userID)
+	// Grace period before going offline (see presenceGrace). A reconnect within the window
+	// deletes the map entry in register(); a newer disconnect bumps the generation - either
+	// way this timer then no-ops, so only the last disconnect that is still pending fires.
+	if gen >= 0 {
+		time.AfterFunc(presenceGrace, func() {
+			h.regMu.Lock()
+			cur, ok := h.pendingOffline[userID]
+			act := ok && cur == gen && !h.hasAnyClientLocked(userID)
+			if act {
+				delete(h.pendingOffline, userID)
+			}
+			h.regMu.Unlock()
+			if act {
+				h.presenceNotify.OnDisconnect(context.Background(), userID)
+			}
+		})
 	}
 
 	// Unsubscribe from all Redis channels this client was in

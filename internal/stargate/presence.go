@@ -63,25 +63,34 @@ func (p *DefaultPresenceNotifier) setOnline(ctx context.Context, userID int64, o
 	if updated == nil {
 		return
 	}
-	// Use public presence (status/custom_status only; invisible→offline for others)
-	presenceSelf := auth.ToPublicPresence(updated.Presence, false)
-	presenceOthers := auth.ToPublicPresence(updated.Presence, true)
+	PublishPresenceUpdate(ctx, p.redis, p.region, updated)
+}
 
-	payloadSelf := map[string]interface{}{
-		"user_id":  id.Format(updated.ID),
-		"presence": presenceSelf,
+// PublishPresenceUpdate broadcasts a user's presence to everyone who should see it: the
+// user themselves (their real status, so multiple devices stay in sync), their friends, and
+// every space they belong to (reaching all co-members subscribed to that space). Friends and
+// spaces get the "others" view, where invisible reads as offline. Broadcasting to spaces -
+// not just friends - is what keeps a member's status correct for people who share a space
+// with them but are not friends; without it those statuses only ever reflected load time.
+func PublishPresenceUpdate(ctx context.Context, rdb *redis.Client, region string, user *auth.User) {
+	if rdb == nil || user == nil {
+		return
 	}
-	payloadOthers := map[string]interface{}{
-		"user_id":  id.Format(updated.ID),
-		"presence": presenceOthers,
+	region = defaultRegion(region)
+	presenceSelf := auth.ToPublicPresence(user.Presence, false)
+	presenceOthers := auth.ToPublicPresence(user.Presence, true)
+	payloadSelf := map[string]interface{}{"user_id": id.Format(user.ID), "presence": presenceSelf}
+	payloadOthers := map[string]interface{}{"user_id": id.Format(user.ID), "presence": presenceOthers}
+
+	// The user's own devices (real status).
+	PublishToUser(ctx, rdb, user.ID, presenceUpdateEvent, payloadSelf, region)
+	// Friends (DM list / friends list).
+	if len(user.Relationships) > 0 {
+		PublishToUsers(ctx, rdb, user.Relationships, presenceUpdateEvent, payloadOthers, region)
 	}
-
-	// Notify the user themselves (e.g. multiple devices)
-	PublishToUser(ctx, p.redis, updated.ID, presenceUpdateEvent, payloadSelf, p.region)
-
-	// Notify all friends
-	friendIDs := updated.Relationships
-	if len(friendIDs) > 0 {
-		PublishToUsers(ctx, p.redis, friendIDs, presenceUpdateEvent, payloadOthers, p.region)
+	// Every space the user is a member of - one publish per space, received by every
+	// co-member subscribed to it. user.Spaces is maintained on join/leave.
+	for _, spaceID := range user.Spaces {
+		PublishToSpace(ctx, rdb, spaceID, presenceUpdateEvent, payloadOthers, region)
 	}
 }

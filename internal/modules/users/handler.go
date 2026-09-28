@@ -113,20 +113,9 @@ func (h *Handler) PatchMe(c fiber.Ctx) error {
 		if h.cfg != nil {
 			region = h.cfg.Stargate.Region
 		}
-		// Self sees actual status; friends see public (invisible → offline)
-		presenceSelf := auth.ToPublicPresence(updated.Presence, false)
-		presenceOthers := auth.ToPublicPresence(updated.Presence, true)
-		stargate.PublishToUser(c.Context(), h.redis, updated.ID, "PRESENCE_UPDATE", map[string]interface{}{
-			"user_id":  id.Format(updated.ID),
-			"presence": presenceSelf,
-		}, region)
-		friendIDs := updated.Relationships
-		if len(friendIDs) > 0 {
-			stargate.PublishToUsers(c.Context(), h.redis, friendIDs, "PRESENCE_UPDATE", map[string]interface{}{
-				"user_id":  id.Format(updated.ID),
-				"presence": presenceOthers,
-			}, region)
-		}
+		// Reaches the user's own devices (real status), friends, and every space they are
+		// in (co-members), so a status change is seen everywhere - not just by friends.
+		stargate.PublishPresenceUpdate(c.Context(), h.redis, region, updated)
 	}
 
 	if hasProfileFieldsForRealtime(&upd) && h.redis != nil {
