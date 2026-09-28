@@ -76,11 +76,31 @@ Go identifiers, error strings, docs:
 - **Background goroutines go through `internal/safego`** (`safego.Go` for fire-and-forget,
   `safego.Run` inside a WaitGroup worker). Fiber's recover middleware only covers the
   request goroutine; a bare `go func()` that panics takes the whole API process down.
-- **Auth is the `Authorization: Bearer` header only.** The REST middleware deliberately
-  accepts no cookie and no `?token=` query parameter. The WebSocket gateway is the one
-  exception (browsers cannot set headers on a WebSocket), which is why
+- **Auth is the `Authorization` header only** — no cookie, no `?token=` query parameter.
+  The header carries one of three credentials, all resolved by `middleware.RequireAuth`:
+  a session `Bearer` token; an OAuth2 `Bearer` access token (tried when the token is not a
+  live session, its granted scopes recorded in `Locals[middleware.LocalsKeyScopes]` and
+  gating scope-limited fields such as the account email in `/users/@me`); or a
+  `Bot <token>` bot-account token. The `applications`/`oauth` modules inject their
+  resolvers at startup with `middleware.SetBotResolver`/`SetOAuthResolver`, so the
+  middleware never imports them (they import `auth`, which would cycle). The WebSocket
+  gateway is the one exception (browsers cannot set headers on a WebSocket), which is why
   `STARGATE_ALLOWED_ORIGINS` is required whenever federation is on — without an origin
   check, any site could open an authenticated gateway connection in a signed-in user's name.
+- **Developer platform (`internal/modules/applications` + `internal/modules/oauth`)**:
+  OAuth2 applications and bot accounts, modelled on Discord. An application owns redirect
+  URIs, a hashed client secret, and optionally a bot user (an `auth.User` with `Bot` set
+  and a synthetic `bot+<id>@bots.invalid` email so it never collides on the empty-email
+  login key). Client secrets and bot tokens are hashed at rest with the session-token
+  scheme (`hex(sha256(hex-decoded raw))`) and shown exactly once at mint/reset. `oauth` is
+  the authorization server: authorization-code grant, `identify`/`email`/`guilds` scopes,
+  single-use codes, and access+refresh tokens with per-user grants. Bots are REST-only
+  today — a gateway (WebSocket) session type for them is a deliberate follow-up.
+- **Profile badges** are a `public_flags` bitfield on the user
+  (`internal/modules/auth/badges.go`; append-only bits behind an `AllBadges` mask). An
+  instance admin assigns them through moderation (`instance.SetUserBadges`), and every user
+  payload exposes `auth.PublicFlags(u)` — the `Flags` column masked to known bits — never
+  the raw column.
 - **Voice/video (`internal/modules/voice`)**: LiveKit carries the media; this module is
   the authority on who is in which voice room (Redis-backed `voice.State`, one room per
   user), what they may publish (the join token's sources and `UpdateParticipant` follow
