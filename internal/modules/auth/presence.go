@@ -14,7 +14,9 @@ func ToPublicPresence(p UserPresence, forOthers bool) PublicPresence {
 	var status string
 	if !p.Online {
 		status = "offline"
-	} else if p.Status == "" {
+	} else if p.Status == "" || p.Status == "offline" {
+		// "offline" was the old default and is not a real choice; when Online it means the
+		// account simply never picked a status, so show plain online.
 		status = "online"
 	} else {
 		status = p.Status

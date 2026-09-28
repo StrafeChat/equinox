@@ -322,6 +322,12 @@ func main() {
 		Authorizer:       &roomChannelAuthorizer{roomSvc: roomSvc, spaceSvc: spaceSvc},
 	})
 	ctx := context.Background()
+	// A fresh gateway has no clients, so the online-presence set must start empty; this is
+	// what makes a crash self-heal on a single-instance deployment (stale ids from the old
+	// process are dropped). See stargate.OnlinePresenceKey.
+	if err := redis.Del(ctx, stargate.OnlinePresenceKey).Err(); err != nil {
+		logger.Warn("stargate", "could not reset online-presence set: %v", err)
+	}
 	hub.Run(ctx)
 
 	resolver := stargate.NewResolver(sessionRepo, userRepo)

@@ -12,6 +12,13 @@ import (
 
 const presenceUpdateEvent = "PRESENCE_UPDATE"
 
+// OnlinePresenceKey is a Redis set of the user ids with at least one live gateway
+// connection. Maintained here (SADD on connect, SREM on last disconnect) so a separate
+// process - the API's admin stats - can read the count with SCARD without a database scan.
+// Cleared on gateway startup (a fresh gateway has no clients), which self-heals a crash on
+// a single-instance deployment; a multi-instance deployment would want per-node sets.
+const OnlinePresenceKey = "presence:online"
+
 // DefaultPresenceNotifier updates user presence in the DB and publishes to friends on connect/disconnect.
 type DefaultPresenceNotifier struct {
 	userRepo auth.UserRepository
@@ -42,6 +49,16 @@ func (p *DefaultPresenceNotifier) setOnline(ctx context.Context, userID int64, o
 	if err != nil {
 		logger.Err("stargate", err, map[string]any{"user_id": userID, "online": online})
 		return
+	}
+	// Track membership of the online set for the admin dashboard's live count. SADD is
+	// idempotent (a second device re-adds harmlessly); SREM fires only on last disconnect,
+	// because the hub calls OnDisconnect only when no other client for the user remains.
+	if p.redis != nil {
+		if online {
+			p.redis.SAdd(ctx, OnlinePresenceKey, id.Format(userID))
+		} else {
+			p.redis.SRem(ctx, OnlinePresenceKey, id.Format(userID))
+		}
 	}
 	if updated == nil {
 		return

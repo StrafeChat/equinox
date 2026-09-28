@@ -78,6 +78,11 @@ type ModerationRepository interface {
 
 	AppendAudit(ctx context.Context, e *AuditEntry) error
 	ListAudit(ctx context.Context, limit int) ([]AuditEntry, error)
+
+	// CountUsers and CountSpaces are full-table COUNT(*) scans; GetStats caches the
+	// results in Redis so the scan runs at most once a minute.
+	CountUsers(ctx context.Context) (int64, error)
+	CountSpaces(ctx context.Context) (int64, error)
 }
 
 func NewModerationRepository(session gocqlx.Session) ModerationRepository {
@@ -225,6 +230,19 @@ func (r *repo) ListAudit(ctx context.Context, limit int) ([]AuditEntry, error) {
 		return nil, err
 	}
 	return out, nil
+}
+
+func (r *repo) CountUsers(ctx context.Context) (int64, error)  { return r.count(ctx, "users") }
+func (r *repo) CountSpaces(ctx context.Context) (int64, error) { return r.count(ctx, "spaces") }
+
+// count is a COUNT(*) over a whole table - a full scan, aggregated server-side into one
+// row. Only ever called behind the Redis cache in GetStats.
+func (r *repo) count(ctx context.Context, table string) (int64, error) {
+	var n int64
+	if err := r.session.Query("SELECT COUNT(*) FROM "+table, nil).WithContext(ctx).GetRelease(&n); err != nil {
+		return 0, err
+	}
+	return n, nil
 }
 
 // unused guard so a future refactor that drops time from this file fails loudly here.

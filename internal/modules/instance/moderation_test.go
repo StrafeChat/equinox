@@ -110,6 +110,9 @@ func (f *fakeModRepo) ListAudit(_ context.Context, _ int) ([]AuditEntry, error) 
 	return append([]AuditEntry{}, f.audit...), nil
 }
 
+func (f *fakeModRepo) CountUsers(context.Context) (int64, error)  { return 0, nil }
+func (f *fakeModRepo) CountSpaces(context.Context) (int64, error) { return 0, nil }
+
 // fakeUsers implements the slice of auth.UserRepository moderation touches.
 type fakeUsers struct{ users map[int64]*auth.User }
 

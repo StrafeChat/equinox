@@ -215,7 +215,9 @@ func (s *service) Register(ctx context.Context, in RegisterInput) (*User, error)
 		VerifiedEmail: false,
 		Presence: UserPresence{
 			Online:       false,
-			Status:       "offline",
+			// The user's *chosen* status; "offline" is not one of the choices
+			// (online/idle/dnd/invisible), it is what a disconnected user reads as.
+			Status:       "online",
 			CustomStatus: "",
 		},
 		DateOfBirth: in.DateOfBirth,

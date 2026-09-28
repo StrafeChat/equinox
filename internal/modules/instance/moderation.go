@@ -562,6 +562,11 @@ type Stats struct {
 	Bans        int  `json:"bans"`
 	Invites     int  `json:"invites"`
 	InviteOnly  bool `json:"invite_only"`
+	// Instance-wide counts. -1 means "could not determine right now" (the count scan
+	// failed or timed out), which the dashboard shows as a dash rather than a wrong zero.
+	Accounts int64 `json:"accounts"`
+	Online   int64 `json:"online"`
+	Spaces   int64 `json:"spaces"`
 }
 
 func (s *Service) GetStats(ctx context.Context, actorID int64) (*Stats, error) {
@@ -580,5 +585,49 @@ func (s *Service) GetStats(ctx context.Context, actorID int64) (*Stats, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Stats{OpenReports: len(open), Bans: len(bans), Invites: len(invites), InviteOnly: s.cfg.Flags.InviteOnly}, nil
+	st := &Stats{
+		OpenReports: len(open),
+		Bans:        len(bans),
+		Invites:     len(invites),
+		InviteOnly:  s.cfg.Flags.InviteOnly,
+		Accounts:    s.cachedCount(ctx, "stats:accounts", s.mod.Repo.CountUsers),
+		Spaces:      s.cachedCount(ctx, "stats:spaces", s.mod.Repo.CountSpaces),
+		Online:      s.onlineCount(ctx),
+	}
+	return st, nil
+}
+
+// cachedCount reads a COUNT(*) once a minute at most: it serves the Redis-cached value when
+// present and otherwise runs the scan (bounded, so a huge table cannot hang the request)
+// and caches it. A scan that fails returns -1 - shown as a dash, never a misleading 0.
+func (s *Service) cachedCount(ctx context.Context, key string, count func(context.Context) (int64, error)) int64 {
+	if s.mod.Redis != nil {
+		if v, err := s.mod.Redis.Get(ctx, key).Int64(); err == nil {
+			return v
+		}
+	}
+	cctx, cancel := context.WithTimeout(ctx, 8*time.Second)
+	defer cancel()
+	n, err := count(cctx)
+	if err != nil {
+		logger.Err("instance", err, map[string]any{"stage": "count", "key": key})
+		return -1
+	}
+	if s.mod.Redis != nil {
+		s.mod.Redis.Set(ctx, key, n, time.Minute)
+	}
+	return n
+}
+
+// onlineCount reads the size of the gateway's online-presence set. No fallback scan: the
+// database's per-user online bool lags a crash, whereas the set is reset on gateway start.
+func (s *Service) onlineCount(ctx context.Context) int64 {
+	if s.mod.Redis == nil {
+		return -1
+	}
+	n, err := s.mod.Redis.SCard(ctx, stargate.OnlinePresenceKey).Result()
+	if err != nil {
+		return -1
+	}
+	return n
 }
