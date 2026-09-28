@@ -4,3 +4,10 @@
 /docs/*
 # Instance federation signing keys - runtime secrets, never committed.
 federation*.key
+# Compiled binaries built at the repo root (see Dockerfile). Build artifacts,
+# not source - the sources live in ./cmd/{api,migrate,stargate}. Anchored to the
+# root so they don't match the cmd/* source directories of the same names.
+/api
+/migrate
+/stargate
+/main
