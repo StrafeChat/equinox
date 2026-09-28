@@ -148,6 +148,12 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if user.Banner != "" {
 		readyUser["banner"] = user.Banner
 	}
+	if user.AboutMe != "" {
+		readyUser["about_me"] = user.AboutMe
+	}
+	if user.Bio != "" {
+		readyUser["bio"] = user.Bio
+	}
 	if p := auth.ToPublicPresence(user.Presence, false); p.Status != "" || p.CustomStatus != "" {
 		readyUser["presence"] = p
 	}

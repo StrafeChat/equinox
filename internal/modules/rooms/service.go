@@ -124,6 +124,8 @@ func participantOf(u *auth.User, localDomain string) Participant {
 		Banner:        u.Banner,
 		Bio:           u.Bio,
 		AboutMe:       u.AboutMe,
+		PublicFlags:   auth.PublicFlags(u),
+		Bot:           u.Bot,
 		Presence:      auth.ToPublicPresence(u.Presence, true),
 	}
 	if localDomain != "" {
