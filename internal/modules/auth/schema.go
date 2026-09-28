@@ -22,7 +22,9 @@ var registerSchema = z.Struct(z.Shape{
 	"Discriminator": z.Ptr(z.Int().GTE(1).LTE(9999)),
 	// Optional here: whether a token is actually required depends on instance config, so
 	// the handler decides and can return a captcha-specific error rather than "validation failed".
-	"CaptchaToken":  z.String().Optional(),
+	"CaptchaToken": z.String().Optional(),
+	// Same reasoning as CaptchaToken: whether it is required depends on instance config.
+	"Invite": z.String().Trim().Max(64, z.Message("invite code is too long")).Optional(),
 })
 
 func ParseLoginBody(body []byte, out *LoginInput) z.ZogIssueList {

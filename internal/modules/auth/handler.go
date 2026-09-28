@@ -134,6 +134,12 @@ func (h *Handler) Register(c fiber.Ctx) error {
 		switch err {
 		case ErrInviteOnly:
 			return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": "invite-only mode enabled"})
+		case ErrInviteRequired:
+			// 403 with a distinct code so the client can reveal the invite field rather
+			// than showing a dead end.
+			return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": err.Error(), "code": "invite_required"})
+		case ErrInviteInvalid:
+			return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": err.Error(), "code": "invite_invalid"})
 		case ErrEmailInUse:
 			return c.Status(http.StatusConflict).JSON(fiber.Map{"error": "email already in use"})
 		case ErrDiscriminatorInUse:

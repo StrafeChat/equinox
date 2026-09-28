@@ -110,6 +110,9 @@ type RegisterInput struct {
 	// CaptchaToken is the challenge response from the client widget. Only looked at when
 	// the instance has a captcha configured; ignored entirely otherwise.
 	CaptchaToken string `json:"captcha_token"`
+	// Invite is an instance invite code. Required only when the instance is invite-only
+	// and this is not the very first account on it.
+	Invite string `json:"invite"`
 }
 
 // Session is stored in sessions_by_user and sessions_by_token (token_hash is the raw hash).

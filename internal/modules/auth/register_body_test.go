@@ -10,7 +10,7 @@ func TestParseRegisterBodyReadsEveryField(t *testing.T) {
 	body := []byte(`{
 		"email":"A@B.co","username":"abc","password":"correcthorsebattery",
 		"date_of_birth":"2000-01-01T00:00:00.000Z",
-		"discriminator":4242,"captcha_token":"TOK123"
+		"discriminator":4242,"captcha_token":"TOK123","invite":"  aB3dE6gH9k  "
 	}`)
 	if errs := ParseRegisterBody(body, &in); errs != nil {
 		t.Fatalf("parse errors: %v", errs)
@@ -23,5 +23,10 @@ func TestParseRegisterBodyReadsEveryField(t *testing.T) {
 	}
 	if in.DateOfBirth.IsZero() {
 		t.Error("DateOfBirth was dropped")
+	}
+	// Same trap as the fields above, plus the Trim() that lets someone paste a code with
+	// a stray space and still get in.
+	if in.Invite != "aB3dE6gH9k" {
+		t.Errorf("Invite = %q, want aB3dE6gH9k", in.Invite)
 	}
 }

@@ -13,11 +13,14 @@ import (
 
 	"github.com/StrafeChat/equinox/internal/config"
 	"github.com/StrafeChat/equinox/internal/id"
+	"github.com/StrafeChat/equinox/internal/logger"
 	"golang.org/x/crypto/bcrypt"
 )
 
 var (
 	ErrInviteOnly         = errors.New("registration is invite-only")
+	ErrInviteRequired     = errors.New("an invite code is required to register on this instance")
+	ErrInviteInvalid      = errors.New("that invite code is not valid")
 	ErrEmailInUse         = errors.New("email already in use")
 	ErrWeakPassword       = errors.New("password does not meet requirements")
 	ErrPasswordTooLong    = errors.New("password must be at most 72 bytes")
@@ -47,18 +50,49 @@ type Service interface {
 	LogoutAll(ctx context.Context, userID int64) error
 }
 
+// InviteGate is the instance module's half of registration: whether this instance has had
+// its first account, the one-time claim that makes that account the administrator, and
+// spending an invite code. It is an interface because auth cannot import the instance
+// module - that module's handler imports auth for GetUser, and the two would form a cycle.
+//
+// Consume reports "this code will not admit anyone" as false rather than an error, so an
+// infrastructure failure is never shown to a user as a bad invite.
+type InviteGate interface {
+	IsBootstrapped(ctx context.Context) (bool, error)
+	ClaimBootstrap(ctx context.Context, userID int64) (bool, error)
+	ReleaseBootstrap(ctx context.Context) error
+	Consume(ctx context.Context, code string) (bool, error)
+	SetInstanceAdmin(ctx context.Context, userID int64, admin bool) error
+}
+
 type service struct {
 	cfg   *config.Config
 	repo  UserRepository
 	srepo SessionRepository
+	// gate is nil in tests and in any build that has not wired the instance module; with
+	// no gate, an invite-only instance simply refuses every registration, which is the
+	// behaviour this flag had before invites existed.
+	gate InviteGate
 }
+
+// SetInviteGate wires the instance module in. Separate from NewService so that every
+// existing caller and test keeps working unchanged.
+func (s *service) SetInviteGate(g InviteGate) { s.gate = g }
 
 func NewService(cfg *config.Config, repo UserRepository, srepo SessionRepository) Service {
 	return &service{cfg: cfg, repo: repo, srepo: srepo}
 }
 
+// GateSetter is implemented by the service returned from NewService. Route setup uses it
+// to hand in the instance module without widening the Service interface.
+type GateSetter interface {
+	SetInviteGate(g InviteGate)
+}
+
 func (s *service) Register(ctx context.Context, in RegisterInput) (*User, error) {
-	if s.cfg.Flags.InviteOnly {
+	// Without the instance module there is no way to redeem an invite, so invite-only can
+	// only mean "closed" - what the flag did before invites existed.
+	if s.cfg.Flags.InviteOnly && s.gate == nil {
 		return nil, ErrInviteOnly
 	}
 
@@ -89,6 +123,51 @@ func (s *service) Register(ctx context.Context, in RegisterInput) (*User, error)
 	}
 
 	userID := id.Next()
+
+	// The registration gate sits here, after every check that can cheaply say no, so an
+	// invite is never spent on a request that was going to fail anyway.
+	//
+	// The first account on an instance is special: it is the operator's own, it becomes
+	// the instance administrator, and it needs no invite because there is nobody to have
+	// issued one yet. The claim is a lightweight transaction exactly so that a stranger
+	// watching a fresh deployment cannot race the operator for that account.
+	firstAccount := false
+	if s.gate != nil {
+		bootstrapped, err := s.gate.IsBootstrapped(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if !bootstrapped {
+			claimed, err := s.gate.ClaimBootstrap(ctx, userID)
+			if err != nil {
+				return nil, err
+			}
+			firstAccount = claimed
+		}
+	}
+	registered := false
+	if firstAccount {
+		// Hand the claim back if this registration does not finish, or the instance is
+		// left with no first account and no way to create one.
+		defer func() {
+			if !registered {
+				_ = s.gate.ReleaseBootstrap(ctx)
+			}
+		}()
+	}
+	if s.cfg.Flags.InviteOnly && !firstAccount {
+		code := strings.TrimSpace(in.Invite)
+		if code == "" {
+			return nil, ErrInviteRequired
+		}
+		ok, err := s.gate.Consume(ctx, code)
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			return nil, ErrInviteInvalid
+		}
+	}
 
 	var discriminator int
 	if in.Discriminator != nil {
@@ -129,6 +208,16 @@ func (s *service) Register(ctx context.Context, in RegisterInput) (*User, error)
 
 	if err := s.repo.Create(ctx, u); err != nil {
 		return nil, err
+	}
+	registered = true
+
+	if firstAccount {
+		// Best effort on purpose: the account exists either way, and refusing the
+		// registration now would be worse than an instance whose admin bit needs setting
+		// through INSTANCE_ADMINS - which is what that setting is for.
+		if err := s.gate.SetInstanceAdmin(ctx, userID, true); err != nil {
+			logger.Err("auth", err, map[string]any{"stage": "instance_admin", "user_id": userID})
+		}
 	}
 
 	return u, nil

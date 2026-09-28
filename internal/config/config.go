@@ -140,6 +140,10 @@ type FeatureFlags struct {
 	Captcha    bool
 	Email      bool
 	InviteOnly bool
+	// InstanceAdmins may mint and revoke instance invites regardless of what the database
+	// says. The account that registers first is made an admin automatically, so this is
+	// the escape hatch for an operator who has lost that account - never the usual route.
+	InstanceAdmins []int64
 }
 
 // CaptchaConfig configures the registration challenge. It only matters when
@@ -230,9 +234,10 @@ func Load() (*Config, error) {
 			AllowInsecure:  getEnvBool("FEDERATION_ALLOW_INSECURE", false),
 		},
 		Flags: FeatureFlags{
-			Captcha:    getEnvBool("CAPTCHA", false),
-			Email:      getEnvBool("EMAIL", false),
-			InviteOnly: getEnvBool("INVITE_ONLY", false),
+			Captcha:        getEnvBool("CAPTCHA", false),
+			Email:          getEnvBool("EMAIL", false),
+			InviteOnly:     getEnvBool("INVITE_ONLY", false),
+			InstanceAdmins: parseIDList(getEnvArray("INSTANCE_ADMINS", nil)),
 		},
 		Captcha: loadCaptchaConfig(),
 		Voice:   loadVoiceConfig(),
@@ -268,6 +273,24 @@ func Load() (*Config, error) {
 	}
 
 	return cfg, nil
+}
+
+// parseIDList turns a list of snowflake strings into ids, skipping anything unparseable
+// rather than refusing to boot: a typo in INSTANCE_ADMINS should cost that one entry, not
+// the whole instance.
+func parseIDList(in []string) []int64 {
+	out := make([]int64, 0, len(in))
+	for _, raw := range in {
+		n, err := strconv.ParseInt(strings.TrimSpace(raw), 10, 64)
+		if err != nil || n <= 0 {
+			continue
+		}
+		out = append(out, n)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 func cleanDomains(list []string) []string {
