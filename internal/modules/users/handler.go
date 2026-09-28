@@ -12,7 +12,9 @@ import (
 	"github.com/StrafeChat/equinox/internal/config"
 	"github.com/StrafeChat/equinox/internal/id"
 	"github.com/StrafeChat/equinox/internal/logger"
+	"github.com/StrafeChat/equinox/internal/middleware"
 	"github.com/StrafeChat/equinox/internal/modules/auth"
+	"github.com/StrafeChat/equinox/internal/modules/oauth"
 	"github.com/StrafeChat/equinox/internal/modules/rooms"
 	"github.com/StrafeChat/equinox/internal/nebula"
 	"github.com/StrafeChat/equinox/internal/stargate"
@@ -46,9 +48,16 @@ func (h *Handler) Me(c fiber.Ctx) error {
 		return c.Status(http.StatusUnauthorized).JSON(fiber.Map{"error": "unauthorized"})
 	}
 
+	// An OAuth2 access token only sees the account's email if it was granted the email
+	// scope; a session (no scopes recorded) sees everything, as before.
+	email := user.Email
+	if scopes, ok := c.Locals(middleware.LocalsKeyScopes).([]string); ok && !oauth.HasScope(scopes, oauth.ScopeEmail) {
+		email = ""
+	}
+
 	return c.JSON(fiber.Map{
 		"id":            id.Format(user.ID),
-		"email":         user.Email,
+		"email":         email,
 		"username":      user.Username,
 		"discriminator": fmt.Sprintf("%04d", user.Discriminator),
 		"display_name":  user.DisplayName,

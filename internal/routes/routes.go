@@ -4,6 +4,8 @@ func SetupRoutes(d Deps) {
 	SetupMiscRoutes(d)
 	SetupAuthRoutes(d)
 	SetupInstanceRoutes(d)
+	SetupApplicationRoutes(d)
+	SetupOAuthRoutes(d)
 	SetupUsersRoutes(d)
 	SetupRoomsRoutes(d)
 	SetupSpacesRoutes(d)
