@@ -6,7 +6,6 @@ import (
 	"github.com/StrafeChat/equinox/internal/captcha"
 	"github.com/StrafeChat/equinox/internal/middleware"
 	"github.com/StrafeChat/equinox/internal/modules/auth"
-	"github.com/StrafeChat/equinox/internal/modules/instance"
 	"github.com/gofiber/fiber/v3/middleware/limiter"
 )
 
@@ -47,7 +46,9 @@ func SetupAuthRoutes(d Deps) {
 	// Registration needs the instance module to redeem an invite and to hand the first
 	// account its administrator bit. Without this, INVITE_ONLY can only close the door.
 	if setter, ok := svc.(auth.GateSetter); ok {
-		setter.SetInviteGate(instance.NewService(d.Config, instance.NewRepository(d.Scylla)))
+		inst := newInstanceService(d, userRepo, sessionRepo)
+		setter.SetInviteGate(inst)
+		setter.SetBanChecker(inst)
 	}
 	h := auth.NewHandlerWithCaptcha(svc, newCaptchaVerifier(d))
 

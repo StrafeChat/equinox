@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"errors"
 	"net/http"
 
 	"github.com/gofiber/fiber/v3"
@@ -64,6 +65,10 @@ func (h *Handler) Login(c fiber.Ctx) error {
 		if err == ErrInvalidCredentials {
 			logger.Info("auth", "login failed: invalid credentials")
 			return c.Status(http.StatusUnauthorized).JSON(fiber.Map{"error": "invalid email or password"})
+		}
+		var banned *BannedError
+		if errors.As(err, &banned) {
+			return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": banned.Error(), "code": "banned", "reason": banned.Reason})
 		}
 		logger.Err("auth", err, map[string]any{"email": in.Email})
 		return c.Status(http.StatusInternalServerError).JSON(fiber.Map{"error": "internal error"})

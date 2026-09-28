@@ -91,7 +91,30 @@ func (s *Service) DeleteSpace(ctx context.Context, actorID, spaceID int64, confi
 	if confirmName != sp.Name {
 		return ErrSpaceNameMismatch
 	}
+	return s.deleteSpaceCascade(ctx, actorID, sp)
+}
 
+// TakeDownSpace removes a space on an instance administrator's authority, owner or not.
+// The owner-only rule on DeleteSpace is about a space's *own* hierarchy - Administrator
+// must not be enough to destroy someone's space. The person running the server is above
+// that hierarchy, and this is how abuse reports about a space get acted on. Callers gate
+// it (the instance module checks instance admin); it is recorded in the instance audit
+// log there, not the space's, since the space is about to stop existing.
+func (s *Service) TakeDownSpace(ctx context.Context, actorID, spaceID int64) error {
+	sp, err := s.repo.GetByID(ctx, spaceID)
+	if err != nil {
+		return err
+	}
+	if sp == nil {
+		return ErrSpaceNotFound
+	}
+	return s.deleteSpaceCascade(ctx, actorID, sp)
+}
+
+// deleteSpaceCascade is the removal itself, shared by the owner's delete and an
+// administrator's takedown. See DeleteSpace for why the order matters.
+func (s *Service) deleteSpaceCascade(ctx context.Context, actorID int64, sp *Space) error {
+	spaceID := sp.ID
 	members, err := s.repo.ListMembers(ctx, spaceID)
 	if err != nil {
 		return err

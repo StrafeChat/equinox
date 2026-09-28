@@ -1,0 +1,584 @@
+package instance
+
+import (
+	"context"
+	"regexp"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/redis/go-redis/v9"
+
+	"github.com/StrafeChat/equinox/internal/id"
+	"github.com/StrafeChat/equinox/internal/logger"
+	"github.com/StrafeChat/equinox/internal/modules/auth"
+	"github.com/StrafeChat/equinox/internal/modules/messages"
+	"github.com/StrafeChat/equinox/internal/modules/rooms"
+	"github.com/StrafeChat/equinox/internal/modules/spaces"
+	"github.com/StrafeChat/equinox/internal/stargate"
+)
+
+// SpaceRemover is what the instance needs from the spaces module to take a space down.
+// The spaces service implements it; it is an interface here only so tests can fake it.
+type SpaceRemover interface {
+	TakeDownSpace(ctx context.Context, actorID, spaceID int64) error
+}
+
+// ModerationDeps is everything moderation reaches into beyond the instance's own tables.
+// Set through SetModeration so NewService keeps its two-argument shape for the invite
+// tests, and so a build without moderation wired in still serves invites.
+type ModerationDeps struct {
+	Repo     ModerationRepository
+	Users    auth.UserRepository
+	Sessions auth.SessionRepository
+	Spaces   spaces.Repository
+	Messages messages.Repository
+	Rooms    rooms.Repository
+	Remover  SpaceRemover
+	Redis    *redis.Client
+	Region   string
+}
+
+func (s *Service) SetModeration(d ModerationDeps) { s.mod = &d }
+
+// SessionRevokedEvent is the gateway event a banned account receives on its own user
+// channel just before its sockets are closed, so the client can say why rather than
+// silently bouncing to the login page.
+const SessionRevokedEvent = "SESSION_REVOKED"
+
+// ------------------------------------------------------------------------------ bans ----
+
+// IsBanned is what login asks. An expired ban is cleared on the way past so the bans
+// page never shows one that no longer applies.
+func (s *Service) IsBanned(ctx context.Context, userID int64) (*Ban, error) {
+	if s.mod == nil {
+		return nil, nil
+	}
+	b, err := s.mod.Repo.GetBan(ctx, userID)
+	if err != nil || b == nil {
+		return nil, err
+	}
+	if b.Expired(time.Now().UTC()) {
+		_ = s.mod.Repo.DeleteBan(ctx, userID)
+		return nil, nil
+	}
+	return b, nil
+}
+
+// BanReason is the auth module's view of IsBanned (see auth.BanChecker).
+func (s *Service) BanReason(ctx context.Context, userID int64) (bool, string, error) {
+	b, err := s.IsBanned(ctx, userID)
+	if err != nil || b == nil {
+		return false, "", err
+	}
+	return true, b.Reason, nil
+}
+
+func (s *Service) BanUser(ctx context.Context, actorID, userID int64, in BanInput) (*Ban, error) {
+	if err := s.requireAdmin(ctx, actorID); err != nil {
+		return nil, err
+	}
+	return s.banUser(ctx, actorID, userID, in)
+}
+
+// banUser is the permission-free core, shared with report resolution (already gated).
+func (s *Service) banUser(ctx context.Context, actorID, userID int64, in BanInput) (*Ban, error) {
+	if userID == actorID {
+		return nil, ErrCannotBanSelf
+	}
+	reason := strings.TrimSpace(in.Reason)
+	if len([]rune(reason)) > MaxBanReason || in.MaxAgeSeconds < 0 || in.MaxAgeSeconds > MaxBanAgeSeconds {
+		return nil, ErrInvalidBan
+	}
+	u, err := s.mod.Users.GetByID(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	if u == nil {
+		return nil, ErrUserNotFound
+	}
+	if u.IsRemote() {
+		// A shadow row has no sessions here and no login here; there is nothing to ban.
+		return nil, ErrCannotBanRemote
+	}
+	if existing, err := s.IsBanned(ctx, userID); err != nil {
+		return nil, err
+	} else if existing != nil {
+		return nil, ErrAlreadyBanned
+	}
+
+	now := time.Now().UTC()
+	b := &Ban{UserID: userID, BannedBy: actorID, Reason: reason, CreatedAt: now}
+	if in.MaxAgeSeconds > 0 {
+		exp := now.Add(time.Duration(in.MaxAgeSeconds) * time.Second)
+		b.ExpiresAt = &exp
+	}
+	if err := s.mod.Repo.CreateBan(ctx, b); err != nil {
+		return nil, err
+	}
+
+	// The ban is written first, so even if what follows fails the account cannot log in
+	// again; a session that survives is caught by the next start of the gateway.
+	if err := s.mod.Sessions.RevokeAllForUser(ctx, userID); err != nil {
+		logger.Err("instance", err, map[string]any{"stage": "revoke_sessions", "user_id": userID})
+	}
+	if s.mod.Redis != nil {
+		stargate.PublishToUser(ctx, s.mod.Redis, userID, SessionRevokedEvent, map[string]interface{}{
+			"reason": "banned",
+			"detail": reason,
+		}, s.mod.Region)
+	}
+	s.audit(ctx, actorID, AuditUserBan, TargetUser, userID, reason)
+	return b, nil
+}
+
+func (s *Service) UnbanUser(ctx context.Context, actorID, userID int64) error {
+	if err := s.requireAdmin(ctx, actorID); err != nil {
+		return err
+	}
+	b, err := s.mod.Repo.GetBan(ctx, userID)
+	if err != nil {
+		return err
+	}
+	if b == nil {
+		return ErrNotBanned
+	}
+	if err := s.mod.Repo.DeleteBan(ctx, userID); err != nil {
+		return err
+	}
+	s.audit(ctx, actorID, AuditUserUnban, TargetUser, userID, "")
+	return nil
+}
+
+func (s *Service) ListBans(ctx context.Context, actorID int64) ([]Ban, error) {
+	if err := s.requireAdmin(ctx, actorID); err != nil {
+		return nil, err
+	}
+	all, err := s.mod.Repo.ListBans(ctx)
+	if err != nil {
+		return nil, err
+	}
+	now := time.Now().UTC()
+	live := make([]Ban, 0, len(all))
+	for _, b := range all {
+		if b.Expired(now) {
+			_ = s.mod.Repo.DeleteBan(ctx, b.UserID)
+			continue
+		}
+		live = append(live, b)
+	}
+	return live, nil
+}
+
+// ---------------------------------------------------------------------------- spaces ----
+
+// SpaceDetail is what an administrator sees about a space they may not be a member of.
+type SpaceDetail struct {
+	Space       *spaces.Space
+	Owner       *auth.User
+	MemberCount int
+	Reports     []ReportSummary
+}
+
+func (s *Service) GetSpaceDetail(ctx context.Context, actorID, spaceID int64) (*SpaceDetail, error) {
+	if err := s.requireAdmin(ctx, actorID); err != nil {
+		return nil, err
+	}
+	sp, err := s.mod.Spaces.GetByID(ctx, spaceID)
+	if err != nil {
+		return nil, err
+	}
+	if sp == nil {
+		return nil, ErrSpaceNotFound
+	}
+	members, err := s.mod.Spaces.ListMembers(ctx, spaceID)
+	if err != nil {
+		return nil, err
+	}
+	owner, _ := s.mod.Users.GetByID(ctx, sp.OwnerID)
+	reports, err := s.mod.Repo.ListReportsByTarget(ctx, TargetSpace, spaceID)
+	if err != nil {
+		return nil, err
+	}
+	return &SpaceDetail{Space: sp, Owner: owner, MemberCount: len(members), Reports: reports}, nil
+}
+
+func (s *Service) TakeDownSpace(ctx context.Context, actorID, spaceID int64, reason string) error {
+	if err := s.requireAdmin(ctx, actorID); err != nil {
+		return err
+	}
+	return s.takeDownSpace(ctx, actorID, spaceID, reason)
+}
+
+func (s *Service) takeDownSpace(ctx context.Context, actorID, spaceID int64, reason string) error {
+	sp, err := s.mod.Spaces.GetByID(ctx, spaceID)
+	if err != nil {
+		return err
+	}
+	if sp == nil {
+		return ErrSpaceNotFound
+	}
+	if err := s.mod.Remover.TakeDownSpace(ctx, actorID, spaceID); err != nil {
+		return err
+	}
+	s.audit(ctx, actorID, AuditSpaceTakedown, TargetSpace, spaceID, strings.TrimSpace(reason))
+	return nil
+}
+
+// ----------------------------------------------------------------------------- users ----
+
+var handleRe = regexp.MustCompile(`^(.+)#(\d{1,4})$`)
+
+// SearchUsers finds accounts by the exact handles an administrator has to hand: an id, an
+// email, name#0001, or a username (every account with that name). Scylla has no
+// substring search and this instance does not run one; exact lookups are what a support
+// request actually contains.
+func (s *Service) SearchUsers(ctx context.Context, actorID int64, query string) ([]*auth.User, error) {
+	if err := s.requireAdmin(ctx, actorID); err != nil {
+		return nil, err
+	}
+	q := strings.TrimSpace(query)
+	if q == "" {
+		return nil, ErrInvalidQuery
+	}
+	var out []*auth.User
+	add := func(u *auth.User, err error) error {
+		if err != nil {
+			return err
+		}
+		if u != nil {
+			out = append(out, u)
+		}
+		return nil
+	}
+	switch {
+	case strings.Contains(q, "@"):
+		if err := add(s.mod.Users.GetByEmail(ctx, strings.ToLower(q))); err != nil {
+			return nil, err
+		}
+	case handleRe.MatchString(q):
+		m := handleRe.FindStringSubmatch(q)
+		disc, _ := strconv.Atoi(m[2])
+		if err := add(s.mod.Users.GetByUsernameDiscriminator(ctx, m[1], disc)); err != nil {
+			return nil, err
+		}
+	default:
+		if n, err := strconv.ParseInt(q, 10, 64); err == nil && n > 0 {
+			if err := add(s.mod.Users.GetByID(ctx, n)); err != nil {
+				return nil, err
+			}
+		}
+		// A bare word is a username: every discriminator that has it.
+		discs, err := s.mod.Users.DiscriminatorsForUsername(ctx, q)
+		if err != nil {
+			return nil, err
+		}
+		for i, d := range discs {
+			if i >= SearchLimit {
+				break
+			}
+			if err := add(s.mod.Users.GetByUsernameDiscriminator(ctx, q, d)); err != nil {
+				return nil, err
+			}
+		}
+	}
+	return out, nil
+}
+
+// UserDetail is the support view: who they are, whether they are banned, where they are
+// signed in from, what they belong to, and what has been said about them.
+type UserDetail struct {
+	User          *auth.User
+	Ban           *Ban
+	InstanceAdmin bool
+	Sessions      []auth.Session
+	Spaces        []*spaces.Space
+	Reports       []ReportSummary
+}
+
+func (s *Service) GetUserDetail(ctx context.Context, actorID, userID int64) (*UserDetail, error) {
+	if err := s.requireAdmin(ctx, actorID); err != nil {
+		return nil, err
+	}
+	u, err := s.mod.Users.GetByID(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	if u == nil {
+		return nil, ErrUserNotFound
+	}
+	d := &UserDetail{User: u}
+	if d.Ban, err = s.IsBanned(ctx, userID); err != nil {
+		return nil, err
+	}
+	if d.InstanceAdmin, err = s.IsAdmin(ctx, userID); err != nil {
+		return nil, err
+	}
+	sessions, err := s.mod.Sessions.ListByUser(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	now := time.Now().UTC()
+	for _, sess := range sessions {
+		if sess.RevokedAt.IsZero() && sess.ExpiresAt.After(now) {
+			d.Sessions = append(d.Sessions, sess)
+		}
+	}
+	if len(u.Spaces) > 0 {
+		if d.Spaces, err = s.mod.Spaces.GetByIDs(ctx, u.Spaces); err != nil {
+			return nil, err
+		}
+	}
+	if d.Reports, err = s.mod.Repo.ListReportsByTarget(ctx, TargetUser, userID); err != nil {
+		return nil, err
+	}
+	return d, nil
+}
+
+// --------------------------------------------------------------------------- reports ----
+
+// CreateReport files a complaint. Any signed-in account may; the checks are that the
+// target exists, the reason is one we know, and this person does not already have an open
+// report about the same thing - which is what keeps a grudge from filling the queue.
+func (s *Service) CreateReport(ctx context.Context, reporterID int64, in CreateReportInput) (*Report, error) {
+	if s.mod == nil {
+		return nil, ErrInvalidReport
+	}
+	if in.TargetType != TargetUser && in.TargetType != TargetSpace {
+		return nil, ErrInvalidReport
+	}
+	targetID, err := id.Parse(strings.TrimSpace(in.TargetID))
+	if err != nil || targetID <= 0 {
+		return nil, ErrInvalidReport
+	}
+	if !validReason(in.Reason) {
+		return nil, ErrInvalidReport
+	}
+	details := strings.TrimSpace(in.Details)
+	if len([]rune(details)) > MaxReportDetails {
+		return nil, ErrInvalidReport
+	}
+	if in.TargetType == TargetUser {
+		if targetID == reporterID {
+			return nil, ErrReportSelf
+		}
+		u, err := s.mod.Users.GetByID(ctx, targetID)
+		if err != nil {
+			return nil, err
+		}
+		if u == nil {
+			return nil, ErrUserNotFound
+		}
+	} else {
+		sp, err := s.mod.Spaces.GetByID(ctx, targetID)
+		if err != nil {
+			return nil, err
+		}
+		if sp == nil {
+			return nil, ErrSpaceNotFound
+		}
+	}
+	existing, err := s.mod.Repo.ListReportsByTarget(ctx, in.TargetType, targetID)
+	if err != nil {
+		return nil, err
+	}
+	for _, e := range existing {
+		if e.ReporterID == reporterID && e.Status == ReportOpen {
+			return nil, ErrDuplicateReport
+		}
+	}
+
+	rep := &Report{
+		ID:         id.Next(),
+		ReporterID: reporterID,
+		TargetType: in.TargetType,
+		TargetID:   targetID,
+		Reason:     in.Reason,
+		Details:    details,
+		Status:     ReportOpen,
+		CreatedAt:  time.Now().UTC(),
+	}
+	rep.SpaceID = optionalID(in.SpaceID)
+	rep.RoomID = optionalID(in.RoomID)
+	rep.MessageID = optionalID(in.MessageID)
+	if err := s.mod.Repo.CreateReport(ctx, rep); err != nil {
+		return nil, err
+	}
+	return rep, nil
+}
+
+func optionalID(raw string) *int64 {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	n, err := id.Parse(raw)
+	if err != nil || n <= 0 {
+		return nil
+	}
+	return &n
+}
+
+func (s *Service) ListReports(ctx context.Context, actorID int64, status string) ([]Report, error) {
+	if err := s.requireAdmin(ctx, actorID); err != nil {
+		return nil, err
+	}
+	switch status {
+	case ReportOpen, ReportResolved, ReportDismissed:
+	default:
+		status = ReportOpen
+	}
+	return s.mod.Repo.ListReportsByStatus(ctx, status, ReportPageSize)
+}
+
+// ReportDetail hydrates a report with the people and things it names, plus the cited
+// message's text when the server can read it - a plaintext room - and a marker when it
+// cannot, so the administrator knows the difference between "deleted" and "encrypted".
+type ReportDetail struct {
+	Report          *Report
+	Reporter        *auth.User
+	TargetUser      *auth.User
+	TargetSpace     *spaces.Space
+	Room            *rooms.Room
+	Message         *messages.Message
+	MessageReadable bool
+}
+
+func (s *Service) GetReport(ctx context.Context, actorID, reportID int64) (*ReportDetail, error) {
+	if err := s.requireAdmin(ctx, actorID); err != nil {
+		return nil, err
+	}
+	rep, err := s.mod.Repo.GetReport(ctx, reportID)
+	if err != nil {
+		return nil, err
+	}
+	if rep == nil {
+		return nil, ErrReportNotFound
+	}
+	d := &ReportDetail{Report: rep}
+	d.Reporter, _ = s.mod.Users.GetByID(ctx, rep.ReporterID)
+	if rep.TargetType == TargetUser {
+		d.TargetUser, _ = s.mod.Users.GetByID(ctx, rep.TargetID)
+	} else {
+		d.TargetSpace, _ = s.mod.Spaces.GetByID(ctx, rep.TargetID)
+	}
+	if rep.RoomID != nil {
+		d.Room, _ = s.mod.Rooms.GetByID(ctx, *rep.RoomID)
+		if rep.MessageID != nil {
+			if m, err := s.mod.Messages.GetByID(ctx, *rep.RoomID, *rep.MessageID); err == nil && m != nil {
+				d.Message = m
+				d.MessageReadable = m.Plaintext != "" && m.DeletedAt == nil
+			}
+		}
+	}
+	return d, nil
+}
+
+// ResolveReport closes a report, doing what the action says first so a failure there
+// leaves the report open rather than closed with nothing done.
+func (s *Service) ResolveReport(ctx context.Context, actorID, reportID int64, in ResolveInput) (*Report, error) {
+	if err := s.requireAdmin(ctx, actorID); err != nil {
+		return nil, err
+	}
+	rep, err := s.mod.Repo.GetReport(ctx, reportID)
+	if err != nil {
+		return nil, err
+	}
+	if rep == nil {
+		return nil, ErrReportNotFound
+	}
+	if rep.Status != ReportOpen {
+		return nil, ErrReportClosed
+	}
+	note := strings.TrimSpace(in.Note)
+	if len([]rune(note)) > MaxBanReason {
+		return nil, ErrInvalidBan
+	}
+
+	from := rep.Status
+	rep.Resolution = ResolutionNone
+	action := AuditReportResolve
+	switch in.Action {
+	case "dismiss":
+		rep.Status = ReportDismissed
+		action = AuditReportDismiss
+	case "resolve":
+		rep.Status = ReportResolved
+	case "ban_user":
+		if rep.TargetType != TargetUser {
+			return nil, ErrInvalidAction
+		}
+		if _, err := s.banUser(ctx, actorID, rep.TargetID, BanInput{Reason: note, MaxAgeSeconds: in.MaxAgeSeconds}); err != nil && err != ErrAlreadyBanned {
+			return nil, err
+		}
+		rep.Status = ReportResolved
+		rep.Resolution = ResolutionBanned
+	case "remove_space":
+		if rep.TargetType != TargetSpace {
+			return nil, ErrInvalidAction
+		}
+		if err := s.takeDownSpace(ctx, actorID, rep.TargetID, note); err != nil && err != ErrSpaceNotFound {
+			return nil, err
+		}
+		rep.Status = ReportResolved
+		rep.Resolution = ResolutionSpaceRemoved
+	default:
+		return nil, ErrInvalidAction
+	}
+	now := time.Now().UTC()
+	rep.ResolvedBy = &actorID
+	rep.ResolvedAt = &now
+	rep.ResolutionNote = note
+	if err := s.mod.Repo.MoveReportStatus(ctx, rep, from); err != nil {
+		return nil, err
+	}
+	s.audit(ctx, actorID, action, rep.TargetType, rep.TargetID, note)
+	return rep, nil
+}
+
+// ----------------------------------------------------------------------------- audit ----
+
+func (s *Service) audit(ctx context.Context, actorID int64, action, targetType string, targetID int64, reason string) {
+	if s.mod == nil {
+		return
+	}
+	e := &AuditEntry{ID: id.Next(), ActorID: actorID, Action: action, TargetType: targetType, TargetID: targetID, Reason: reason, CreatedAt: time.Now().UTC()}
+	if err := s.mod.Repo.AppendAudit(ctx, e); err != nil {
+		// Never fail the action for its record; say so loudly instead.
+		logger.Err("instance", err, map[string]any{"stage": "audit", "action": action})
+	}
+}
+
+func (s *Service) ListAudit(ctx context.Context, actorID int64) ([]AuditEntry, error) {
+	if err := s.requireAdmin(ctx, actorID); err != nil {
+		return nil, err
+	}
+	return s.mod.Repo.ListAudit(ctx, AuditPageSize)
+}
+
+// Stats is the dashboard's front page: the counts an administrator glances at.
+type Stats struct {
+	OpenReports int  `json:"open_reports"`
+	Bans        int  `json:"bans"`
+	Invites     int  `json:"invites"`
+	InviteOnly  bool `json:"invite_only"`
+}
+
+func (s *Service) GetStats(ctx context.Context, actorID int64) (*Stats, error) {
+	if err := s.requireAdmin(ctx, actorID); err != nil {
+		return nil, err
+	}
+	open, err := s.mod.Repo.ListReportsByStatus(ctx, ReportOpen, ReportPageSize)
+	if err != nil {
+		return nil, err
+	}
+	bans, err := s.ListBans(ctx, actorID)
+	if err != nil {
+		return nil, err
+	}
+	invites, err := s.ListInvites(ctx, actorID)
+	if err != nil {
+		return nil, err
+	}
+	return &Stats{OpenReports: len(open), Bans: len(bans), Invites: len(invites), InviteOnly: s.cfg.Flags.InviteOnly}, nil
+}

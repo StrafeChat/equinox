@@ -14,6 +14,8 @@ import (
 type Service struct {
 	cfg  *config.Config
 	repo Repository
+	// mod is nil until SetModeration runs; every moderation method checks for it.
+	mod *ModerationDeps
 }
 
 func NewService(cfg *config.Config, repo Repository) *Service {
@@ -71,6 +73,7 @@ func (s *Service) CreateInvite(ctx context.Context, actorID int64, in *CreateInv
 	if err := s.repo.CreateInvite(ctx, inv); err != nil {
 		return nil, err
 	}
+	s.audit(ctx, actorID, AuditInviteCreate, "invite", 0, code)
 	return inv, nil
 }
 
@@ -108,7 +111,11 @@ func (s *Service) RevokeInvite(ctx context.Context, actorID int64, code string) 
 	if inv == nil {
 		return ErrInviteNotFound
 	}
-	return s.repo.DeleteInvite(ctx, code)
+	if err := s.repo.DeleteInvite(ctx, code); err != nil {
+		return err
+	}
+	s.audit(ctx, actorID, AuditInviteRevoke, "invite", 0, code)
+	return nil
 }
 
 // CheckInvite reports whether a code would be accepted right now, without spending it, so

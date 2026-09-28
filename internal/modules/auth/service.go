@@ -65,10 +65,23 @@ type InviteGate interface {
 	SetInstanceAdmin(ctx context.Context, userID int64, admin bool) error
 }
 
+// BanChecker is the instance module's answer to "may this account sign in". Same reason
+// it is an interface as InviteGate: auth cannot import instance.
+type BanChecker interface {
+	BanReason(ctx context.Context, userID int64) (banned bool, reason string, err error)
+}
+
+// BannedError carries the reason so the login page can show it. Compared with
+// errors.As, never ==.
+type BannedError struct{ Reason string }
+
+func (e *BannedError) Error() string { return "account is banned" }
+
 type service struct {
 	cfg   *config.Config
 	repo  UserRepository
 	srepo SessionRepository
+	bans  BanChecker
 	// gate is nil in tests and in any build that has not wired the instance module; with
 	// no gate, an invite-only instance simply refuses every registration, which is the
 	// behaviour this flag had before invites existed.
@@ -79,6 +92,8 @@ type service struct {
 // existing caller and test keeps working unchanged.
 func (s *service) SetInviteGate(g InviteGate) { s.gate = g }
 
+func (s *service) SetBanChecker(b BanChecker) { s.bans = b }
+
 func NewService(cfg *config.Config, repo UserRepository, srepo SessionRepository) Service {
 	return &service{cfg: cfg, repo: repo, srepo: srepo}
 }
@@ -87,6 +102,7 @@ func NewService(cfg *config.Config, repo UserRepository, srepo SessionRepository
 // to hand in the instance module without widening the Service interface.
 type GateSetter interface {
 	SetInviteGate(g InviteGate)
+	SetBanChecker(b BanChecker)
 }
 
 func (s *service) Register(ctx context.Context, in RegisterInput) (*User, error) {
@@ -258,6 +274,18 @@ func (s *service) Login(ctx context.Context, email, password, ip, userAgent stri
 
 	if err := bcrypt.CompareHashAndPassword([]byte(u.PasswordHash), []byte(password)); err != nil {
 		return nil, "", ErrInvalidCredentials
+	}
+
+	// After the password, not before: a banned account still has to prove it is that
+	// account before learning it is banned, or the endpoint tells anyone who is.
+	if s.bans != nil {
+		banned, reason, err := s.bans.BanReason(ctx, u.ID)
+		if err != nil {
+			return nil, "", err
+		}
+		if banned {
+			return nil, "", &BannedError{Reason: reason}
+		}
 	}
 
 	ttl := time.Duration(s.cfg.Session.TTLSeconds) * time.Second

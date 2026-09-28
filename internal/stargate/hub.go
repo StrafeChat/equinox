@@ -174,6 +174,34 @@ func (h *Hub) handleRedisMessage(msg *redis.Message) {
 		}
 	}
 	h.subMu.RUnlock()
+
+	// A revoked session (the account was banned, or signed out everywhere) must not keep
+	// a live socket: the API already refuses its token, but this connection was
+	// authenticated once at upgrade and would otherwise stay subscribed until it dropped
+	// on its own. Deliver the event first so the client can say why, then close.
+	if env.Type == "SESSION_REVOKED" && env.UserID != "" {
+		if uid, err := strconv.ParseInt(env.UserID, 10, 64); err == nil {
+			time.AfterFunc(500*time.Millisecond, func() { h.disconnectUser(uid) })
+		}
+	}
+}
+
+// disconnectUser closes every socket a user holds; readPump's exit does the unregister.
+func (h *Hub) disconnectUser(userID int64) {
+	h.regMu.RLock()
+	var targets []*Client
+	for c := range h.clients {
+		if c.userID == userID {
+			targets = append(targets, c)
+		}
+	}
+	h.regMu.RUnlock()
+	for _, c := range targets {
+		_ = c.conn.Close()
+	}
+	if len(targets) > 0 {
+		logger.Info("stargate", "closed %d connection(s) for revoked user_id=%d", len(targets), userID)
+	}
 }
 
 // hasOtherClientLocked returns true if there is another connected client for the same user.
