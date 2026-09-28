@@ -1,4 +1,8 @@
-FROM golang:1.25-alpine AS build
+FROM golang:1.26-alpine AS build
+
+# go.mod pins the language version; if it moves ahead of this image, fetch the
+# toolchain it asks for rather than failing an operator's first build outright.
+ENV GOTOOLCHAIN=auto
 
 WORKDIR /app
 
