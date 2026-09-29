@@ -177,6 +177,9 @@ func (s *Service) Unfurl(ctx context.Context, rawURL string) (Metadata, error) {
 		s.redis.Set(ctx, key, "{}", negativeCacheTTL)
 		return Metadata{}, err
 	}
+	// The client loads image/video as subresources: on an https page an http one is blocked as
+	// mixed content and flips the tab to "not secure", so never hand back an http media URL.
+	upgradeInsecureMedia(&meta)
 	// A result that's missing its media only because a secondary fetch (the oEmbed follow) failed
 	// is cached briefly and retried soon, rather than pinning an imageless card for the full TTL.
 	ttl := cacheTTL
@@ -526,4 +529,25 @@ func setIfEmpty(dst *string, v string) {
 	if *dst == "" {
 		*dst = v
 	}
+}
+
+// upgradeInsecureMedia rewrites http media URLs (image/video/icon - the fields the client fetches
+// as subresources) to https. Many hosts advertise an http og:image/og:video even when the asset is
+// also served over https (discord.mx does); leaving it http makes an https page block it as mixed
+// content and show "not secure". Link fields (url/author_url) are navigation targets, not
+// subresources, so they're left alone.
+func upgradeInsecureMedia(m *Metadata) {
+	up := func(s string) string {
+		if strings.HasPrefix(s, "http://") {
+			return "https://" + strings.TrimPrefix(s, "http://")
+		}
+		return s
+	}
+	if m.Image != nil {
+		m.Image.URL = up(m.Image.URL)
+	}
+	if m.Video != nil {
+		m.Video.URL = up(m.Video.URL)
+	}
+	m.Icon = up(m.Icon)
 }
