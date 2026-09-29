@@ -13,4 +13,5 @@ func SetupRoutes(d Deps) {
 	SetupMessagesRoutes(d)
 	SetupFederationRoutes(d)
 	SetupVoiceRoutes(d)
+	SetupUnfurlRoutes(d)
 }
