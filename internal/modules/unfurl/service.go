@@ -14,6 +14,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"syscall"
@@ -31,7 +32,9 @@ const (
 	cacheTTL         = 6 * time.Hour
 	negativeCacheTTL = 30 * time.Minute
 	maxFieldLen      = 500
-	userAgent        = "Mozilla/5.0 (compatible; StrafeBot/1.0; +https://strafe.chat)"
+	// Present as Discordbot: image/video-sharing sites (and many others) serve their richest
+	// Open Graph / oEmbed specifically to it, and gate or strip it for unknown crawlers.
+	userAgent = "Mozilla/5.0 (compatible; Discordbot/2.0; +https://strafe.chat)"
 )
 
 // Media is an image or video rendition with its intrinsic size when the page declared one, so
@@ -191,7 +194,7 @@ func (s *Service) fetch(ctx context.Context, rawURL string) (Metadata, error) {
 		return Metadata{}, err
 	}
 	req.Header.Set("User-Agent", userAgent)
-	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/*;q=0.8,*/*;q=0.7")
 	req.Header.Set("Accept-Language", "en-US,en;q=0.9")
 	resp, err := s.client.Do(req)
 	if err != nil {
@@ -201,20 +204,116 @@ func (s *Service) fetch(ctx context.Context, rawURL string) (Metadata, error) {
 	if resp.StatusCode >= 400 {
 		return Metadata{}, errors.New("unfurl: bad status")
 	}
-	if ct := strings.ToLower(resp.Header.Get("Content-Type")); ct != "" && !strings.Contains(ct, "html") {
-		return Metadata{}, errors.New("unfurl: not html")
-	}
 	final := resp.Request.URL // the URL after any redirects
-	meta := extractMetadata(io.LimitReader(resp.Body, maxHeadBytes), final)
+	ct := strings.ToLower(resp.Header.Get("Content-Type"))
+	// A URL that is itself an image/video - some hosts serve the file at a media-looking URL -
+	// is described directly rather than parsed as HTML.
+	switch {
+	case strings.HasPrefix(ct, "image/"):
+		return Metadata{Type: "image", URL: final.String(), SiteName: final.Hostname(), Image: &Media{URL: final.String()}, ImageLarge: true}, nil
+	case strings.HasPrefix(ct, "video/"):
+		return Metadata{Type: "video", URL: final.String(), SiteName: final.Hostname(), Video: &Media{URL: final.String()}, VideoType: ct}, nil
+	case ct != "" && !strings.Contains(ct, "html") && !strings.Contains(ct, "xml"):
+		return Metadata{}, errors.New("unfurl: unsupported content type")
+	}
+	meta, oEmbedURL := extractMetadata(io.LimitReader(resp.Body, maxHeadBytes), final)
+	// Many image/video-sharing hosts (and YouTube, Twitter, …) expose the image/thumbnail only
+	// through oEmbed, not Open Graph - follow it and fill in what the page left out.
+	if oEmbedURL != "" {
+		s.mergeOEmbed(ctx, &meta, oEmbedURL)
+	}
 	if meta.URL == "" { // prefer the page's own og:url/canonical; fall back to where we landed
 		meta.URL = final.String()
 	}
 	return meta, nil
 }
 
-func extractMetadata(r io.Reader, base *url.URL) Metadata {
+// oEmbed is the subset of an oEmbed response (https://oembed.com) we use.
+type oEmbed struct {
+	Type         string `json:"type"`
+	Title        string `json:"title"`
+	AuthorName   string `json:"author_name"`
+	AuthorURL    string `json:"author_url"`
+	ProviderName string `json:"provider_name"`
+	ProviderURL  string `json:"provider_url"`
+	URL          string `json:"url"`
+	Width        int    `json:"width"`
+	Height       int    `json:"height"`
+	ThumbnailURL string `json:"thumbnail_url"`
+	ThumbnailW   int    `json:"thumbnail_width"`
+	ThumbnailH   int    `json:"thumbnail_height"`
+}
+
+// mergeOEmbed fetches the oEmbed document (through the same SSRF-safe client) and fills in fields
+// the page's own tags left blank - above all the image, which image hosts often expose only here.
+func (s *Service) mergeOEmbed(ctx context.Context, m *Metadata, oembedURL string) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, oembedURL, nil)
+	if err != nil {
+		return
+	}
+	req.Header.Set("User-Agent", userAgent)
+	req.Header.Set("Accept", "application/json")
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		return
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
+	if err != nil {
+		return
+	}
+	var o oEmbed
+	if json.Unmarshal(body, &o) != nil {
+		return
+	}
+	setIfEmpty(&m.Title, clean(o.Title))
+	setIfEmpty(&m.Author, clean(o.AuthorName))
+	setIfEmpty(&m.AuthorURL, o.AuthorURL)
+	setIfEmpty(&m.SiteName, clean(o.ProviderName))
+	if m.Type == "" {
+		m.Type = lower(o.Type)
+	}
+	if m.Image == nil {
+		// A "photo" oEmbed's url is the image; else the thumbnail; else a url/provider_url that
+		// is itself a media file (image hosts point provider_url at the raw file).
+		switch {
+		case o.Type == "photo" && o.URL != "":
+			m.Image = &Media{URL: o.URL, Width: o.Width, Height: o.Height}
+		case o.ThumbnailURL != "":
+			m.Image = &Media{URL: o.ThumbnailURL, Width: o.ThumbnailW, Height: o.ThumbnailH}
+		case isMediaURL(o.URL):
+			m.Image = &Media{URL: o.URL}
+		case isMediaURL(o.ProviderURL):
+			m.Image = &Media{URL: o.ProviderURL}
+		}
+		if m.Image != nil {
+			m.ImageLarge = true
+		}
+	}
+}
+
+var mediaExtRe = regexp.MustCompile(`(?i)\.(png|jpe?g|gif|webp|avif|mp4|webm|mov)$`)
+
+// isMediaURL reports whether a URL's path ends in an image/video extension.
+func isMediaURL(raw string) bool {
+	if raw == "" {
+		return false
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return false
+	}
+	return mediaExtRe.MatchString(u.Path)
+}
+
+// extractMetadata parses the page <head> and returns the metadata plus the oEmbed discovery URL
+// (rel=alternate application/json+oembed) if the page declared one, for the caller to fetch.
+func extractMetadata(r io.Reader, base *url.URL) (Metadata, string) {
 	var m Metadata
-	var titleTag, ogTitle, twTitle, desc, ogDesc, twDesc, ogURL, canonical, twCard string
+	var titleTag, ogTitle, twTitle, desc, ogDesc, twDesc, ogURL, canonical, twCard, oEmbedURL string
 	var imageURL, imageW, imageH string
 	var videoURL, videoW, videoH string
 
@@ -307,6 +406,11 @@ func extractMetadata(r io.Reader, base *url.URL) Metadata {
 						canonical = ref
 					}
 				}
+				if oEmbedURL == "" && rel == "alternate" && strings.Contains(lower(attrs["type"]), "json+oembed") {
+					if ref := resolveRef(href, base); ref != "" {
+						oEmbedURL = ref
+					}
+				}
 			}
 		case html.EndTagToken:
 			if name, _ := z.TagName(); string(name) == "head" {
@@ -325,7 +429,7 @@ done:
 	if vid := resolveRef(videoURL, base); vid != "" {
 		m.Video = &Media{URL: vid, Width: atoi(videoW), Height: atoi(videoH)}
 	}
-	return m
+	return m, oEmbedURL
 }
 
 func readAttrs(z *html.Tokenizer) map[string]string {
