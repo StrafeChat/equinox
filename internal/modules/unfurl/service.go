@@ -172,13 +172,19 @@ func (s *Service) Unfurl(ctx context.Context, rawURL string) (Metadata, error) {
 			return m, nil
 		}
 	}
-	meta, err := s.fetch(ctx, rawURL)
+	meta, complete, err := s.fetch(ctx, rawURL)
 	if err != nil {
 		s.redis.Set(ctx, key, "{}", negativeCacheTTL)
 		return Metadata{}, err
 	}
+	// A result that's missing its media only because a secondary fetch (the oEmbed follow) failed
+	// is cached briefly and retried soon, rather than pinning an imageless card for the full TTL.
+	ttl := cacheTTL
+	if !complete {
+		ttl = negativeCacheTTL
+	}
 	if b, e := json.Marshal(meta); e == nil {
-		s.redis.Set(ctx, key, string(b), cacheTTL)
+		s.redis.Set(ctx, key, string(b), ttl)
 	}
 	return meta, nil
 }
@@ -188,21 +194,24 @@ func cacheKey(rawURL string) string {
 	return "unfurl:" + hex.EncodeToString(sum[:16])
 }
 
-func (s *Service) fetch(ctx context.Context, rawURL string) (Metadata, error) {
+// fetch retrieves and parses a URL. The bool is false when the result is missing its media only
+// because a secondary fetch failed, so the caller can cache it briefly and retry rather than pin
+// an incomplete card for the full TTL.
+func (s *Service) fetch(ctx context.Context, rawURL string) (Metadata, bool, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
-		return Metadata{}, err
+		return Metadata{}, false, err
 	}
 	req.Header.Set("User-Agent", userAgent)
 	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/*;q=0.8,*/*;q=0.7")
 	req.Header.Set("Accept-Language", "en-US,en;q=0.9")
 	resp, err := s.client.Do(req)
 	if err != nil {
-		return Metadata{}, err
+		return Metadata{}, false, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 400 {
-		return Metadata{}, errors.New("unfurl: bad status")
+		return Metadata{}, false, errors.New("unfurl: bad status")
 	}
 	final := resp.Request.URL // the URL after any redirects
 	ct := strings.ToLower(resp.Header.Get("Content-Type"))
@@ -210,22 +219,27 @@ func (s *Service) fetch(ctx context.Context, rawURL string) (Metadata, error) {
 	// is described directly rather than parsed as HTML.
 	switch {
 	case strings.HasPrefix(ct, "image/"):
-		return Metadata{Type: "image", URL: final.String(), SiteName: final.Hostname(), Image: &Media{URL: final.String()}, ImageLarge: true}, nil
+		return Metadata{Type: "image", URL: final.String(), SiteName: final.Hostname(), Image: &Media{URL: final.String()}, ImageLarge: true}, true, nil
 	case strings.HasPrefix(ct, "video/"):
-		return Metadata{Type: "video", URL: final.String(), SiteName: final.Hostname(), Video: &Media{URL: final.String()}, VideoType: ct}, nil
+		return Metadata{Type: "video", URL: final.String(), SiteName: final.Hostname(), Video: &Media{URL: final.String()}, VideoType: ct}, true, nil
 	case ct != "" && !strings.Contains(ct, "html") && !strings.Contains(ct, "xml"):
-		return Metadata{}, errors.New("unfurl: unsupported content type")
+		return Metadata{}, false, errors.New("unfurl: unsupported content type")
 	}
 	meta, oEmbedURL := extractMetadata(io.LimitReader(resp.Body, maxHeadBytes), final)
 	// Many image/video-sharing hosts (and YouTube, Twitter, …) expose the image/thumbnail only
 	// through oEmbed, not Open Graph - follow it and fill in what the page left out.
+	complete := true
 	if oEmbedURL != "" {
-		s.mergeOEmbed(ctx, &meta, oEmbedURL)
+		// If that follow fails and it was our only route to the media, the card is incomplete
+		// through no fault of the page: report it so it isn't cached at the full TTL.
+		if err := s.mergeOEmbed(ctx, &meta, oEmbedURL); err != nil && meta.Image == nil && meta.Video == nil {
+			complete = false
+		}
 	}
 	if meta.URL == "" { // prefer the page's own og:url/canonical; fall back to where we landed
 		meta.URL = final.String()
 	}
-	return meta, nil
+	return meta, complete, nil
 }
 
 // oEmbed is the subset of an oEmbed response (https://oembed.com) we use.
@@ -246,28 +260,30 @@ type oEmbed struct {
 
 // mergeOEmbed fetches the oEmbed document (through the same SSRF-safe client) and fills in fields
 // the page's own tags left blank - above all the image, which image hosts often expose only here.
-func (s *Service) mergeOEmbed(ctx context.Context, m *Metadata, oembedURL string) {
+// It returns an error when the document couldn't be fetched or parsed, so the caller can tell a
+// transient failure (retry soon) from a page that genuinely has no image.
+func (s *Service) mergeOEmbed(ctx context.Context, m *Metadata, oembedURL string) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, oembedURL, nil)
 	if err != nil {
-		return
+		return err
 	}
 	req.Header.Set("User-Agent", userAgent)
 	req.Header.Set("Accept", "application/json")
 	resp, err := s.client.Do(req)
 	if err != nil {
-		return
+		return err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 400 {
-		return
+		return errors.New("unfurl: oembed bad status")
 	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
 	if err != nil {
-		return
+		return err
 	}
 	var o oEmbed
-	if json.Unmarshal(body, &o) != nil {
-		return
+	if err := json.Unmarshal(body, &o); err != nil {
+		return err
 	}
 	setIfEmpty(&m.Title, clean(o.Title))
 	setIfEmpty(&m.Author, clean(o.AuthorName))
@@ -293,6 +309,7 @@ func (s *Service) mergeOEmbed(ctx context.Context, m *Metadata, oembedURL string
 			m.ImageLarge = true
 		}
 	}
+	return nil
 }
 
 var mediaExtRe = regexp.MustCompile(`(?i)\.(png|jpe?g|gif|webp|avif|mp4|webm|mov)$`)
