@@ -68,6 +68,7 @@ func SetupSpacesRoutes(d Deps) {
 	r.Get("/:id/rooms", spaceHandler.GetRooms)
 	r.Post("/:id/ack-all", spaceHandler.AckAll)
 	r.Post("/:id/icon", spaceHandler.PostSpaceIcon)
+	r.Post("/:id/banner", spaceHandler.PostSpaceBanner)
 	r.Patch("/:id", spaceHandler.PatchSpace)
 	r.Delete("/:id", spaceHandler.DeleteSpace)
 	r.Get("/:id", spaceHandler.Get)

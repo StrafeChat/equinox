@@ -137,6 +137,7 @@ type Repository interface {
 	DeleteRoomUserOverride(ctx context.Context, spaceID, roomID, userID int64) error
 
 	UpdateSpaceIcon(ctx context.Context, spaceID int64, icon string, updatedAt time.Time) error
+	UpdateSpaceBanner(ctx context.Context, spaceID int64, banner string, updatedAt time.Time) error
 	UpdateSpaceName(ctx context.Context, spaceID int64, name, nameAcronym string, updatedAt time.Time) error
 
 	// DeleteSpace removes the space row and every table keyed only by space_id: roles,
@@ -433,6 +434,16 @@ func (r *repo) UpdateSpaceIcon(ctx context.Context, spaceID int64, icon string, 
 	q := r.session.Session.Query(
 		"UPDATE spaces SET icon = ?, updated_at = ? WHERE id = ?",
 		icon, updatedAt, spaceID,
+	).WithContext(ctx)
+	err := q.Exec()
+	q.Release()
+	return err
+}
+
+func (r *repo) UpdateSpaceBanner(ctx context.Context, spaceID int64, banner string, updatedAt time.Time) error {
+	q := r.session.Session.Query(
+		"UPDATE spaces SET banner = ?, updated_at = ? WHERE id = ?",
+		banner, updatedAt, spaceID,
 	).WithContext(ctx)
 	err := q.Exec()
 	q.Release()

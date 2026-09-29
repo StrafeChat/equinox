@@ -45,3 +45,27 @@ func (s *Service) UpdateSpaceIcon(ctx context.Context, actorID, spaceID int64, i
 	s.audit(ctx, spaceID, actorID, AuditSpaceUpdate, id.Format(spaceID), map[string]change{"icon": {New: iconURL}}, "")
 	return sp, nil
 }
+
+// UpdateSpaceBanner sets the space banner URL (caller uploads to Nebula first). Requires PermManageSpace or owner.
+func (s *Service) UpdateSpaceBanner(ctx context.Context, actorID, spaceID int64, bannerURL string) (*Space, error) {
+	if err := s.CanManageSpace(ctx, actorID, spaceID); err != nil {
+		return nil, err
+	}
+	sp, err := s.repo.GetByID(ctx, spaceID)
+	if err != nil || sp == nil {
+		return nil, ErrSpaceNotFound
+	}
+	now := time.Now().UTC()
+	if err := s.repo.UpdateSpaceBanner(ctx, spaceID, bannerURL, now); err != nil {
+		return nil, err
+	}
+	sp, err = s.repo.GetByID(ctx, spaceID)
+	if err != nil || sp == nil {
+		return nil, ErrSpaceNotFound
+	}
+	if s.redis != nil {
+		stargate.PublishToSpace(ctx, s.redis, spaceID, "SPACE_UPDATE", spaceToEventPayload(sp), s.stargateRegion())
+	}
+	s.audit(ctx, spaceID, actorID, AuditSpaceUpdate, id.Format(spaceID), map[string]change{"banner": {New: bannerURL}}, "")
+	return sp, nil
+}

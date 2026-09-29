@@ -89,3 +89,70 @@ func (h *Handler) PostSpaceIcon(c fiber.Ctx) error {
 	}
 	return c.JSON(spaceToJSON(space))
 }
+
+// PostSpaceBanner uploads a wide image to Nebula and sets the space banner. POST /spaces/:id/banner
+// (multipart field "file"). Same shape and gating as PostSpaceIcon.
+func (h *Handler) PostSpaceBanner(c fiber.Ctx) error {
+	user := auth.GetUser(c)
+	if user == nil {
+		return c.Status(http.StatusUnauthorized).JSON(fiber.Map{"error": "unauthorized"})
+	}
+	cfg := h.cfg
+	if cfg == nil || strings.TrimSpace(cfg.Nebula.BaseURL) == "" || strings.TrimSpace(cfg.Nebula.UploadSecret) == "" {
+		return c.Status(http.StatusServiceUnavailable).JSON(fiber.Map{"error": "file uploads are not configured"})
+	}
+	publicBase := strings.TrimRight(strings.TrimSpace(cfg.Nebula.PublicURL), "/")
+	if publicBase == "" {
+		publicBase = strings.TrimRight(strings.TrimSpace(cfg.Nebula.BaseURL), "/")
+	}
+
+	spaceID, err := id.Parse(c.Params("id"))
+	if err != nil {
+		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "invalid space id"})
+	}
+	if err := h.svc.CanManageSpace(c.Context(), user.ID, spaceID); err != nil {
+		return spaceError(c, err, map[string]any{"space_id": spaceID})
+	}
+
+	fh, err := c.FormFile("file")
+	if err != nil || fh == nil {
+		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "missing file field"})
+	}
+	if fh.Size <= 0 || fh.Size > int64(cfg.Nebula.AvatarMaxBytes) {
+		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "invalid file size"})
+	}
+
+	ext := strings.ToLower(path.Ext(fh.Filename))
+	if ext == "" {
+		ext = ".png"
+	}
+	mime := spaceIconMIME[ext]
+	if mime == "" {
+		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "unsupported image type (use jpg, png, gif, or webp)"})
+	}
+
+	src, err := fh.Open()
+	if err != nil {
+		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "could not read file"})
+	}
+	defer src.Close()
+
+	var suffix [8]byte
+	if _, err := rand.Read(suffix[:]); err != nil {
+		logger.Err("spaces", err, map[string]any{"space_id": spaceID})
+		return c.Status(http.StatusInternalServerError).JSON(fiber.Map{"error": "internal error"})
+	}
+	key := "spaces/banners/" + id.Format(spaceID) + "/" + hex.EncodeToString(suffix[:]) + ext
+
+	if err := nebula.Put(c.Context(), cfg.Nebula.BaseURL, cfg.Nebula.UploadSecret, key, src, mime, fh.Size); err != nil {
+		logger.Err("spaces", err, map[string]any{"space_id": spaceID, "key": key})
+		return c.Status(http.StatusBadGateway).JSON(fiber.Map{"error": "could not store banner"})
+	}
+
+	bannerURL := publicBase + "/v1/" + key
+	space, err := h.svc.UpdateSpaceBanner(c.Context(), user.ID, spaceID, bannerURL)
+	if err != nil {
+		return spaceError(c, err, map[string]any{"space_id": spaceID})
+	}
+	return c.JSON(spaceToJSON(space))
+}
