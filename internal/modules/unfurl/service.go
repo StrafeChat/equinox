@@ -14,6 +14,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -33,17 +34,44 @@ const (
 	userAgent        = "Mozilla/5.0 (compatible; StrafeBot/1.0; +https://strafe.chat)"
 )
 
-// Metadata is the link-preview card the client renders. Every field is best-effort and may be
-// empty; an all-empty Metadata means the link had nothing worth previewing.
+// Media is an image or video rendition with its intrinsic size when the page declared one, so
+// the client can reserve the right box and not jump when it loads.
+type Media struct {
+	URL    string `json:"url"`
+	Width  int    `json:"width,omitempty"`
+	Height int    `json:"height,omitempty"`
+}
+
+// Metadata is the link-preview card the client renders, modelled on Discord's rich embed so a
+// card can carry an author, title, description, a provider/footer, an image (large or a small
+// thumbnail) and a video. Every field is best-effort; an all-empty Metadata means the link had
+// nothing worth previewing.
 type Metadata struct {
+	// Type is og:type (article, website, video.*, image.*), a hint for how to lay the card out.
+	Type        string `json:"type,omitempty"`
 	Title       string `json:"title,omitempty"`
 	Description string `json:"description,omitempty"`
-	Image       string `json:"image,omitempty"`
-	Icon        string `json:"icon,omitempty"`
-	SiteName    string `json:"site_name,omitempty"`
-	ThemeColor  string `json:"theme_color,omitempty"`
-	// URL is the final URL after redirects, so the client links to where it actually landed.
+	// URL is the final URL after redirects (or the canonical one), so the card links to where
+	// it actually landed.
 	URL string `json:"url,omitempty"`
+	// SiteName is the provider (Discord shows it as the footer / above-title provider line).
+	SiteName string `json:"site_name,omitempty"`
+	// Author is a byline when the page declares one (article:author / author / twitter:creator).
+	Author    string `json:"author,omitempty"`
+	AuthorURL string `json:"author_url,omitempty"`
+	// Color is theme-color, used for the card's accent edge.
+	Color string `json:"color,omitempty"`
+	// Icon is the favicon, shown next to the site name.
+	Icon string `json:"icon,omitempty"`
+	// Image is og:image / twitter:image. ImageLarge is true for a full-width image
+	// (twitter:card=summary_large_image, or the default), false for a small right-hand thumbnail.
+	Image      *Media `json:"image,omitempty"`
+	ImageLarge bool   `json:"image_large,omitempty"`
+	// Video is og:video. VideoType distinguishes a directly-playable file ("video/mp4",
+	// "video/webm") from an embed page ("text/html", e.g. a YouTube player) the client can't
+	// inline - it falls back to the image with a play affordance for those.
+	Video     *Media `json:"video,omitempty"`
+	VideoType string `json:"video_type,omitempty"`
 }
 
 var errBlockedAddress = errors.New("unfurl: address is not public")
@@ -178,13 +206,17 @@ func (s *Service) fetch(ctx context.Context, rawURL string) (Metadata, error) {
 	}
 	final := resp.Request.URL // the URL after any redirects
 	meta := extractMetadata(io.LimitReader(resp.Body, maxHeadBytes), final)
-	meta.URL = final.String()
+	if meta.URL == "" { // prefer the page's own og:url/canonical; fall back to where we landed
+		meta.URL = final.String()
+	}
 	return meta, nil
 }
 
 func extractMetadata(r io.Reader, base *url.URL) Metadata {
 	var m Metadata
-	var titleTag, ogTitle, twTitle, desc, ogDesc, twDesc string
+	var titleTag, ogTitle, twTitle, desc, ogDesc, twDesc, ogURL, canonical, twCard string
+	var imageURL, imageW, imageH string
+	var videoURL, videoW, videoH string
 
 	z := html.NewTokenizer(r)
 	for {
@@ -207,36 +239,72 @@ func extractMetadata(r io.Reader, base *url.URL) Metadata {
 				if content == "" {
 					continue
 				}
-				switch key := lower(firstNonEmpty(attrs["property"], attrs["name"], attrs["http-equiv"])); {
-				case key == "og:title":
+				// og:image:width etc. arrive as their own tags after og:image; captured into
+				// the pending image/video and stitched together at `done`.
+				switch key := lower(firstNonEmpty(attrs["property"], attrs["name"], attrs["http-equiv"])); key {
+				case "og:title":
 					setIfEmpty(&ogTitle, content)
-				case key == "twitter:title":
+				case "twitter:title":
 					setIfEmpty(&twTitle, content)
-				case key == "og:description":
+				case "og:description":
 					setIfEmpty(&ogDesc, content)
-				case key == "twitter:description":
+				case "twitter:description":
 					setIfEmpty(&twDesc, content)
-				case key == "description":
+				case "description":
 					setIfEmpty(&desc, content)
-				case key == "og:site_name":
+				case "og:site_name", "application-name":
 					setIfEmpty(&m.SiteName, content)
-				case key == "theme-color":
-					setIfEmpty(&m.ThemeColor, content)
-				case isImageKey(key):
-					if m.Image == "" {
-						if ref := resolveRef(content, base); ref != "" {
-							m.Image = ref
-						}
+				case "og:url":
+					if ref := resolveRef(content, base); ref != "" {
+						setIfEmpty(&ogURL, ref)
 					}
+				case "og:type":
+					setIfEmpty(&m.Type, lower(content))
+				case "theme-color", "msapplication-tilecolor":
+					setIfEmpty(&m.Color, content)
+				case "twitter:card":
+					setIfEmpty(&twCard, lower(content))
+				case "author", "twitter:creator":
+					setIfEmpty(&m.Author, content)
+				case "article:author", "og:article:author":
+					if isURLish(content) {
+						setIfEmpty(&m.AuthorURL, content)
+					} else {
+						setIfEmpty(&m.Author, content)
+					}
+				case "og:image", "og:image:url", "og:image:secure_url", "twitter:image", "twitter:image:src":
+					setIfEmpty(&imageURL, content)
+				case "og:image:width", "twitter:image:width":
+					setIfEmpty(&imageW, content)
+				case "og:image:height", "twitter:image:height":
+					setIfEmpty(&imageH, content)
+				case "og:video", "og:video:url", "og:video:secure_url", "twitter:player:stream":
+					setIfEmpty(&videoURL, content)
+				case "og:video:width", "twitter:player:width":
+					setIfEmpty(&videoW, content)
+				case "og:video:height", "twitter:player:height":
+					setIfEmpty(&videoH, content)
+				case "og:video:type", "twitter:player:stream:content_type":
+					setIfEmpty(&m.VideoType, lower(content))
 				}
 			case "link":
 				if !hasAttr {
 					continue
 				}
 				attrs := readAttrs(z)
-				if m.Icon == "" && attrs["href"] != "" && isIconRel(attrs["rel"]) {
-					if ref := resolveRef(attrs["href"], base); ref != "" {
+				rel := lower(attrs["rel"])
+				href := attrs["href"]
+				if href == "" {
+					continue
+				}
+				if m.Icon == "" && isIconRel(rel) {
+					if ref := resolveRef(href, base); ref != "" {
 						m.Icon = ref
+					}
+				}
+				if canonical == "" && rel == "canonical" {
+					if ref := resolveRef(href, base); ref != "" {
+						canonical = ref
 					}
 				}
 			}
@@ -249,6 +317,14 @@ func extractMetadata(r io.Reader, base *url.URL) Metadata {
 done:
 	m.Title = firstNonEmpty(ogTitle, twTitle, titleTag)
 	m.Description = firstNonEmpty(ogDesc, twDesc, desc)
+	m.URL = firstNonEmpty(ogURL, canonical)
+	if img := resolveRef(imageURL, base); img != "" {
+		m.Image = &Media{URL: img, Width: atoi(imageW), Height: atoi(imageH)}
+		m.ImageLarge = twCard != "summary" // "summary" is the small right-hand thumbnail style
+	}
+	if vid := resolveRef(videoURL, base); vid != "" {
+		m.Video = &Media{URL: vid, Width: atoi(videoW), Height: atoi(videoH)}
+	}
 	return m
 }
 
@@ -292,12 +368,16 @@ func resolveRef(ref string, base *url.URL) string {
 	return resolved.String()
 }
 
-func isImageKey(key string) bool {
-	switch key {
-	case "og:image", "og:image:url", "og:image:secure_url", "twitter:image", "twitter:image:src":
-		return true
+func atoi(s string) int {
+	n, err := strconv.Atoi(strings.TrimSpace(s))
+	if err != nil || n < 0 {
+		return 0
 	}
-	return false
+	return n
+}
+
+func isURLish(s string) bool {
+	return strings.HasPrefix(s, "http://") || strings.HasPrefix(s, "https://")
 }
 
 func isIconRel(rel string) bool {
