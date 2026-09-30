@@ -84,6 +84,11 @@ func botJSON(u *auth.User) fiber.Map {
 		"discriminator": fmt.Sprintf("%04d", u.Discriminator),
 		"display_name":  u.DisplayName,
 		"avatar":        u.Avatar,
+		"banner":        u.Banner,
+		"bio":           u.Bio,
+		"about_me":      u.AboutMe,
+		"accent_color":  u.AccentColor,
+		"public_flags":  auth.PublicFlags(u),
 		"bot":           true,
 	}
 }

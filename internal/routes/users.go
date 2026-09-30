@@ -2,6 +2,7 @@ package routes
 
 import (
 	"github.com/StrafeChat/equinox/internal/middleware"
+	"github.com/StrafeChat/equinox/internal/modules/applications"
 	"github.com/StrafeChat/equinox/internal/modules/auth"
 	"github.com/StrafeChat/equinox/internal/modules/oauth"
 	"github.com/StrafeChat/equinox/internal/modules/relationships"
@@ -24,6 +25,12 @@ func SetupUsersRoutes(d Deps) {
 	if d.Federation != nil {
 		usersHandler.SetFederator(d.Federation)
 	}
+	// A bot's profile is edited by its application's owner with the same machinery as a
+	// person's own (limits, Nebula storage, USER_UPDATE fan-out).
+	usersHandler.SetApplications(applications.NewRepository(d.Scylla))
+	d.App.Patch("/applications/:id/bot", requireAuth, usersHandler.PatchBotProfile)
+	d.App.Post("/applications/:id/bot/avatar", requireAuth, usersHandler.PostBotAvatar)
+	d.App.Post("/applications/:id/bot/banner", requireAuth, usersHandler.PostBotBanner)
 
 	// The two endpoints an OAuth2 access token may call about the account. They are
 	// registered before the /users/@me group below so their scoped auth runs instead of

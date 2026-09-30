@@ -129,5 +129,6 @@ func userSummary(u *auth.User) fiber.Map {
 		"discriminator": u.Discriminator,
 		"display_name":  u.DisplayName,
 		"avatar":        u.Avatar,
+		"bot":           u.Bot,
 	}
 }

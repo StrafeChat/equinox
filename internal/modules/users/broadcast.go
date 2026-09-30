@@ -31,6 +31,7 @@ func (h *Handler) broadcastUserProfile(ctx context.Context, u *auth.User) {
 		"bio":           u.Bio,
 		"about_me":      u.AboutMe,
 		"accent_color":  u.AccentColor,
+		"bot":           u.Bot,
 	}
 	stargate.PublishToUser(ctx, h.redis, u.ID, "USER_UPDATE", payload, region)
 	if len(u.Relationships) > 0 {

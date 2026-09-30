@@ -13,6 +13,7 @@ import (
 	"github.com/StrafeChat/equinox/internal/id"
 	"github.com/StrafeChat/equinox/internal/logger"
 	"github.com/StrafeChat/equinox/internal/middleware"
+	"github.com/StrafeChat/equinox/internal/modules/applications"
 	"github.com/StrafeChat/equinox/internal/modules/auth"
 	"github.com/StrafeChat/equinox/internal/modules/oauth"
 	"github.com/StrafeChat/equinox/internal/modules/rooms"
@@ -31,6 +32,8 @@ type Handler struct {
 	redis     *redis.Client
 	cfg       *config.Config
 	federator ProfileFederator
+	// apps is optional; set with SetApplications to serve bot profile edits (profile_bot.go).
+	apps applications.Repository
 }
 
 func NewHandler(userRepo auth.UserRepository, roomsRepo rooms.Repository, redis *redis.Client, cfg *config.Config) *Handler {
@@ -122,19 +125,7 @@ func (h *Handler) PatchMe(c fiber.Ctx) error {
 		h.broadcastUserProfile(c.Context(), updated)
 	}
 
-	return c.JSON(fiber.Map{
-		"id":            id.Format(updated.ID),
-		"email":         updated.Email,
-		"username":      updated.Username,
-		"discriminator": fmt.Sprintf("%04d", updated.Discriminator),
-		"display_name":  updated.DisplayName,
-		"bio":           updated.Bio,
-		"about_me":      updated.AboutMe,
-		"avatar":        updated.Avatar,
-		"banner":        updated.Banner,
-		"accent_color":  updated.AccentColor,
-		"presence":      auth.ToPublicPresence(updated.Presence, false),
-	})
+	return c.JSON(ownProfileJSON(updated))
 }
 
 // isOwnAssetURL reports whether u is empty (clear the field) or an object on this
