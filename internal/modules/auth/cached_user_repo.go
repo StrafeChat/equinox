@@ -48,6 +48,11 @@ type cachedUser struct {
 	UpdatedAt     time.Time      `json:"updated_at"`
 	HomeDomain    string         `json:"home_domain,omitempty"`
 	RemoteID      *int64         `json:"remote_id,omitempty"`
+	// TOTPEnabled/TOTPSecret are deliberately excluded, like PasswordHash: a cache-aside
+	// GetByID racing a concurrent SetTOTP write can re-populate the cache with the
+	// pre-write snapshot *after* SetTOTP's own invalidation runs, serving stale 2FA state
+	// for up to the full cache TTL. Reads that must be correct now use
+	// TwoFactorRepository.GetTOTPState instead, which never goes through this cache.
 }
 
 func userToCached(u *User) *cachedUser {
@@ -321,4 +326,12 @@ func (r *CachedUserRepository) UpdateProfile(ctx context.Context, userID int64, 
 		r.invalidateUser(context.Background(), userID)
 	}
 	return u, nil
+}
+
+func (r *CachedUserRepository) SetTOTP(ctx context.Context, userID int64, secret string, enabled bool) error {
+	if err := r.repo.SetTOTP(ctx, userID, secret, enabled); err != nil {
+		return err
+	}
+	r.invalidateUser(context.Background(), userID)
+	return nil
 }

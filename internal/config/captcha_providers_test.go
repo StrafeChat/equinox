@@ -33,6 +33,7 @@ func TestBodyLimitFollowsAttachmentCap(t *testing.T) {
 	t.Setenv("NEBULA_ATTACHMENT_MAX_MB", "100")
 	t.Setenv("HTTP_BODY_LIMIT_KB", "")
 	t.Setenv("PORT", "4000")
+	t.Setenv("TOTP_ENCRYPTION_KEY", "457ecc2865debaaa617c916d1b9183ababb84fd3d33f909908137422de0a3e2c")
 	cfg, err := Load()
 	if err != nil {
 		t.Fatalf("Load: %v", err)

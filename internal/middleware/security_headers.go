@@ -38,7 +38,11 @@ func CORS(origins []string) fiber.Handler {
 			}
 		}
 		c.Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
-		c.Set("Access-Control-Allow-Headers", "Authorization, Content-Type, Accept")
+		// X-MFA-Token: the pending-login token for the two WebAuthn login calls (see
+		// auth/handler_2fa.go) - kept out of the body/query so it never lands in a proxy
+		// log, which means it travels as a header and needs to clear preflight like any
+		// other non-simple one.
+		c.Set("Access-Control-Allow-Headers", "Authorization, Content-Type, Accept, X-MFA-Token")
 		c.Set("Access-Control-Allow-Credentials", "true")
 
 		if c.Method() == http.MethodOptions {

@@ -11,10 +11,13 @@ import (
 	"strings"
 	"time"
 
+	"github.com/go-webauthn/webauthn/webauthn"
+	"github.com/redis/go-redis/v9"
+	"golang.org/x/crypto/bcrypt"
+
 	"github.com/StrafeChat/equinox/internal/config"
 	"github.com/StrafeChat/equinox/internal/id"
 	"github.com/StrafeChat/equinox/internal/logger"
-	"golang.org/x/crypto/bcrypt"
 )
 
 var (
@@ -44,8 +47,13 @@ const bcryptMaxPasswordBytes = 72
 var dummyHash, _ = bcrypt.GenerateFromPassword([]byte("dummy-password-for-timing"), bcrypt.DefaultCost)
 
 type Service interface {
+	TwoFactorService
+
 	Register(ctx context.Context, in RegisterInput) (*User, error)
-	Login(ctx context.Context, email, password, ip, userAgent string) (*User, string, error)
+	// Login returns a LoginResult: either a session (Token set) or, when the account has a
+	// second factor enabled, a challenge (MFA set, Token empty) to be resolved by one of the
+	// TwoFactorService Verify*/Finish* methods using the mfa_token it carries.
+	Login(ctx context.Context, email, password, ip, userAgent string) (*LoginResult, error)
 	Logout(ctx context.Context, userID, sessionID int64) error
 	LogoutAll(ctx context.Context, userID int64) error
 }
@@ -78,14 +86,22 @@ type BannedError struct{ Reason string }
 func (e *BannedError) Error() string { return "account is banned" }
 
 type service struct {
-	cfg   *config.Config
-	repo  UserRepository
-	srepo SessionRepository
-	bans  BanChecker
+	cfg    *config.Config
+	repo   UserRepository
+	srepo  SessionRepository
+	tfrepo TwoFactorRepository
+	bans   BanChecker
 	// gate is nil in tests and in any build that has not wired the instance module; with
 	// no gate, an invite-only instance simply refuses every registration, which is the
 	// behaviour this flag had before invites existed.
 	gate InviteGate
+
+	redis       *redis.Client
+	redisPrefix string
+	// webauthn is nil until the instance has WEB_URL set (see config.loadTwoFactorConfig):
+	// passkey endpoints report ErrWebAuthnNotConfigured while it is nil, TOTP and recovery
+	// codes are unaffected either way.
+	webauthn *webauthn.WebAuthn
 }
 
 // SetInviteGate wires the instance module in. Separate from NewService so that every
@@ -94,8 +110,28 @@ func (s *service) SetInviteGate(g InviteGate) { s.gate = g }
 
 func (s *service) SetBanChecker(b BanChecker) { s.bans = b }
 
-func NewService(cfg *config.Config, repo UserRepository, srepo SessionRepository) Service {
-	return &service{cfg: cfg, repo: repo, srepo: srepo}
+func NewService(cfg *config.Config, repo UserRepository, srepo SessionRepository, tfrepo TwoFactorRepository, redisClient *redis.Client) Service {
+	prefix := cfg.Database.Redis.CachePrefix
+	if prefix != "" && !strings.HasSuffix(prefix, ":") {
+		prefix += ":"
+	}
+	s := &service{cfg: cfg, repo: repo, srepo: srepo, tfrepo: tfrepo, redis: redisClient, redisPrefix: prefix}
+	if cfg.TwoFactor.WebAuthnEnabled {
+		wa, err := webauthn.New(&webauthn.Config{
+			RPID:          cfg.TwoFactor.WebAuthnRPID,
+			RPDisplayName: cfg.TwoFactor.WebAuthnRPName,
+			RPOrigins:     cfg.TwoFactor.WebAuthnOrigins,
+		})
+		if err != nil {
+			// Passkey endpoints report ErrWebAuthnNotConfigured rather than the instance
+			// failing to boot over what is, for every account, an optional login method -
+			// TOTP and recovery codes are unaffected.
+			logger.Err("auth", err, map[string]any{"stage": "webauthn_config"})
+		} else {
+			s.webauthn = wa
+		}
+	}
+	return s
 }
 
 // GateSetter is implemented by the service returned from NewService. Route setup uses it
@@ -214,7 +250,7 @@ func (s *service) Register(ctx context.Context, in RegisterInput) (*User, error)
 		System:        false,
 		VerifiedEmail: false,
 		Presence: UserPresence{
-			Online:       false,
+			Online: false,
 			// The user's *chosen* status; "offline" is not one of the choices
 			// (online/idle/dnd/invisible), it is what a disconnected user reads as.
 			Status:       "online",
@@ -264,18 +300,18 @@ func (s *service) pickUniqueDiscriminator(ctx context.Context, username string) 
 	return 0, ErrInvalidUsername
 }
 
-func (s *service) Login(ctx context.Context, email, password, ip, userAgent string) (*User, string, error) {
+func (s *service) Login(ctx context.Context, email, password, ip, userAgent string) (*LoginResult, error) {
 	email = strings.ToLower(email)
 
 	u, err := s.repo.GetByEmail(ctx, email)
 	if err != nil || u == nil || u.IsRemote() || u.PasswordHash == "" {
 		// Burn the same bcrypt cost as a real comparison (see dummyHash).
 		_ = bcrypt.CompareHashAndPassword(dummyHash, []byte(password))
-		return nil, "", ErrInvalidCredentials
+		return nil, ErrInvalidCredentials
 	}
 
 	if err := bcrypt.CompareHashAndPassword([]byte(u.PasswordHash), []byte(password)); err != nil {
-		return nil, "", ErrInvalidCredentials
+		return nil, ErrInvalidCredentials
 	}
 
 	// After the password, not before: a banned account still has to prove it is that
@@ -283,13 +319,38 @@ func (s *service) Login(ctx context.Context, email, password, ip, userAgent stri
 	if s.bans != nil {
 		banned, reason, err := s.bans.BanReason(ctx, u.ID)
 		if err != nil {
-			return nil, "", err
+			return nil, err
 		}
 		if banned {
-			return nil, "", &BannedError{Reason: reason}
+			return nil, &BannedError{Reason: reason}
 		}
 	}
 
+	hasWebAuthn := false
+	if creds, err := s.tfrepo.ListWebAuthnCredentials(ctx, u.ID); err != nil {
+		return nil, err
+	} else {
+		hasWebAuthn = len(creds) > 0
+	}
+
+	if u.HasTwoFactor(hasWebAuthn) {
+		challenge, err := s.beginPendingMFA(ctx, u, hasWebAuthn)
+		if err != nil {
+			return nil, err
+		}
+		return &LoginResult{User: u, MFA: challenge}, nil
+	}
+
+	token, err := s.createSession(ctx, u.ID, ip, userAgent)
+	if err != nil {
+		return nil, err
+	}
+	return &LoginResult{User: u, Token: token}, nil
+}
+
+// createSession is the one place a session row is actually minted, whether that follows a
+// plain password login or the second factor for one that needed it.
+func (s *service) createSession(ctx context.Context, userID int64, ip, userAgent string) (string, error) {
 	ttl := time.Duration(s.cfg.Session.TTLSeconds) * time.Second
 	tokenBytes := s.cfg.Session.TokenBytes
 	if tokenBytes < 16 {
@@ -298,7 +359,7 @@ func (s *service) Login(ctx context.Context, email, password, ip, userAgent stri
 
 	rawToken := make([]byte, tokenBytes)
 	if _, err := rand.Read(rawToken); err != nil {
-		return nil, "", err
+		return "", err
 	}
 	tokenHex := hex.EncodeToString(rawToken)
 
@@ -306,25 +367,23 @@ func (s *service) Login(ctx context.Context, email, password, ip, userAgent stri
 	tokenHash := hex.EncodeToString(hash[:])
 
 	now := time.Now().UTC()
-	expiresAt := now.Add(ttl)
-	sessionID := id.Next()
 
 	sess := &Session{
-		UserID:     u.ID,
-		SessionID:  sessionID,
+		UserID:     userID,
+		SessionID:  id.Next(),
 		TokenHash:  tokenHash,
 		CreatedAt:  now,
-		ExpiresAt:  expiresAt,
+		ExpiresAt:  now.Add(ttl),
 		IPAddress:  ip,
 		UserAgent:  userAgent,
 		DeviceName: "",
 	}
 
 	if err := s.srepo.Create(ctx, sess); err != nil {
-		return nil, "", err
+		return "", err
 	}
 
-	return u, tokenHex, nil
+	return tokenHex, nil
 }
 
 func (s *service) Logout(ctx context.Context, userID, sessionID int64) error {

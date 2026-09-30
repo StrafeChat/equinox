@@ -69,6 +69,16 @@ type User struct {
 	// are absent from the email/username lookup tables (they can't log in here).
 	HomeDomain string `db:"home_domain" json:"home_domain,omitempty"`
 	RemoteID   *int64 `db:"remote_id" json:"-"`
+	// Two-factor auth. TOTPSecret is AES-256-GCM ciphertext (see totp.go), never the raw
+	// base32 secret - it must never reach a JSON response, hence "-".
+	TOTPEnabled bool   `db:"totp_enabled" json:"totp_enabled"`
+	TOTPSecret  string `db:"totp_secret" json:"-"`
+}
+
+// HasTwoFactor reports whether a second factor is required at login: TOTP, or a WebAuthn
+// credential passed in separately since it lives in its own table.
+func (u *User) HasTwoFactor(hasWebAuthn bool) bool {
+	return u != nil && (u.TOTPEnabled || hasWebAuthn)
 }
 
 // IsRemote reports whether this row is a shadow of a user on another instance.

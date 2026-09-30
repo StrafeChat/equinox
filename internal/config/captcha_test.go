@@ -6,6 +6,9 @@ func baseValidCfg() *Config {
 	cfg := &Config{}
 	cfg.HTTP.Port = "4000"
 	cfg.App.SnowflakeNode = 0
+	// Required unconditionally (see validateTwoFactor) - any well-formed 32-byte hex value
+	// does for a test, since nothing here exercises TOTP itself.
+	cfg.TwoFactor.TOTPEncryptionKey = "457ecc2865debaaa617c916d1b9183ababb84fd3d33f909908137422de0a3e2c"
 	return cfg
 }
 

@@ -43,6 +43,9 @@ type UserRepository interface {
 	UpdateRelationships(ctx context.Context, userID int64, add, remove []int64) error
 	UpdateBlocks(ctx context.Context, userID int64, add, remove []int64) error
 	UpdateProfile(ctx context.Context, userID int64, upd *ProfileUpdate) (*User, error)
+	// SetTOTP writes the encrypted TOTP secret and enabled flag together, since they only
+	// ever change as a pair (setup/enable writes both, disable clears both).
+	SetTOTP(ctx context.Context, userID int64, secret string, enabled bool) error
 
 	// Federation shadows (see User.HomeDomain). UpsertShadow writes the users row and the
 	// users_by_remote lookup; it never touches the email/username lookup tables.
@@ -79,6 +82,8 @@ var userTable = table.New(table.Metadata{
 		"updated_at",
 		"home_domain",
 		"remote_id",
+		"totp_enabled",
+		"totp_secret",
 	},
 	PartKey: []string{"id"},
 })
@@ -399,4 +404,10 @@ func (r *scyllaUserRepo) UpdateProfile(ctx context.Context, userID int64, upd *P
 	stmt, names := userTable.Update("display_name", "bio", "about_me", "avatar", "banner", "accent_color", "flags", "presence", "updated_at")
 	q := r.session.Query(stmt, names).WithContext(ctx)
 	return u, q.Bind(u.DisplayName, u.Bio, u.AboutMe, u.Avatar, u.Banner, u.AccentColor, u.Flags, u.Presence, u.UpdatedAt, u.ID).ExecRelease()
+}
+
+func (r *scyllaUserRepo) SetTOTP(ctx context.Context, userID int64, secret string, enabled bool) error {
+	stmt, names := userTable.Update("totp_secret", "totp_enabled")
+	q := r.session.Query(stmt, names).WithContext(ctx)
+	return q.Bind(secret, enabled, userID).ExecRelease()
 }

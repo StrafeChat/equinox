@@ -60,7 +60,7 @@ func (h *Handler) Login(c fiber.Ctx) error {
 	ip := c.IP()
 	userAgent := c.Get("User-Agent")
 
-	user, token, err := h.svc.Login(c.Context(), in.Email, in.Password, ip, userAgent)
+	result, err := h.svc.Login(c.Context(), in.Email, in.Password, ip, userAgent)
 	if err != nil {
 		if err == ErrInvalidCredentials {
 			logger.Info("auth", "login failed: invalid credentials")
@@ -74,16 +74,31 @@ func (h *Handler) Login(c fiber.Ctx) error {
 		return c.Status(http.StatusInternalServerError).JSON(fiber.Map{"error": "internal error"})
 	}
 
+	// A second factor is required: no session yet, just the challenge the client resolves
+	// against POST /auth/2fa/*.
+	if result.MFA != nil {
+		c.Set("Cache-Control", "no-store")
+		return c.Status(http.StatusOK).JSON(fiber.Map{
+			"mfa_required": true,
+			"mfa_token":    result.MFA.Token,
+			"methods":      result.MFA.Methods,
+		})
+	}
+
 	return c.Status(http.StatusOK).JSON(fiber.Map{
-		"token": token,
-		"user": fiber.Map{
-			"id":            id.Format(user.ID),
-			"email":         user.Email,
-			"username":      user.Username,
-			"discriminator": user.Discriminator,
-			"display_name":  user.DisplayName,
-		},
+		"token": result.Token,
+		"user":  loginUserJSON(result.User),
 	})
+}
+
+func loginUserJSON(user *User) fiber.Map {
+	return fiber.Map{
+		"id":            id.Format(user.ID),
+		"email":         user.Email,
+		"username":      user.Username,
+		"discriminator": user.Discriminator,
+		"display_name":  user.DisplayName,
+	}
 }
 
 func (h *Handler) Logout(c fiber.Ctx) error {

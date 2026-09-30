@@ -164,6 +164,7 @@ func (f *fakeUsers) UpsertShadow(context.Context, *auth.User) error { return nil
 func (f *fakeUsers) GetByRemote(context.Context, string, int64) (*auth.User, error) {
 	return nil, nil
 }
+func (f *fakeUsers) SetTOTP(context.Context, int64, string, bool) error { return nil }
 
 type fakeSessions struct{ revoked []int64 }
 

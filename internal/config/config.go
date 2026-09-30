@@ -1,7 +1,9 @@
 package config
 
 import (
+	"encoding/hex"
 	"errors"
+	neturl "net/url"
 	"strconv"
 	"strings"
 
@@ -18,6 +20,7 @@ type Config struct {
 	Flags      FeatureFlags
 	Captcha    CaptchaConfig
 	Voice      VoiceConfig
+	TwoFactor  TwoFactorConfig
 	Database   DatabaseConfig
 	Log        LogConfig
 }
@@ -179,6 +182,26 @@ type CaptchaConfig struct {
 	CapInternalURL string
 }
 
+// TwoFactorConfig is account 2FA: TOTP authenticator codes (always available - the secret
+// never leaves this server, so there is nothing to configure) and WebAuthn passkeys/security
+// keys (available only once the instance knows its own browser-facing origin, because a
+// WebAuthn ceremony is bound to it by the browser itself).
+type TwoFactorConfig struct {
+	// TOTPEncryptionKey wraps every TOTP secret at rest (32 bytes, hex). Unlike a password
+	// hash this must be reversible - the server computes the code to compare - so it is
+	// AES-256-GCM'd under this key rather than hashed. Required unconditionally: a key that
+	// could vary across restarts would make every enrolled account's codes stop working
+	// (or, worse, silently re-derive the wrong ones) the next time the process starts.
+	TOTPEncryptionKey string
+	// WebAuthnEnabled mirrors WebAuthnRPID != "": derived from App.WebURL, since a passkey
+	// is bound to the exact origin it was created on and cannot be configured separately
+	// from "what origin does this instance's web client run on".
+	WebAuthnEnabled bool
+	WebAuthnRPID    string
+	WebAuthnRPName  string
+	WebAuthnOrigins []string
+}
+
 type DatabaseConfig struct {
 	Scylla ScyllaConfig
 	Redis  RedisConfig
@@ -271,6 +294,7 @@ func Load() (*Config, error) {
 	}
 
 	cfg.Federation.Enabled = cfg.Federation.Domain != ""
+	cfg.TwoFactor = loadTwoFactorConfig(getEnvString("TOTP_ENCRYPTION_KEY", ""), cfg.App.WebURL)
 
 	// The body limit has to fit the largest attachment plus multipart overhead, or uploads
 	// fail with a 413 before the attachment code ever sees them. Deriving it means raising
@@ -370,6 +394,41 @@ func validate(cfg *Config) error {
 	}
 	if err := validateVoice(cfg.Voice); err != nil {
 		return err
+	}
+	if err := validateTwoFactor(cfg.TwoFactor); err != nil {
+		return err
+	}
+	return nil
+}
+
+// loadTwoFactorConfig derives the WebAuthn relying-party identity from App.WebURL: the RP
+// ID is that URL's host (what a passkey is bound to) and the sole allowed origin is the URL
+// itself. WebAuthn stays off (WebAuthnEnabled false) until WEB_URL is set - there is no
+// separate WEBAUTHN_* variable to fill in, because a passkey registered under the wrong
+// origin simply fails in the browser, so the one place this can come from is the same
+// browser-facing URL the rest of the app already advertises.
+func loadTwoFactorConfig(totpKey, webURL string) TwoFactorConfig {
+	tf := TwoFactorConfig{TOTPEncryptionKey: strings.TrimSpace(totpKey)}
+	if webURL == "" {
+		return tf
+	}
+	u, err := neturl.Parse(webURL)
+	if err != nil || u.Hostname() == "" {
+		return tf
+	}
+	tf.WebAuthnEnabled = true
+	tf.WebAuthnRPID = u.Hostname()
+	tf.WebAuthnRPName = "StrafeChat"
+	tf.WebAuthnOrigins = []string{strings.TrimRight(webURL, "/")}
+	return tf
+}
+
+func validateTwoFactor(tf TwoFactorConfig) error {
+	if len(tf.TOTPEncryptionKey) != 64 {
+		return errors.New("TOTP_ENCRYPTION_KEY is required and must be 64 hex characters / 32 bytes (openssl rand -hex 32)")
+	}
+	if _, err := hex.DecodeString(tf.TOTPEncryptionKey); err != nil {
+		return errors.New("TOTP_ENCRYPTION_KEY must be hex-encoded (openssl rand -hex 32)")
 	}
 	return nil
 }

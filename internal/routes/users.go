@@ -16,6 +16,9 @@ func SetupUsersRoutes(d Deps) {
 	sessionRepo := auth.NewCachedSessionRepository(auth.NewSessionRepository(d.Scylla), d.Redis, d.Config)
 	requireAuth := middleware.RequireAuth(sessionRepo, userRepo)
 
+	twoFactorRepo := auth.NewTwoFactorRepository(d.Scylla)
+	authHandler := auth.NewHandler(auth.NewService(d.Config, userRepo, sessionRepo, twoFactorRepo, d.Redis))
+
 	relRepo := relationships.NewRepository(d.Scylla)
 	relSvc := relationships.NewService(relRepo, userRepo, d.Redis, d.Config)
 	relHandler := relationships.NewHandler(relSvc)
@@ -44,6 +47,16 @@ func SetupUsersRoutes(d Deps) {
 	me.Patch("", usersHandler.PatchMe)
 	me.Post("/avatar", usersHandler.PostAvatar)
 	me.Post("/banner", usersHandler.PostBanner)
+
+	// /users/@me/2fa - TOTP, passkeys, recovery codes
+	me.Get("/2fa", authHandler.TwoFactorStatus)
+	me.Post("/2fa/totp/setup", authHandler.SetupTOTP)
+	me.Post("/2fa/totp/enable", authHandler.EnableTOTP)
+	me.Post("/2fa/totp/disable", authHandler.DisableTOTP)
+	me.Post("/2fa/webauthn/register/begin", authHandler.BeginWebAuthnRegistration)
+	me.Post("/2fa/webauthn/register/finish", authHandler.FinishWebAuthnRegistration)
+	me.Delete("/2fa/webauthn/:credential_id", authHandler.DeleteWebAuthnCredential)
+	me.Post("/2fa/recovery_codes/regenerate", authHandler.RegenerateRecoveryCodes)
 
 	// /users/@me/relationships
 	r := me.Group("/relationships")
