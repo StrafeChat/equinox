@@ -89,13 +89,29 @@ Go identifiers, error strings, docs:
   check, any site could open an authenticated gateway connection in a signed-in user's name.
 - **Developer platform (`internal/modules/applications` + `internal/modules/oauth`)**:
   OAuth2 applications and bot accounts, modelled on Discord. An application owns redirect
-  URIs, a hashed client secret, and optionally a bot user (an `auth.User` with `Bot` set
-  and a synthetic `bot+<id>@bots.invalid` email so it never collides on the empty-email
-  login key). Client secrets and bot tokens are hashed at rest with the session-token
-  scheme (`hex(sha256(hex-decoded raw))`) and shown exactly once at mint/reset. `oauth` is
-  the authorization server: authorization-code grant, `identify`/`email`/`guilds` scopes,
-  single-use codes, and access+refresh tokens with per-user grants. Bots are REST-only
-  today — a gateway (WebSocket) session type for them is a deliberate follow-up.
+  URIs, a hashed client secret, a `bot_public` switch and optionally a bot user (an
+  `auth.User` with `Bot` set, a synthetic `bot+<id>@bots.invalid` email so it never
+  collides on the empty-email login key, and **the application's id as its user id** so an
+  install link needs no lookup). Client secrets and bot tokens are hashed at rest with the
+  session-token scheme (`hex(sha256(hex-decoded raw))`) and shown exactly once at
+  mint/reset; a bot token reset publishes `SESSION_REVOKED` so the gateway drops the bot.
+  `oauth` is the authorization server: authorization-code grant (HTTP Basic or body client
+  auth, form or JSON), scopes `identify` / `email` / `spaces` / `spaces.join` / `bot`,
+  single-use codes, one live access+refresh pair per (user, app) - refresh and
+  re-authorisation replace it, so a grant revoke is total - RFC 7009 revoke, and
+  `GET /oauth2/@me`. **Scopes are enforced by the middleware**: `RequireAuth` refuses OAuth2
+  tokens with `403 insufficient_scope`; only routes wrapped in `RequireAuthScoped(...)`
+  (`GET /users/@me`, `GET /users/@me/spaces`, `GET /oauth2/@me`) admit them, so a new
+  endpoint is closed to third-party apps unless it opts in. The `bot` scope installs the
+  bot into a space the consenting user manages (`spaces.Service.InstallBot`: owner,
+  Administrator or Manage Space; permissions masked to what they may grant) with a
+  **managed role** (`space_roles.bot_id`, position 1, undeletable, unassignable, removed
+  with the bot); `spaces.join` lets a bot with Create Invite add an authorising user
+  (`PUT /spaces/:id/members/:user_id`). Bots use the gateway with `Authorization: Bot`
+  on the handshake (header only) and are auto-subscribed to everything in READY
+  (`ReadyData.ChannelIDs`). The developer documentation for all of this is the docs site
+  in `web.strafe.chat/docs/pages/` (served at `/docs/` on every instance) - update it in
+  the same change when an endpoint, scope, event or permission changes.
 - **Profile badges** are a `public_flags` bitfield on the user
   (`internal/modules/auth/badges.go`; append-only bits behind an `AllBadges` mask). An
   instance admin assigns them through moderation (`instance.SetUserBadges`), and every user
