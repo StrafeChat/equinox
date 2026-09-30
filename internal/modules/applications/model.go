@@ -28,6 +28,9 @@ var (
 
 // Application is an OAuth2 client owned by a user. Secret and bot token are never stored in
 // the clear; only their sha-256 hashes are kept, and the raw values are returned once.
+//
+// A bot's user id is the application's id (its client_id), the way Discord does it: anyone
+// who sees the bot in a member list can build its install link without a lookup.
 type Application struct {
 	ID           int64     `db:"id" json:"id,string"`
 	OwnerID      int64     `db:"owner_id" json:"owner_id,string"`
@@ -36,6 +39,7 @@ type Application struct {
 	Icon         string    `db:"icon" json:"icon"`
 	SecretHash   string    `db:"secret_hash" json:"-"`
 	BotUserID    int64     `db:"bot_user_id" json:"bot_user_id,omitempty,string"`
+	BotPublic    bool      `db:"bot_public" json:"bot_public"`
 	RedirectURIs []string  `db:"redirect_uris" json:"redirect_uris"`
 	CreatedAt    time.Time `db:"created_at" json:"created_at"`
 	UpdatedAt    time.Time `db:"updated_at" json:"updated_at"`
@@ -49,4 +53,5 @@ type UpdateInput struct {
 	Description  *string   `json:"description"`
 	Icon         *string   `json:"icon"`
 	RedirectURIs *[]string `json:"redirect_uris"`
+	BotPublic    *bool     `json:"bot_public"`
 }

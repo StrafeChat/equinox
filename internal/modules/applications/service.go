@@ -14,6 +14,8 @@ import (
 
 	"github.com/StrafeChat/equinox/internal/id"
 	"github.com/StrafeChat/equinox/internal/modules/auth"
+	"github.com/StrafeChat/equinox/internal/stargate"
+	"github.com/redis/go-redis/v9"
 )
 
 // usernameRe mirrors auth's username grammar; a bot's username is derived from the app name.
@@ -22,10 +24,24 @@ var usernameRe = regexp.MustCompile(`^[A-Za-z0-9_.\-]{2,32}$`)
 type Service struct {
 	repo  Repository
 	users auth.UserRepository
+	// redis is optional; when set, a bot token reset tells the gateway to drop the bot's
+	// live sockets (the same SESSION_REVOKED path an account ban uses).
+	redis  *redis.Client
+	region string
 }
 
 func NewService(repo Repository, users auth.UserRepository) *Service {
 	return &Service{repo: repo, users: users}
+}
+
+// SetGateway wires the Redis client the gateway listens on, so a reset bot token also
+// disconnects the bot; region is the STARGATE_REGION the events are tagged with.
+func (s *Service) SetGateway(r *redis.Client, region string) {
+	s.redis = r
+	s.region = region
+	if s.region == "" {
+		s.region = "default"
+	}
 }
 
 // Secrets is the raw material returned once at creation and never stored: the client secret
@@ -68,6 +84,7 @@ func (s *Service) Create(ctx context.Context, ownerID int64, name string) (*Appl
 		OwnerID:      ownerID,
 		Name:         name,
 		SecretHash:   secretHash,
+		BotPublic:    true,
 		RedirectURIs: []string{},
 		CreatedAt:    now,
 		UpdatedAt:    now,
@@ -84,6 +101,28 @@ func (s *Service) List(ctx context.Context, ownerID int64) ([]Application, error
 
 func (s *Service) Get(ctx context.Context, actorID, appID int64) (*Application, error) {
 	return s.assertOwner(ctx, actorID, appID)
+}
+
+// GetPublic returns an application by id with no ownership check, for the surfaces that
+// show an app to people other than its owner (the consent screen, a bot's profile). The
+// caller must only expose public fields.
+func (s *Service) GetPublic(ctx context.Context, appID int64) (*Application, error) {
+	a, err := s.repo.GetByID(ctx, appID)
+	if err != nil {
+		return nil, err
+	}
+	if a == nil {
+		return nil, ErrNotFound
+	}
+	return a, nil
+}
+
+// BotUser loads the application's bot account, or nil when it has none.
+func (s *Service) BotUser(ctx context.Context, a *Application) (*auth.User, error) {
+	if a == nil || !a.HasBot() {
+		return nil, nil
+	}
+	return s.users.GetByID(ctx, a.BotUserID)
 }
 
 func (s *Service) Update(ctx context.Context, actorID, appID int64, in UpdateInput) (*Application, error) {
@@ -114,6 +153,9 @@ func (s *Service) Update(ctx context.Context, actorID, appID int64, in UpdateInp
 		}
 		a.RedirectURIs = clean
 	}
+	if in.BotPublic != nil {
+		a.BotPublic = *in.BotPublic
+	}
 	a.UpdatedAt = time.Now().UTC()
 	if err := s.repo.Update(ctx, a); err != nil {
 		return nil, err
@@ -128,7 +170,13 @@ func (s *Service) Delete(ctx context.Context, actorID, appID int64) error {
 	}
 	// The bot user row is left in place but its token is dropped with the app, so it can no
 	// longer authenticate. It stays a member of any space it was added to until removed there.
-	return s.repo.Delete(ctx, a.ID, a.OwnerID)
+	if err := s.repo.Delete(ctx, a.ID, a.OwnerID); err != nil {
+		return err
+	}
+	if a.HasBot() {
+		s.disconnectBot(ctx, a.BotUserID)
+	}
+	return nil
 }
 
 func (s *Service) ResetSecret(ctx context.Context, actorID, appID int64) (string, error) {
@@ -146,7 +194,8 @@ func (s *Service) ResetSecret(ctx context.Context, actorID, appID int64) (string
 }
 
 // AddBot creates the application's bot account (a real user with bot = true) and its first
-// token. One bot per application.
+// token. One bot per application. The bot's user id is the application's id, so the id a
+// bot shows up with everywhere is also the client_id its install link needs.
 func (s *Service) AddBot(ctx context.Context, actorID, appID int64) (*auth.User, string, error) {
 	a, err := s.assertOwner(ctx, actorID, appID)
 	if err != nil {
@@ -161,7 +210,7 @@ func (s *Service) AddBot(ctx context.Context, actorID, appID int64) (*auth.User,
 		return nil, "", err
 	}
 	now := time.Now().UTC()
-	botID := id.Next()
+	botID := a.ID
 	bot := &auth.User{
 		ID: botID,
 		// A synthetic, unique, non-login email: the account create path claims an
@@ -171,6 +220,7 @@ func (s *Service) AddBot(ctx context.Context, actorID, appID int64) (*auth.User,
 		Username:      botUsername,
 		Discriminator: disc,
 		DisplayName:   a.Name,
+		Avatar:        a.Icon,
 		Bot:           true,
 		Locale:        "en-US",
 		Presence:      auth.UserPresence{Online: false, Status: "online"},
@@ -181,6 +231,7 @@ func (s *Service) AddBot(ctx context.Context, actorID, appID int64) (*auth.User,
 		return nil, "", err
 	}
 	a.BotUserID = bot.ID
+	a.BotPublic = true
 	a.UpdatedAt = now
 	if err := s.repo.Update(ctx, a); err != nil {
 		return nil, "", err
@@ -204,7 +255,19 @@ func (s *Service) ResetBotToken(ctx context.Context, actorID, appID int64) (stri
 	if err := s.repo.SetBotToken(ctx, a.ID, a.BotUserID, tokenHash); err != nil {
 		return "", err
 	}
+	// The old token is dead; a bot still connected with it must not keep its socket.
+	s.disconnectBot(ctx, a.BotUserID)
 	return token, nil
+}
+
+// disconnectBot asks the gateway to close the bot's sockets, best-effort.
+func (s *Service) disconnectBot(ctx context.Context, botUserID int64) {
+	if s.redis == nil {
+		return
+	}
+	stargate.PublishToUser(ctx, s.redis, botUserID, "SESSION_REVOKED", map[string]interface{}{
+		"reason": "bot token reset",
+	}, s.region)
 }
 
 // ResolveBotToken is what the auth middleware calls for `Authorization: Bot <token>`: it

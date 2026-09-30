@@ -15,6 +15,13 @@ func SetupApplicationRoutes(d Deps) {
 	requireAuth := middleware.RequireAuth(sessionRepo, userRepo)
 
 	svc := applications.NewService(applications.NewRepository(d.Scylla), userRepo)
+	if d.Redis != nil {
+		region := ""
+		if d.Config != nil {
+			region = d.Config.Stargate.Region
+		}
+		svc.SetGateway(d.Redis, region)
+	}
 	h := applications.NewHandler(svc)
 
 	// A bot authenticates its REST and gateway calls with `Authorization: Bot <token>`;
@@ -28,6 +35,7 @@ func SetupApplicationRoutes(d Deps) {
 	r.Get("", h.List)
 	r.Post("", writeLimiter, h.Create)
 	r.Get("/:id", h.Get)
+	r.Get("/:id/public", h.GetPublic)
 	r.Patch("/:id", h.Patch)
 	r.Delete("/:id", h.Delete)
 	r.Post("/:id/secret", writeLimiter, h.ResetSecret)

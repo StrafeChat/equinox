@@ -317,6 +317,7 @@ func (s *Service) ListSpaceMemberUserIDs(ctx context.Context, spaceID int64) ([]
 //   - any role with Mentionable == false, so an admin's "don't let this role be pinged"
 //     setting can't be worked around by hand-typing (or an old message containing) the
 //     raw <@&roleId> syntax.
+//
 // A message that mentions an excluded role still renders it (Mentions/MentionRoles are
 // stored as parsed either way) - it just isn't treated as a notify-worthy mention.
 func (s *Service) ListSpaceMemberUserIDsByRoles(ctx context.Context, spaceID int64, roleIDs []int64) ([]int64, error) {
@@ -603,41 +604,12 @@ func (s *Service) JoinByInvite(ctx context.Context, actorID int64, code string) 
 		if err != nil {
 			return nil, err
 		}
-		if err := s.repo.AddMember(ctx, spaceID, actorID, []int64{eid}); err != nil {
-			return nil, err
-		}
-		if err := s.repo.AddSpaceToUserSet(ctx, actorID, spaceID); err != nil {
+		if err := s.addMember(ctx, spRow, actorID, []int64{eid}); err != nil {
 			return nil, err
 		}
 		// Only a join that actually added someone counts against the invite.
 		if _, err := s.consumeInvite(ctx, code, true); err != nil && !errors.Is(err, ErrInviteNotFound) {
 			return nil, err
-		}
-		s.markPreJoinHistoryRead(ctx, spaceID, actorID)
-		s.postSystemMessage(ctx, spRow, SystemRoomFlagSuppressJoin, SystemMemberJoin, map[string]interface{}{
-			"user_id": id.Format(actorID),
-		})
-		// Publish SPACE_MEMBER_ADD to the space channel so connected members see the join in real time.
-		if s.redis != nil {
-			u, _ := s.userRepo.GetByID(ctx, actorID)
-			if u != nil {
-				payload := map[string]interface{}{
-					"space_id":      id.Format(spaceID),
-					"id":            id.Format(u.ID),
-					"username":      u.Username,
-					"discriminator": u.Discriminator,
-					"display_name":  u.DisplayName,
-					"avatar":        u.Avatar,
-					"banner":        u.Banner,
-					"bio":           u.Bio,
-					"about_me":      u.AboutMe,
-					"presence":      auth.ToPublicPresence(u.Presence, true),
-				}
-				if mem, _ := s.repo.GetMember(ctx, spaceID, actorID); mem != nil {
-					payload["role_ids"] = formatRoleIDStrings(mem.RoleIDs)
-				}
-				stargate.PublishToSpace(ctx, s.redis, spaceID, "SPACE_MEMBER_ADD", payload, s.stargateRegion())
-			}
 		}
 	}
 	space, err := s.repo.GetByID(ctx, spaceID)

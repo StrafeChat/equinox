@@ -11,7 +11,7 @@ import (
 
 var applicationsTable = table.New(table.Metadata{
 	Name:    "applications",
-	Columns: []string{"id", "owner_id", "name", "description", "icon", "secret_hash", "bot_user_id", "redirect_uris", "created_at", "updated_at"},
+	Columns: []string{"id", "owner_id", "name", "description", "icon", "secret_hash", "bot_user_id", "bot_public", "redirect_uris", "created_at", "updated_at"},
 	PartKey: []string{"id"},
 })
 
@@ -47,7 +47,7 @@ func NewRepository(session gocqlx.Session) Repository {
 func (r *repo) Create(ctx context.Context, a *Application) error {
 	batch := r.session.Batch(gocql.LoggedBatch).WithContext(ctx)
 	stmt, _ := applicationsTable.Insert()
-	batch.Query(stmt, a.ID, a.OwnerID, a.Name, a.Description, a.Icon, a.SecretHash, a.BotUserID, a.RedirectURIs, a.CreatedAt, a.UpdatedAt)
+	batch.Query(stmt, a.ID, a.OwnerID, a.Name, a.Description, a.Icon, a.SecretHash, a.BotUserID, a.BotPublic, a.RedirectURIs, a.CreatedAt, a.UpdatedAt)
 	stmt, _ = applicationsByOwnerTable.Insert()
 	batch.Query(stmt, a.OwnerID, a.ID, a.CreatedAt)
 	return r.session.ExecuteBatch(batch)
@@ -89,17 +89,28 @@ func (r *repo) ListByOwner(ctx context.Context, ownerID int64) ([]Application, e
 }
 
 func (r *repo) Update(ctx context.Context, a *Application) error {
-	stmt, names := applicationsTable.Update("name", "description", "icon", "secret_hash", "bot_user_id", "redirect_uris", "updated_at")
+	stmt, names := applicationsTable.Update("name", "description", "icon", "secret_hash", "bot_user_id", "bot_public", "redirect_uris", "updated_at")
 	q := r.session.Query(stmt, names).WithContext(ctx)
 	defer q.Release()
-	return q.Bind(a.Name, a.Description, a.Icon, a.SecretHash, a.BotUserID, a.RedirectURIs, a.UpdatedAt, a.ID).Exec()
+	return q.Bind(a.Name, a.Description, a.Icon, a.SecretHash, a.BotUserID, a.BotPublic, a.RedirectURIs, a.UpdatedAt, a.ID).Exec()
 }
 
 func (r *repo) Delete(ctx context.Context, id, ownerID int64) error {
+	// The live bot token goes with the app: look it up first so the bot can no longer
+	// authenticate once its application is gone.
+	var prev string
+	err := r.session.Query("SELECT token_hash FROM bot_token_by_app WHERE application_id = ?", []string{"application_id"}).
+		WithContext(ctx).Bind(id).GetRelease(&prev)
+	if err != nil && err != gocql.ErrNotFound {
+		return err
+	}
 	batch := r.session.Batch(gocql.LoggedBatch).WithContext(ctx)
 	batch.Query("DELETE FROM applications WHERE id = ?", id)
 	batch.Query("DELETE FROM applications_by_owner WHERE owner_id = ? AND id = ?", ownerID, id)
 	batch.Query("DELETE FROM bot_token_by_app WHERE application_id = ?", id)
+	if prev != "" {
+		batch.Query("DELETE FROM bot_tokens WHERE token_hash = ?", prev)
+	}
 	return r.session.ExecuteBatch(batch)
 }
 

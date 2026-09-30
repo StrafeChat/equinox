@@ -1,6 +1,7 @@
 package applications
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -32,8 +33,9 @@ func errorFor(c fiber.Ctx, err error) error {
 	}
 }
 
-// appJSON is the public shape. client_id is the application id; the secret is never here.
-func appJSON(a *Application) fiber.Map {
+// appJSON is the owner's view of an application. client_id is the application id; the
+// secret is never here. `bot` carries the bot account's public profile when one exists.
+func (h *Handler) appJSON(ctx context.Context, a *Application) fiber.Map {
 	m := fiber.Map{
 		"id":            id.Format(a.ID),
 		"client_id":     id.Format(a.ID),
@@ -43,13 +45,34 @@ func appJSON(a *Application) fiber.Map {
 		"icon":          a.Icon,
 		"redirect_uris": a.RedirectURIs,
 		"has_bot":       a.HasBot(),
+		"bot_public":    a.BotPublic,
 		"created_at":    a.CreatedAt,
-	}
-	if a.HasBot() {
-		m["bot_user_id"] = id.Format(a.BotUserID)
 	}
 	if a.RedirectURIs == nil {
 		m["redirect_uris"] = []string{}
+	}
+	if a.HasBot() {
+		m["bot_user_id"] = id.Format(a.BotUserID)
+		if bot, err := h.svc.BotUser(ctx, a); err == nil && bot != nil {
+			m["bot"] = botJSON(bot)
+		}
+	}
+	return m
+}
+
+// PublicJSON is what anyone may see of an application: enough to recognise it on a consent
+// screen or a bot's profile, and nothing an owner would consider private.
+func PublicJSON(a *Application, bot *auth.User) fiber.Map {
+	m := fiber.Map{
+		"id":          id.Format(a.ID),
+		"name":        a.Name,
+		"description": a.Description,
+		"icon":        a.Icon,
+		"has_bot":     a.HasBot(),
+		"bot_public":  a.BotPublic,
+	}
+	if bot != nil {
+		m["bot"] = botJSON(bot)
 	}
 	return m
 }
@@ -60,6 +83,7 @@ func botJSON(u *auth.User) fiber.Map {
 		"username":      u.Username,
 		"discriminator": fmt.Sprintf("%04d", u.Discriminator),
 		"display_name":  u.DisplayName,
+		"avatar":        u.Avatar,
 		"bot":           true,
 	}
 }
@@ -79,7 +103,7 @@ func (h *Handler) Create(c fiber.Ctx) error {
 	if err != nil {
 		return errorFor(c, err)
 	}
-	m := appJSON(a)
+	m := h.appJSON(c.Context(), a)
 	m["client_secret"] = secret // shown once
 	return c.Status(http.StatusCreated).JSON(m)
 }
@@ -95,7 +119,7 @@ func (h *Handler) List(c fiber.Ctx) error {
 	}
 	out := make([]fiber.Map, 0, len(apps))
 	for i := range apps {
-		out = append(out, appJSON(&apps[i]))
+		out = append(out, h.appJSON(c.Context(), &apps[i]))
 	}
 	return c.JSON(out)
 }
@@ -109,7 +133,22 @@ func (h *Handler) Get(c fiber.Ctx) error {
 	if err != nil {
 		return errorFor(c, err)
 	}
-	return c.JSON(appJSON(a))
+	return c.JSON(h.appJSON(c.Context(), a))
+}
+
+// GetPublic GET /applications/:id/public - the public profile of any application, for the
+// surfaces that show an app to people other than its owner (a bot's "Add to space").
+func (h *Handler) GetPublic(c fiber.Ctx) error {
+	appID, err := id.Parse(c.Params("id"))
+	if err != nil {
+		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "invalid application id"})
+	}
+	a, err := h.svc.GetPublic(c.Context(), appID)
+	if err != nil {
+		return errorFor(c, err)
+	}
+	bot, _ := h.svc.BotUser(c.Context(), a)
+	return c.JSON(PublicJSON(a, bot))
 }
 
 func (h *Handler) Patch(c fiber.Ctx) error {
@@ -125,7 +164,7 @@ func (h *Handler) Patch(c fiber.Ctx) error {
 	if err != nil {
 		return errorFor(c, err)
 	}
-	return c.JSON(appJSON(a))
+	return c.JSON(h.appJSON(c.Context(), a))
 }
 
 func (h *Handler) Delete(c fiber.Ctx) error {

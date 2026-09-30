@@ -34,6 +34,9 @@ const (
 	AuditEmojiDelete       = "emoji_delete"
 	AuditOverrideUpdate    = "override_update"
 	AuditOverrideDelete    = "override_delete"
+	// A bot installed through an application's `bot` OAuth2 scope: target is the bot's
+	// user id, changes carry the permissions its role was created with.
+	AuditBotAdd = "bot_add"
 	// Voice moderation (internal/modules/voice): target is the member acted on.
 	AuditOwnershipTransfer = "ownership_transfer"
 
@@ -49,6 +52,7 @@ var userTargetActions = map[string]bool{
 	AuditMemberBanAdd:          true,
 	AuditMemberBanRemove:       true,
 	AuditMemberRolesUpdate:     true,
+	AuditBotAdd:                true,
 	AuditMemberVoiceMute:       true,
 	AuditMemberVoiceDeafen:     true,
 	AuditMemberVoiceMove:       true,
