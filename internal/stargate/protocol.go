@@ -2,18 +2,18 @@ package stargate
 
 // Opcodes: client -> server
 const (
-	OpHeartbeat  = 0
-	OpSubscribe  = 1
-	OpSend       = 2
+	OpHeartbeat   = 0
+	OpSubscribe   = 1
+	OpSend        = 2
 	OpUnsubscribe = 5
-	OpPing       = 6
+	OpPing        = 6
 )
 
 // Opcodes: server -> client
 const (
 	OpEvent = 3
 	OpReady = 4
-	OpPong = 7
+	OpPong  = 7
 	OpError = 8
 )
 
@@ -31,10 +31,10 @@ type SubscribePayload struct {
 
 // Send payload (publish to room/space; space_id = room_id for PMs)
 type SendPayload struct {
-	SpaceID  string      `json:"space_id"`
-	Type     string      `json:"type,omitempty"` // e.g. "message", "typing"
-	Content  interface{} `json:"content"`
-	ReplyTo  string      `json:"reply_to,omitempty"`
+	SpaceID string      `json:"space_id"`
+	Type    string      `json:"type,omitempty"` // e.g. "message", "typing"
+	Content interface{} `json:"content"`
+	ReplyTo string      `json:"reply_to,omitempty"`
 }
 
 // Unsubscribe payload
@@ -66,17 +66,21 @@ type ReadyData struct {
 	SpaceRooms    interface{}
 	VoiceStates   interface{}
 	Calls         interface{}
+	// ChannelIDs is every "space" channel id the user may subscribe to - each space's own
+	// id plus every room id (space rooms and PMs). Not sent; the server uses it to
+	// auto-subscribe bot connections.
+	ChannelIDs []string
 }
 
 // Server outbound: EVENT
 type EventPayload struct {
-	Type      string      `json:"t"`       // e.g. MESSAGE, TYPING_START
-	SpaceID   string      `json:"space_id,omitempty"`   // legacy; for rooms same as room_id
-	RoomID    string      `json:"room_id,omitempty"`    // room_id for room/PM events
-	UserID    string      `json:"user_id,omitempty"`
-	Data      interface{} `json:"d"`
-	Origin    string      `json:"origin,omitempty"`    // federation: source server
-	Region    string      `json:"region,omitempty"`    // instance region
+	Type    string      `json:"t"`                  // e.g. MESSAGE, TYPING_START
+	SpaceID string      `json:"space_id,omitempty"` // legacy; for rooms same as room_id
+	RoomID  string      `json:"room_id,omitempty"`  // room_id for room/PM events
+	UserID  string      `json:"user_id,omitempty"`
+	Data    interface{} `json:"d"`
+	Origin  string      `json:"origin,omitempty"` // federation: source server
+	Region  string      `json:"region,omitempty"` // instance region
 }
 
 // Server outbound: ERROR
@@ -90,7 +94,7 @@ type RedisEnvelope struct {
 	Type    string      `json:"t"`
 	SpaceID string      `json:"space_id,omitempty"`
 	UserID  string      `json:"user_id,omitempty"`
-	From    int64       `json:"from"`     // sender user id
+	From    int64       `json:"from"` // sender user id
 	Data    interface{} `json:"d"`
 	Origin  string      `json:"origin,omitempty"`
 	Region  string      `json:"region,omitempty"`

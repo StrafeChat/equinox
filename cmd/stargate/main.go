@@ -15,6 +15,7 @@ import (
 	"github.com/StrafeChat/equinox/internal/federation"
 	"github.com/StrafeChat/equinox/internal/id"
 	"github.com/StrafeChat/equinox/internal/logger"
+	"github.com/StrafeChat/equinox/internal/modules/applications"
 	"github.com/StrafeChat/equinox/internal/modules/auth"
 	"github.com/StrafeChat/equinox/internal/modules/relationships"
 	"github.com/StrafeChat/equinox/internal/modules/rooms"
@@ -77,6 +78,8 @@ func (p *readyDataProvider) GetReadyData(ctx context.Context, userID int64) (*st
 	// voice rooms of their spaces (collected below).
 	voiceRoomIDs := make([]int64, 0, len(roomList))
 	out := make([]map[string]interface{}, 0, len(roomList))
+	// Every "space" channel the user may subscribe to (see stargate.ReadyData.ChannelIDs).
+	channelIDs := make([]string, 0, len(roomList))
 	for _, r := range roomList {
 		if r.Type == rooms.TypePM || r.Type == rooms.TypeGroupPM {
 			voiceRoomIDs = append(voiceRoomIDs, r.ID)
@@ -140,6 +143,7 @@ func (p *readyDataProvider) GetReadyData(ctx context.Context, userID int64) (*st
 			m["federation"] = r.Federation
 		}
 		out = append(out, m)
+		channelIDs = append(channelIDs, id.Format(r.ID))
 	}
 
 	// Spaces and space rooms. Like Discord's GUILD_CREATE, each space carries its roles
@@ -169,6 +173,7 @@ func (p *readyDataProvider) GetReadyData(ctx context.Context, userID int64) (*st
 					continue
 				}
 				spacesList = append(spacesList, spaceToReadyMap(space, snap))
+				channelIDs = append(channelIDs, id.Format(space.ID))
 				roomMaps := make([]map[string]interface{}, 0, len(roomListForSpace))
 				for _, r := range roomListForSpace {
 					if r.Type == rooms.TypeSpaceVoice {
@@ -188,13 +193,14 @@ func (p *readyDataProvider) GetReadyData(ctx context.Context, userID int64) (*st
 						m["mention_count"] = mc
 					}
 					roomMaps = append(roomMaps, m)
+					channelIDs = append(channelIDs, id.Format(r.ID))
 				}
 				spaceRoomsMap[id.Format(space.ID)] = roomMaps
 			}
 		}
 	}
 
-	data := &stargate.ReadyData{Rooms: out, Relationships: relList, Spaces: spacesList, SpaceRooms: spaceRoomsMap}
+	data := &stargate.ReadyData{Rooms: out, Relationships: relList, Spaces: spacesList, SpaceRooms: spaceRoomsMap, ChannelIDs: channelIDs}
 	if p.voice != nil && len(voiceRoomIDs) > 0 {
 		states, calls, err := p.voice.StatesForRooms(ctx, voiceRoomIDs)
 		if err != nil {
@@ -330,7 +336,8 @@ func main() {
 	}
 	hub.Run(ctx)
 
-	resolver := stargate.NewResolver(sessionRepo, userRepo)
+	// Bots connect with `Authorization: Bot <token>`; the applications store resolves it.
+	resolver := stargate.NewResolver(sessionRepo, userRepo).WithBots(applications.NewRepository(scylla))
 
 	srv := stargate.NewServer(stargate.ServerConfig{
 		Hub:               hub,

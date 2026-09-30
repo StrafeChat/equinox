@@ -18,9 +18,15 @@ import (
 	"github.com/StrafeChat/equinox/internal/modules/auth"
 )
 
-// SessionResolver validates a token hash and returns user + session or error.
+// SessionResolver validates a token hash and returns user + session or error. When it
+// also implements BotResolver, `Authorization: Bot <token>` connections are accepted.
 type SessionResolver interface {
 	Resolve(ctx context.Context, tokenHash string) (*auth.User, *auth.Session, error)
+}
+
+// BotResolver validates a hashed bot token and returns the bot account (nil = unknown).
+type BotResolver interface {
+	ResolveBot(ctx context.Context, tokenHash string) (*auth.User, error)
 }
 
 // Server runs the WebSocket server at /events. Use a separate process/domain
@@ -57,6 +63,14 @@ func NewServer(cfg ServerConfig) *Server {
 				return true // allow all when not configured (dev)
 			}
 			origin := r.Header.Get("Origin")
+			// The origin check exists to stop a web page on another site from opening a
+			// gateway connection with a signed-in user's ambient credentials. A client
+			// that sends no Origin is not a browser (a bot, a native app): it holds its
+			// token explicitly, so there is nothing for the check to protect - browsers
+			// always send Origin on a WebSocket handshake.
+			if origin == "" {
+				return true
+			}
 			for _, o := range cfg.AllowedOrigins {
 				if o == origin {
 					return true
@@ -92,7 +106,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	token := extractToken(r)
+	scheme, token := extractToken(r)
 	if token == "" {
 		s.writeError(w, r, 401, "missing or invalid authorization")
 		return
@@ -110,15 +124,39 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
-	user, session, err := s.resolve.Resolve(ctx, tokenHash)
-	if err != nil {
-		logger.Err("stargate", err, map[string]any{"path": "/events"})
-		s.writeError(w, r, 500, "internal error")
-		return
-	}
-	if user == nil || session == nil {
-		s.writeError(w, r, 401, "invalid or expired session")
-		return
+	var user *auth.User
+	var sessionID int64
+	if scheme == "Bot" {
+		// A bot has no session row: its identity is the application's token, hashed
+		// the same way. sessionID stays 0 - nothing keys on it for bots.
+		br, ok := s.resolve.(BotResolver)
+		if !ok {
+			s.writeError(w, r, 401, "bot tokens are not enabled")
+			return
+		}
+		user, err = br.ResolveBot(ctx, tokenHash)
+		if err != nil {
+			logger.Err("stargate", err, map[string]any{"path": "/events", "scheme": "bot"})
+			s.writeError(w, r, 500, "internal error")
+			return
+		}
+		if user == nil {
+			s.writeError(w, r, 401, "invalid bot token")
+			return
+		}
+	} else {
+		var session *auth.Session
+		user, session, err = s.resolve.Resolve(ctx, tokenHash)
+		if err != nil {
+			logger.Err("stargate", err, map[string]any{"path": "/events"})
+			s.writeError(w, r, 500, "internal error")
+			return
+		}
+		if user == nil || session == nil {
+			s.writeError(w, r, 401, "invalid or expired session")
+			return
+		}
+		sessionID = session.SessionID
 	}
 
 	conn, err := s.upgrade.Upgrade(w, r, nil)
@@ -127,7 +165,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	client := newClient(s.hub, conn, user.ID, session.SessionID)
+	client := newClient(s.hub, conn, user.ID, sessionID)
 	s.hub.register(client)
 
 	// Auto-subscribe to own user stream for relationship requests, PMs, etc.
@@ -159,7 +197,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	readyPayload := ReadyPayload{
 		User:      readyUser,
-		SessionID: strconv.FormatInt(session.SessionID, 10),
+		SessionID: strconv.FormatInt(sessionID, 10),
 	}
 	if s.readyData != nil {
 		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
@@ -172,6 +210,17 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			readyPayload.SpaceRooms = data.SpaceRooms
 			readyPayload.VoiceStates = data.VoiceStates
 			readyPayload.Calls = data.Calls
+			// A bot is subscribed to everything it can see from the start, so a bot
+			// program is "connect, read READY, handle events" with no subscribe
+			// bookkeeping. Browser clients keep managing their own subscriptions (they
+			// add and drop spaces live and already do this themselves).
+			if user.Bot {
+				for _, cid := range data.ChannelIDs {
+					if client.subscribe("space", cid) {
+						s.hub.subscribe(client, "space", cid)
+					}
+				}
+			}
 		}
 	}
 	client.sendOp(OpReady, readyPayload)
@@ -193,14 +242,21 @@ func (s *Server) writeError(w http.ResponseWriter, r *http.Request, status int, 
 	_, _ = w.Write(body)
 }
 
-func extractToken(r *http.Request) string {
+// extractToken returns the credential and its scheme: "Bearer" for a session token (from
+// the Authorization header, the session_token cookie, or ?token= for browsers, which
+// cannot set headers on a WebSocket) or "Bot" for a bot token, which is accepted from the
+// Authorization header only - a bot can set headers, and a token in a URL leaks.
+func extractToken(r *http.Request) (scheme, token string) {
 	if h := r.Header.Get("Authorization"); h != "" {
 		if prefix := "Bearer "; strings.HasPrefix(h, prefix) {
-			return strings.TrimSpace(strings.TrimPrefix(h, prefix))
+			return "Bearer", strings.TrimSpace(strings.TrimPrefix(h, prefix))
+		}
+		if prefix := "Bot "; strings.HasPrefix(h, prefix) {
+			return "Bot", strings.TrimSpace(strings.TrimPrefix(h, prefix))
 		}
 	}
 	if c, _ := r.Cookie("session_token"); c != nil && c.Value != "" {
-		return c.Value
+		return "Bearer", c.Value
 	}
-	return r.URL.Query().Get("token")
+	return "Bearer", r.URL.Query().Get("token")
 }
