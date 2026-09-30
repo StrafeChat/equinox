@@ -110,6 +110,9 @@ type LogConfig struct {
 type AppConfig struct {
 	Version       string
 	SnowflakeNode int64 // node ID for snowflake generator (0-1023)
+	// WebURL is the browser-facing URL of the web client (e.g. https://web.strafe.chat),
+	// advertised on GET / so clients/tools can discover it. Optional.
+	WebURL string
 }
 
 type HTTPConfig struct {
@@ -124,8 +127,13 @@ type HTTPConfig struct {
 }
 
 type StargateConfig struct {
-	Port            string   // WebSocket server port (e.g. 4001)
-	Region          string   // instance region for multi-region (e.g. "us-east", "eu-west")
+	Port   string // WebSocket server port (e.g. 4001)
+	Region string // instance region for multi-region (e.g. "us-east", "eu-west")
+	// PublicURL is the browser-facing gateway URL advertised on GET / (e.g.
+	// wss://chat.example.com/gateway/events). Optional; when empty the / route falls back
+	// to Federation.GatewayURL. The gateway itself always runs - this only affects what is
+	// advertised to clients.
+	PublicURL       string
 	AllowedOrigins  []string // allowed origins for CheckOrigin (e.g. https://web.strafe.chat)
 	ReadBufferSize  int      // bytes (default 4096)
 	WriteBufferSize int      // bytes (default 4096)
@@ -195,6 +203,7 @@ func Load() (*Config, error) {
 		App: AppConfig{
 			Version:       getEnvString("VERSION", "1.0.0"),
 			SnowflakeNode: int64(getEnvInt("SNOWFLAKE_NODE_ID", 0)),
+			WebURL:        strings.TrimRight(strings.TrimSpace(getEnvString("WEB_URL", "")), "/"),
 		},
 		HTTP: HTTPConfig{
 			Port:           getEnvString("PORT", "4000"),
@@ -209,6 +218,7 @@ func Load() (*Config, error) {
 		Stargate: StargateConfig{
 			Port:            getEnvString("STARGATE_PORT", "4001"),
 			Region:          getEnvString("STARGATE_REGION", "default"),
+			PublicURL:       strings.TrimRight(strings.TrimSpace(getEnvString("STARGATE_PUBLIC_URL", "")), "/"),
 			AllowedOrigins:  getEnvArray("STARGATE_ALLOWED_ORIGINS", nil),
 			ReadBufferSize:  getEnvInt("STARGATE_READ_BUFFER", 4096),
 			WriteBufferSize: getEnvInt("STARGATE_WRITE_BUFFER", 4096),
