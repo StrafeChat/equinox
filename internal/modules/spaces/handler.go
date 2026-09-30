@@ -48,7 +48,8 @@ func spaceError(c fiber.Ctx, err error, logFields map[string]any) error {
 		errors.Is(err, ErrInvalidSystemRoom), errors.Is(err, ErrInvalidAFKRoom), errors.Is(err, ErrInvalidAFKTimeout),
 		errors.Is(err, ErrInvalidNotifLevel), errors.Is(err, ErrInvalidSystemFlags), errors.Is(err, ErrInvalidWidgetRoom),
 		errors.Is(err, ErrInvalidInvite), errors.Is(err, ErrInvalidUserLimit), errors.Is(err, ErrInvalidBitrate),
-		errors.Is(err, ErrAlreadyOwner), errors.Is(err, ErrSpaceNameMismatch), errors.Is(err, ErrInvalidBot):
+		errors.Is(err, ErrAlreadyOwner), errors.Is(err, ErrSpaceNameMismatch), errors.Is(err, ErrInvalidBot),
+		errors.Is(err, ErrManagedRole):
 		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
 	logger.Err("spaces", err, logFields)

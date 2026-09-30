@@ -36,6 +36,9 @@ var (
 	// Administrator on @everyone (which the hierarchy check deliberately exempts) and
 	// become an administrator of the whole space.
 	ErrPermissionEscalation = errors.New("cannot grant permissions you do not have")
+	// ErrManagedRole: the role belongs to a bot (SpaceRole.BotID) - it can be edited, but
+	// only its bot may hold it and it is removed when the bot leaves, never by hand.
+	ErrManagedRole = errors.New("this role belongs to a bot and cannot be deleted or assigned")
 )
 
 const (
@@ -319,6 +322,9 @@ func (s *Service) DeleteSpaceRole(ctx context.Context, actorID, spaceID, roleID 
 	if role == nil {
 		return ErrRoleNotFound
 	}
+	if role.IsManaged() {
+		return ErrManagedRole
+	}
 	if sp.OwnerID != actorID {
 		_, _, actorHighest, err := s.memberRoleContext(ctx, spaceID, actorID)
 		if err != nil {
@@ -373,10 +379,17 @@ func (s *Service) SetMemberRoles(ctx context.Context, actorID, spaceID, targetUs
 	if !isOwner && !isSelf && highestRolePosition(mem.RoleIDs, everyoneID, byID) >= actorHighest {
 		return ErrRoleHierarchy
 	}
+	// A bot's own role is nobody else's to hold, and nobody's to take away from the bot.
+	for _, rid := range roleIDs {
+		if r := byID[rid]; r != nil && r.IsManaged() && r.BotID != targetUserID {
+			return ErrManagedRole
+		}
+	}
 	out, err := resolveMemberRoles(roleIDs, mem.RoleIDs, everyoneID, byID, isOwner, actorHighest)
 	if err != nil {
 		return err
 	}
+	out = keepManagedRoles(out, mem.RoleIDs, targetUserID, byID)
 	if err := s.repo.SetMemberRoleIDs(ctx, spaceID, targetUserID, out); err != nil {
 		return err
 	}
@@ -439,6 +452,24 @@ func resolveMemberRoles(
 		out = append(out, rid)
 	}
 	return out, nil
+}
+
+// keepManagedRoles puts back any of the member's own bot roles a request left out: a
+// managed role leaves with the bot, not through the roles editor.
+func keepManagedRoles(out, current []int64, userID int64, byID map[int64]*SpaceRole) []int64 {
+	have := make(map[int64]struct{}, len(out))
+	for _, rid := range out {
+		have[rid] = struct{}{}
+	}
+	for _, rid := range current {
+		if _, ok := have[rid]; ok {
+			continue
+		}
+		if r := byID[rid]; r != nil && r.IsManaged() && r.BotID == userID {
+			out = append(out, rid)
+		}
+	}
+	return out
 }
 
 // ListRoomRoleOverrides returns overrides for a channel. Any member.

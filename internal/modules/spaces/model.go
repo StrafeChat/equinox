@@ -7,29 +7,29 @@ const EveryoneRoleName = "@everyone"
 
 // Space is a Discord-style server.
 type Space struct {
-	ID                    int64     `db:"id" json:"id"`
-	Name                  string    `db:"name" json:"name"`
-	NameAcronym           string    `db:"name_acronym" json:"name_acronym"`
-	Description           string    `db:"description" json:"description"`
-	Icon                  string    `db:"icon" json:"icon"`
-	Banner                string    `db:"banner" json:"banner"`
-	OwnerID               int64     `db:"owner_id" json:"owner_id"`
-	VerificationLevel     int       `db:"verification_level" json:"verification_level"`
-	DefaultMessageNotif   int       `db:"default_message_notifications" json:"default_message_notifications"`
-	ExplicitContentFilter int       `db:"explicit_content_filter" json:"explicit_content_filter"`
-	Features              []string  `db:"features" json:"features"`
-	AFKRoomID             *int64    `db:"afk_room_id" json:"afk_room_id,omitempty"`
-	AFKTimeout            int       `db:"afk_timeout" json:"afk_timeout"`
-	SystemRoomID          *int64    `db:"system_room_id" json:"system_room_id,omitempty"`
-	SystemRoomFlags       int       `db:"system_room_flags" json:"system_room_flags"`
-	RulesRoomID           *int64    `db:"rules_room_id" json:"rules_room_id,omitempty"`
-	MaxPresences          int       `db:"max_presences" json:"max_presences"`
-	MaxMembers            int       `db:"max_members" json:"max_members"`
-	VanityURLCode         string    `db:"vanity_url_code" json:"vanity_url_code"`
-	PreferredLocale       string    `db:"preferred_locale" json:"preferred_locale"`
-	PublicUpdatesRoomID   *int64    `db:"public_updates_room_id" json:"public_updates_room_id,omitempty"`
-	MaxVideoRoomUsers     int       `db:"max_video_room_users" json:"max_video_room_users"`
-	EveryoneRoleID        int64     `db:"everyone_role_id" json:"everyone_role_id,omitempty"`
+	ID                    int64    `db:"id" json:"id"`
+	Name                  string   `db:"name" json:"name"`
+	NameAcronym           string   `db:"name_acronym" json:"name_acronym"`
+	Description           string   `db:"description" json:"description"`
+	Icon                  string   `db:"icon" json:"icon"`
+	Banner                string   `db:"banner" json:"banner"`
+	OwnerID               int64    `db:"owner_id" json:"owner_id"`
+	VerificationLevel     int      `db:"verification_level" json:"verification_level"`
+	DefaultMessageNotif   int      `db:"default_message_notifications" json:"default_message_notifications"`
+	ExplicitContentFilter int      `db:"explicit_content_filter" json:"explicit_content_filter"`
+	Features              []string `db:"features" json:"features"`
+	AFKRoomID             *int64   `db:"afk_room_id" json:"afk_room_id,omitempty"`
+	AFKTimeout            int      `db:"afk_timeout" json:"afk_timeout"`
+	SystemRoomID          *int64   `db:"system_room_id" json:"system_room_id,omitempty"`
+	SystemRoomFlags       int      `db:"system_room_flags" json:"system_room_flags"`
+	RulesRoomID           *int64   `db:"rules_room_id" json:"rules_room_id,omitempty"`
+	MaxPresences          int      `db:"max_presences" json:"max_presences"`
+	MaxMembers            int      `db:"max_members" json:"max_members"`
+	VanityURLCode         string   `db:"vanity_url_code" json:"vanity_url_code"`
+	PreferredLocale       string   `db:"preferred_locale" json:"preferred_locale"`
+	PublicUpdatesRoomID   *int64   `db:"public_updates_room_id" json:"public_updates_room_id,omitempty"`
+	MaxVideoRoomUsers     int      `db:"max_video_room_users" json:"max_video_room_users"`
+	EveryoneRoleID        int64    `db:"everyone_role_id" json:"everyone_role_id,omitempty"`
 	// Server widget: a public JSON document (GET /spaces/:id/widget.json) with the member
 	// and online counts plus, when WidgetRoomID is set, an invite that never expires, for
 	// embedding a "join us" card outside Strafe. WidgetInviteCode is that invite; it is
@@ -75,17 +75,23 @@ type SpaceAuditEntry struct {
 
 // SpaceRole is a permission-bearing role in a space (@everyone or custom).
 type SpaceRole struct {
-	SpaceID     int64     `db:"space_id" json:"-"`
-	ID          int64     `db:"id" json:"id"`
-	Name        string    `db:"name" json:"name"`
-	Permissions int64     `db:"permissions" json:"permissions"`
-	Position    int       `db:"position" json:"position"`
-	Color       int       `db:"color" json:"color"`
-	Hoist       bool      `db:"hoist" json:"hoist"`
-	Mentionable bool      `db:"mentionable" json:"mentionable"`
-	CreatedAt   time.Time `db:"created_at" json:"created_at"`
-	UpdatedAt   time.Time `db:"updated_at" json:"updated_at"`
+	SpaceID     int64  `db:"space_id" json:"-"`
+	ID          int64  `db:"id" json:"id"`
+	Name        string `db:"name" json:"name"`
+	Permissions int64  `db:"permissions" json:"permissions"`
+	Position    int    `db:"position" json:"position"`
+	Color       int    `db:"color" json:"color"`
+	Hoist       bool   `db:"hoist" json:"hoist"`
+	Mentionable bool   `db:"mentionable" json:"mentionable"`
+	// BotID marks a role a bot install created (the bot's user id): editable, but never
+	// deletable or assignable to anyone else, and removed when the bot leaves.
+	BotID     int64     `db:"bot_id" json:"bot_id,omitempty"`
+	CreatedAt time.Time `db:"created_at" json:"created_at"`
+	UpdatedAt time.Time `db:"updated_at" json:"updated_at"`
 }
+
+// IsManaged reports whether the role belongs to a bot (see BotID).
+func (r *SpaceRole) IsManaged() bool { return r.BotID != 0 }
 
 // SpaceRoomRoleOverride is a Discord-style allow/deny mask for one role in one room.
 type SpaceRoomRoleOverride struct {

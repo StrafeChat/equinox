@@ -698,7 +698,7 @@ func (s *Service) KickMember(ctx context.Context, actorID, spaceID, targetUserID
 	if err := s.repo.RemoveMember(ctx, spaceID, targetUserID); err != nil {
 		return err
 	}
-	s.publishMemberRemoved(ctx, spaceID, targetUserID)
+	s.afterMemberRemoved(ctx, spaceID, targetUserID)
 	s.audit(ctx, spaceID, actorID, AuditMemberKick, id.Format(targetUserID), nil, "")
 	s.announceLeave(ctx, spaceID, targetUserID, "kicked")
 	return nil
@@ -726,7 +726,7 @@ func (s *Service) BanMember(ctx context.Context, actorID, spaceID, targetUserID 
 	if err := s.repo.RemoveMember(ctx, spaceID, targetUserID); err != nil {
 		return err
 	}
-	s.publishMemberRemoved(ctx, spaceID, targetUserID)
+	s.afterMemberRemoved(ctx, spaceID, targetUserID)
 	s.audit(ctx, spaceID, actorID, AuditMemberBanAdd, id.Format(targetUserID), nil, reason)
 	s.announceLeave(ctx, spaceID, targetUserID, "banned")
 	return nil
@@ -831,7 +831,7 @@ func (s *Service) LeaveSpace(ctx context.Context, actorID, spaceID int64) error 
 	if err := s.repo.RemoveMember(ctx, spaceID, actorID); err != nil {
 		return err
 	}
-	s.publishMemberRemoved(ctx, spaceID, actorID)
+	s.afterMemberRemoved(ctx, spaceID, actorID)
 	s.announceLeave(ctx, spaceID, actorID, "left")
 	return nil
 }

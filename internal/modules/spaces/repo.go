@@ -400,7 +400,7 @@ func (r *repo) ListAuditEntries(ctx context.Context, spaceID, beforeID int64, li
 var spaceRolesTable = table.New(table.Metadata{
 	Name: "space_roles",
 	Columns: []string{
-		"space_id", "id", "name", "permissions", "position", "color", "hoist", "mentionable", "created_at", "updated_at",
+		"space_id", "id", "name", "permissions", "position", "color", "hoist", "mentionable", "bot_id", "created_at", "updated_at",
 	},
 	PartKey: []string{"space_id"},
 	SortKey: []string{"id"},

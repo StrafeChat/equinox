@@ -131,7 +131,12 @@ func (s *Service) InstallBot(ctx context.Context, actorID, spaceID, botUserID, p
 	if ok, err := s.repo.IsMember(ctx, spaceID, botUserID); err != nil {
 		return 0, err
 	} else if ok {
-		return 0, nil
+		// Re-authorising an installed bot re-applies its permissions to its role, the way
+		// Discord does; with nothing requested it is a no-op.
+		if granted == 0 {
+			return 0, nil
+		}
+		return s.updateBotRole(ctx, sp, bot, granted)
 	}
 	if ban, err := s.repo.GetBan(ctx, spaceID, botUserID); err != nil {
 		return 0, err
@@ -202,6 +207,7 @@ func (s *Service) createBotRole(ctx context.Context, sp *Space, everyoneID int64
 		Name:        name,
 		Permissions: perms,
 		Position:    1,
+		BotID:       bot.ID,
 		CreatedAt:   now,
 		UpdatedAt:   now,
 	}
@@ -209,6 +215,119 @@ func (s *Service) createBotRole(ctx context.Context, sp *Space, everyoneID int64
 		return nil, err
 	}
 	return role, nil
+}
+
+// updateBotRole re-applies granted permissions to an installed bot's managed role (or
+// creates the role when the bot was first added with none).
+func (s *Service) updateBotRole(ctx context.Context, sp *Space, bot *auth.User, granted int64) (int64, error) {
+	roles, err := s.repo.ListSpaceRoles(ctx, sp.ID)
+	if err != nil {
+		return 0, err
+	}
+	for i := range roles {
+		r := &roles[i]
+		if r.BotID != bot.ID {
+			continue
+		}
+		r.Permissions = granted
+		r.UpdatedAt = time.Now().UTC()
+		if err := s.repo.UpdateSpaceRole(ctx, r); err != nil {
+			return 0, err
+		}
+		s.invalidateSnapshot(ctx, sp.ID)
+		s.publishSpaceEvent(ctx, sp.ID, "SPACE_ROLE_UPDATE", spaceRoleEventData(r))
+		return granted, nil
+	}
+	eid, err := s.ensureEveryoneRoleID(ctx, sp)
+	if err != nil {
+		return 0, err
+	}
+	role, err := s.createBotRole(ctx, sp, eid, bot, granted)
+	if err != nil {
+		return 0, err
+	}
+	mem, err := s.repo.GetMember(ctx, sp.ID, bot.ID)
+	if err != nil || mem == nil {
+		return 0, ErrNotMember
+	}
+	if err := s.repo.SetMemberRoleIDs(ctx, sp.ID, bot.ID, append(mem.RoleIDs, role.ID)); err != nil {
+		return 0, err
+	}
+	s.invalidateSnapshot(ctx, sp.ID)
+	if all, err := s.SpaceRoles(ctx, sp.ID); err == nil {
+		payload := spaceToEventPayload(sp)
+		payload["everyone_role_id"] = id.Format(eid)
+		payload["roles"] = RoleMaps(all)
+		s.publishSpaceEvent(ctx, sp.ID, "SPACE_UPDATE", payload)
+	}
+	s.publishSpaceEvent(ctx, sp.ID, "SPACE_MEMBER_UPDATE", map[string]interface{}{
+		"user_id":  id.Format(bot.ID),
+		"role_ids": formatRoleIDStrings(append(mem.RoleIDs, role.ID)),
+	})
+	return granted, nil
+}
+
+// afterMemberRemoved is what every removal (kick, ban, leave) does once the member row is
+// gone: a bot's managed roles go with it, then everyone is told.
+func (s *Service) afterMemberRemoved(ctx context.Context, spaceID, userID int64) {
+	s.cleanupBotRoles(ctx, spaceID, userID)
+	s.publishMemberRemoved(ctx, spaceID, userID)
+}
+
+// cleanupBotRoles deletes the roles a bot install created for userID (none for a person)
+// and closes the gap they leave in the position order, undoing the shift-up their
+// creation did, so repeated installs don't march every other role's position upward.
+func (s *Service) cleanupBotRoles(ctx context.Context, spaceID, userID int64) {
+	roles, err := s.repo.ListSpaceRoles(ctx, spaceID)
+	if err != nil {
+		return
+	}
+	var gone []int
+	for i := range roles {
+		if roles[i].BotID != userID {
+			continue
+		}
+		if err := s.repo.DeleteSpaceRole(ctx, spaceID, roles[i].ID); err != nil {
+			continue
+		}
+		gone = append(gone, roles[i].Position)
+		s.publishSpaceEvent(ctx, spaceID, "SPACE_ROLE_DELETE", map[string]interface{}{
+			"role_id": id.Format(roles[i].ID),
+		})
+	}
+	if len(gone) == 0 {
+		return
+	}
+	now := time.Now().UTC()
+	for i := range roles {
+		r := &roles[i]
+		if r.BotID == userID || r.Position == 0 {
+			continue
+		}
+		shift := 0
+		for _, p := range gone {
+			if r.Position > p {
+				shift++
+			}
+		}
+		if shift == 0 {
+			continue
+		}
+		r.Position -= shift
+		r.UpdatedAt = now
+		_ = s.repo.UpdateSpaceRole(ctx, r)
+	}
+	s.invalidateSnapshot(ctx, spaceID)
+	if sp, err := s.repo.GetByID(ctx, spaceID); err == nil && sp != nil {
+		if all, err := s.SpaceRoles(ctx, spaceID); err == nil {
+			payload := spaceToEventPayload(sp)
+			if sp.EveryoneRoleID != 0 {
+				payload["everyone_role_id"] = id.Format(sp.EveryoneRoleID)
+			}
+			payload["roles"] = RoleMaps(all)
+			s.publishSpaceEvent(ctx, spaceID, "SPACE_UPDATE", payload)
+		}
+	}
 }
 
 // AddMemberViaOAuth is the `spaces.join` scope: the actor (a bot, typically) with Create

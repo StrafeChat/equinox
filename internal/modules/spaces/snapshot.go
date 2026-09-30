@@ -226,7 +226,7 @@ func (s *Service) SpaceRoles(ctx context.Context, spaceID int64) ([]SpaceRole, e
 // RoleMap is the wire form of a role, shared by REST responses, gateway events and the
 // READY payload so every path agrees on the shape.
 func RoleMap(r *SpaceRole) map[string]interface{} {
-	return map[string]interface{}{
+	m := map[string]interface{}{
 		"id":          id.Format(r.ID),
 		"name":        r.Name,
 		"permissions": r.Permissions,
@@ -237,6 +237,10 @@ func RoleMap(r *SpaceRole) map[string]interface{} {
 		"created_at":  r.CreatedAt,
 		"updated_at":  r.UpdatedAt,
 	}
+	if r.BotID != 0 {
+		m["bot_id"] = id.Format(r.BotID)
+	}
+	return m
 }
 
 // RoleMaps converts a role list for a payload.
