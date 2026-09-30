@@ -180,6 +180,10 @@ func (s *Service) Unfurl(ctx context.Context, rawURL string) (Metadata, error) {
 	// The client loads image/video as subresources: on an https page an http one is blocked as
 	// mixed content and flips the tab to "not secure", so never hand back an http media URL.
 	upgradeInsecureMedia(&meta)
+	// A card whose image size we know renders in its final shape at once; one whose size we
+	// don't shifts the conversation when the image arrives. Learn it from the file's header
+	// when the page didn't say.
+	s.fillImageSize(ctx, &meta)
 	// A result that's missing its media only because a secondary fetch (the oEmbed follow) failed
 	// is cached briefly and retried soon, rather than pinning an imageless card for the full TTL.
 	ttl := cacheTTL
