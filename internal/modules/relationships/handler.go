@@ -57,6 +57,8 @@ func (h *Handler) Post(c fiber.Ctx) error {
 			return c.Status(http.StatusNotFound).JSON(fiber.Map{"error": "user not found"})
 		case ErrSelfRequest:
 			return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "cannot send request to yourself"})
+		case ErrBotTarget:
+			return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": ErrBotTarget.Error()})
 		case ErrAlreadyFriends:
 			return c.Status(http.StatusConflict).JSON(fiber.Map{"error": "already friends"})
 		case ErrRequestExists:
@@ -90,6 +92,8 @@ func (h *Handler) PutByID(c fiber.Ctx) error {
 			return c.Status(http.StatusNotFound).JSON(fiber.Map{"error": "user not found"})
 		case ErrSelfRequest:
 			return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "cannot send request to yourself"})
+		case ErrBotTarget:
+			return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": ErrBotTarget.Error()})
 		case ErrAlreadyFriends:
 			return c.Status(http.StatusConflict).JSON(fiber.Map{"error": "already friends"})
 		case ErrRequestExists:

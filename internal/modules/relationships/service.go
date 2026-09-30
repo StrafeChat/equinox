@@ -23,6 +23,7 @@ var (
 	ErrUserNotFound         = errors.New("user not found")
 	ErrInvalidDiscriminator = errors.New("invalid discriminator")
 	ErrSelfRequest          = errors.New("cannot send request to yourself")
+	ErrBotTarget            = errors.New("bots cannot be added as friends")
 	ErrAlreadyFriends       = errors.New("already friends")
 	ErrBlocked              = errors.New("blocked")
 	ErrRequestExists        = errors.New("request already sent")
@@ -83,6 +84,9 @@ func (s *Service) SendRequest(ctx context.Context, actorID int64, in SendRequest
 
 	if targetID == actorID {
 		return ErrSelfRequest
+	}
+	if target.Bot {
+		return ErrBotTarget
 	}
 
 	me, err := s.user.GetByID(ctx, actorID)
@@ -152,6 +156,10 @@ func (s *Service) SendRequestByID(ctx context.Context, actorID, targetID int64) 
 	target, err := s.user.GetByID(ctx, targetID)
 	if err != nil || target == nil {
 		return ErrUserNotFound
+	}
+	// A bot is added to a space, never to a friends list.
+	if target.Bot {
+		return ErrBotTarget
 	}
 
 	if s.blockedBetween(me, target) {
@@ -289,7 +297,7 @@ func (s *Service) Block(ctx context.Context, actorID, targetID int64) error {
 	if err != nil || target == nil {
 		return ErrUserNotFound
 	}
-	_ = s.RemoveFriend(ctx, actorID, targetID)   // no-op + no event if they weren't friends
+	_ = s.RemoveFriend(ctx, actorID, targetID) // no-op + no event if they weren't friends
 	_ = s.repo.DeleteRequest(ctx, actorID, targetID)
 	_ = s.repo.DeleteRequest(ctx, targetID, actorID)
 	if err := s.user.UpdateBlocks(ctx, actorID, []int64{targetID}, nil); err != nil {
