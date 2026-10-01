@@ -19,6 +19,13 @@ func SetupSpacesRoutes(d Deps) {
 	// Join/leave notices in a space's system room go through the same path as group
 	// "X added Y" messages.
 	spaceSvc.SetSystemMessenger(spaces.SystemMessenger(newSystemMessenger(d, roomRepo, messages.NewRepository(d.Scylla))))
+	if d.Federation != nil {
+		// Changes to a space hosted here reach the instances mirroring it; a member's
+		// join/leave/invite in a space hosted elsewhere goes to that instance. The engine
+		// serves remote members through this instance so their joins post the notice too.
+		spaceSvc.SetFederator(d.Federation)
+		d.Federation.SetSpaces(spaceSvc)
+	}
 	spaceHandler := spaces.NewHandler(spaceSvc, d.Config)
 
 	// Public: invite preview and the server widget (no auth)
@@ -67,6 +74,7 @@ func SetupSpacesRoutes(d Deps) {
 	r.Post("/:id/rooms", spaceHandler.PostRoom)
 	r.Get("/:id/rooms", spaceHandler.GetRooms)
 	r.Post("/:id/ack-all", spaceHandler.AckAll)
+	r.Post("/:id/resync", spaceHandler.Resync)
 	r.Post("/:id/icon", spaceHandler.PostSpaceIcon)
 	r.Post("/:id/banner", spaceHandler.PostSpaceBanner)
 	r.Patch("/:id", spaceHandler.PatchSpace)

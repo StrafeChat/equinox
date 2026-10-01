@@ -82,11 +82,16 @@ type MessageEvent struct {
 	Plaintext       string                `json:"plaintext,omitempty"`
 	ReplyTo         *MessageRef           `json:"reply_to,omitempty"`
 	Mentions        []string              `json:"mentions,omitempty"`
+	MentionRoles    []string              `json:"mention_roles,omitempty"` // space channels: the origin's role ids
 	MentionEveryone bool                  `json:"mention_everyone,omitempty"`
 	Attachments     []messages.Attachment `json:"attachments,omitempty"`
 	SystemType      string                `json:"system_type,omitempty"`
 	SystemPayload   string                `json:"system_payload,omitempty"`
 	CreatedAt       time.Time             `json:"created_at"`
+	UpdatedAt       time.Time             `json:"updated_at,omitempty"`
+	// Reactions is set on history read from a space's origin (as the asking user sees
+	// them); never on relays.
+	Reactions []messages.ReactionSummary `json:"reactions,omitempty"`
 }
 
 // MessageEdit: PATCH /rooms/messages.

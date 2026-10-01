@@ -103,6 +103,11 @@ func (s *Service) emojiNameTaken(ctx context.Context, spaceID int64, name string
 // CreateEmoji records an already-uploaded image as a custom emoji. The handler uploads
 // to Nebula first (after CanManageEmojis) and passes the resulting URL here.
 func (s *Service) CreateEmoji(ctx context.Context, actorID, spaceID, emojiID int64, name, url string, animated bool) (*SpaceEmoji, error) {
+	if origin, actor, err := s.remoteSpace(ctx, actorID, spaceID); err != nil {
+		return nil, err
+	} else if origin != "" {
+		return s.fed.RemoteCreateEmoji(ctx, origin, spaceID, actor, emojiID, name, url, animated)
+	}
 	if err := s.CanManageEmojis(ctx, actorID, spaceID); err != nil {
 		return nil, err
 	}
@@ -137,11 +142,17 @@ func (s *Service) CreateEmoji(ctx context.Context, actorID, spaceID, emojiID int
 		return nil, err
 	}
 	s.publishSpaceEvent(ctx, spaceID, "SPACE_EMOJI_CREATE", spaceEmojiEventData(e))
+	s.fedEmojiChanged(ctx, spaceID, e, false)
 	s.audit(ctx, spaceID, actorID, AuditEmojiCreate, id.Format(e.ID), map[string]change{"name": {New: e.Name}}, "")
 	return e, nil
 }
 
 func (s *Service) RenameEmoji(ctx context.Context, actorID, spaceID, emojiID int64, name string) (*SpaceEmoji, error) {
+	if origin, actor, err := s.remoteSpace(ctx, actorID, spaceID); err != nil {
+		return nil, err
+	} else if origin != "" {
+		return s.fed.RemoteRenameEmoji(ctx, origin, spaceID, actor, emojiID, name)
+	}
 	if err := s.CanManageEmojis(ctx, actorID, spaceID); err != nil {
 		return nil, err
 	}
@@ -169,12 +180,18 @@ func (s *Service) RenameEmoji(ctx context.Context, actorID, spaceID, emojiID int
 	e.Name = name
 	e.UpdatedAt = now
 	s.publishSpaceEvent(ctx, spaceID, "SPACE_EMOJI_UPDATE", spaceEmojiEventData(e))
+	s.fedEmojiChanged(ctx, spaceID, e, false)
 	s.audit(ctx, spaceID, actorID, AuditEmojiUpdate, id.Format(e.ID), map[string]change{"name": {Old: oldName, New: name}}, "")
 	return e, nil
 }
 
 // DeleteEmoji removes the record and returns it so the handler can delete the image.
 func (s *Service) DeleteEmoji(ctx context.Context, actorID, spaceID, emojiID int64) (*SpaceEmoji, error) {
+	if origin, actor, err := s.remoteSpace(ctx, actorID, spaceID); err != nil {
+		return nil, err
+	} else if origin != "" {
+		return s.fed.RemoteDeleteEmoji(ctx, origin, spaceID, actor, emojiID)
+	}
 	if err := s.CanManageEmojis(ctx, actorID, spaceID); err != nil {
 		return nil, err
 	}
@@ -191,6 +208,7 @@ func (s *Service) DeleteEmoji(ctx context.Context, actorID, spaceID, emojiID int
 	s.publishSpaceEvent(ctx, spaceID, "SPACE_EMOJI_DELETE", map[string]interface{}{
 		"emoji_id": id.Format(emojiID),
 	})
+	s.fedEmojiChanged(ctx, spaceID, e, true)
 	s.audit(ctx, spaceID, actorID, AuditEmojiDelete, id.Format(emojiID), map[string]change{"name": {Old: e.Name}}, "")
 	return e, nil
 }

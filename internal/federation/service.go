@@ -23,12 +23,14 @@ import (
 	"github.com/StrafeChat/equinox/internal/modules/messages"
 	"github.com/StrafeChat/equinox/internal/modules/relationships"
 	"github.com/StrafeChat/equinox/internal/modules/rooms"
+	"github.com/StrafeChat/equinox/internal/modules/spaces"
 	"github.com/StrafeChat/equinox/internal/modules/voice"
 	"github.com/StrafeChat/equinox/internal/safego"
 )
 
 // Service is the federation engine: outbound relays (implements rooms.Federator,
-// messages.Federator, devices.KeyRouter/FIDResolver) plus the state inbound handlers use.
+// messages.Federator, spaces.Federator, devices.KeyRouter/FIDResolver) plus the state
+// inbound handlers use.
 type Service struct {
 	cfg       *config.Config
 	fcfg      config.FederationConfig
@@ -44,6 +46,9 @@ type Service struct {
 	msgSvc    *messages.Service
 	devSvc    *devices.Service
 	relSvc    *relationships.Service
+	// spaceSvc applies what peers say about spaces and serves their members' requests
+	// (SetSpaces hands in the API's fully wired instance; until then an internal one).
+	spaceSvc *spaces.Service
 	// voice is the API's voice service (SetVoice); nil in a process without voice, where
 	// relayed calls are acknowledged and ignored.
 	voice *voice.Service
@@ -88,9 +93,10 @@ func NewWithExistingKey(cfg *config.Config, session gocqlx.Session, rdb *redis.C
 func newService(cfg *config.Config, session gocqlx.Session, rdb *redis.Client, signer *Signer) *Service {
 	users := auth.NewCachedUserRepository(auth.NewUserRepository(session), rdb, cfg)
 	roomRepo := rooms.NewRepository(session)
-	roomSvc := rooms.NewService(roomRepo, users, rdb, cfg, nil, nil)
+	spaceSvc := spaces.NewService(spaces.NewRepository(session), roomRepo, users, rdb, cfg)
+	roomSvc := rooms.NewService(roomRepo, users, rdb, cfg, nil, spaceSvc)
 	msgRepo := messages.NewRepository(session)
-	msgSvc := messages.NewService(msgRepo, roomRepo, users, rdb, cfg, nil)
+	msgSvc := messages.NewService(msgRepo, roomRepo, users, rdb, cfg, spaceSvc)
 	devSvc := devices.NewService(devices.NewRepository(session), rdb, cfg)
 	relSvc := relationships.NewService(relationships.NewRepository(session), users, rdb, cfg)
 	discovery := NewDiscovery(cfg.Federation)
@@ -109,6 +115,7 @@ func newService(cfg *config.Config, session gocqlx.Session, rdb *redis.Client, s
 		msgSvc:    msgSvc,
 		devSvc:    devSvc,
 		relSvc:    relSvc,
+		spaceSvc:  spaceSvc,
 		outQueues: map[string]chan func(){},
 	}
 	roomSvc.SetFederationInfo(s)
@@ -116,22 +123,44 @@ func newService(cfg *config.Config, session gocqlx.Session, rdb *redis.Client, s
 	// Inbound events apply through relSvc; it relays only for the accept a crossed
 	// request produces, which the peer has not seen.
 	relSvc.SetFederator(s)
+	// A member of another instance writing into a space hosted here goes through msgSvc
+	// and spaceSvc like a local member, and what they do must reach every other mirror.
+	msgSvc.SetFederator(s)
+	spaceSvc.SetFederator(s)
 	logger.Info("federation", "enabled as %s (key %s)", cfg.Federation.Domain, signer.KeyID)
 	return s
 }
 
-// infoProvider is the read-only slice of the engine (room → global identity) for
-// processes that never relay anything, like the gateway's READY builder.
-type infoProvider struct {
-	repo Repository
+// SetSpaces hands in the API's spaces service (the one with the system-room messenger),
+// so a remote member's join posts the same notice a local join does.
+func (s *Service) SetSpaces(svc *spaces.Service) {
+	if svc != nil {
+		s.spaceSvc = svc
+	}
 }
 
-func NewInfoProvider(session gocqlx.Session) rooms.FederationInfo {
-	return &infoProvider{repo: NewRepository(session)}
+// infoProvider is the read-only slice of the engine (room / space → global identity)
+// for processes that never relay anything, like the gateway's READY builder.
+type infoProvider struct {
+	repo   Repository
+	domain string
+}
+
+// NewInfoProvider builds the read-only federation view; domain is this instance's own.
+func NewInfoProvider(session gocqlx.Session, domain string) *infoProvider {
+	return &infoProvider{repo: NewRepository(session), domain: strings.ToLower(domain)}
 }
 
 func (p *infoProvider) RoomFederation(ctx context.Context, roomID int64) *rooms.Federation {
 	return roomFederation(ctx, p.repo, roomID)
+}
+
+func (p *infoProvider) RoomFederations(ctx context.Context, roomIDs []int64) map[int64]*rooms.Federation {
+	return roomFederations(ctx, p.repo, roomIDs)
+}
+
+func (p *infoProvider) SpaceFederation(ctx context.Context, spaceID int64) *spaces.SpaceFederation {
+	return spaceFederation(ctx, p.repo, spaceID, func(d string) bool { return d == "" || d == p.domain || d == LegacyServer })
 }
 
 func roomFederation(ctx context.Context, repo Repository, roomID int64) *rooms.Federation {
@@ -140,6 +169,178 @@ func roomFederation(ctx context.Context, repo Repository, roomID int64) *rooms.F
 		return nil
 	}
 	return &rooms.Federation{OriginDomain: m.OriginDomain, OriginID: id.Format(m.OriginRoomID)}
+}
+
+func roomFederations(ctx context.Context, repo Repository, roomIDs []int64) map[int64]*rooms.Federation {
+	ms, err := repo.GetRoomMappings(ctx, roomIDs)
+	if err != nil {
+		return nil
+	}
+	out := make(map[int64]*rooms.Federation, len(ms))
+	for rid, m := range ms {
+		out[rid] = &rooms.Federation{OriginDomain: m.OriginDomain, OriginID: id.Format(m.OriginRoomID)}
+	}
+	return out
+}
+
+// spaceFederation is a space's global identity when another instance hosts it.
+func spaceFederation(ctx context.Context, repo Repository, spaceID int64, isLocal func(string) bool) *spaces.SpaceFederation {
+	m, err := repo.GetSpaceMapping(ctx, spaceID)
+	if err != nil || m == nil || isLocal(m.OriginDomain) {
+		return nil
+	}
+	return &spaces.SpaceFederation{OriginDomain: m.OriginDomain, OriginID: id.Format(m.OriginSpaceID)}
+}
+
+func (s *Service) RoomFederations(ctx context.Context, roomIDs []int64) map[int64]*rooms.Federation {
+	return roomFederations(ctx, s.repo, roomIDs)
+}
+
+func (s *Service) SpaceFederation(ctx context.Context, spaceID int64) *spaces.SpaceFederation {
+	return spaceFederation(ctx, s.repo, spaceID, s.IsLocalServer)
+}
+
+// ---- relay targets --------------------------------------------------------------------
+
+type ctxKey int
+
+const (
+	ctxKeyExcludedPeer ctxKey = iota
+	ctxKeyRelayCapture
+)
+
+// WithExcludedPeer marks the instance whose request is being served, so the relays the
+// request causes skip it: it applies the reply itself, and a copy would race it.
+func WithExcludedPeer(ctx context.Context, domain string) context.Context {
+	return context.WithValue(ctx, ctxKeyExcludedPeer, domain)
+}
+
+func excludedPeer(ctx context.Context) string {
+	v, _ := ctx.Value(ctxKeyExcludedPeer).(string)
+	return v
+}
+
+// RelayEvent is one relay as it would have gone out: the request a peer would have
+// received. The origin hands these back in the reply to a request that caused them, so
+// the asking instance applies exactly what every other mirror gets.
+type RelayEvent struct {
+	Method string          `json:"method"`
+	Path   string          `json:"path"`
+	Body   json.RawMessage `json:"body"`
+}
+
+type relayCapture struct {
+	mu     sync.Mutex
+	events []RelayEvent
+}
+
+func (c *relayCapture) add(method, path string, body any) {
+	raw, err := json.Marshal(body)
+	if err != nil {
+		return
+	}
+	c.mu.Lock()
+	c.events = append(c.events, RelayEvent{Method: method, Path: path, Body: raw})
+	c.mu.Unlock()
+}
+
+func (c *relayCapture) take() []RelayEvent {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	out := c.events
+	c.events = nil
+	if out == nil {
+		out = []RelayEvent{}
+	}
+	return out
+}
+
+// WithRelayCapture is WithExcludedPeer where the relays meant for the excluded instance
+// are collected instead of dropped, to be returned in the reply.
+func WithRelayCapture(ctx context.Context, domain string) (context.Context, *relayCapture) {
+	c := &relayCapture{}
+	ctx = context.WithValue(WithExcludedPeer(ctx, domain), ctxKeyRelayCapture, c)
+	return ctx, c
+}
+
+// fanOut relays one request to every listed instance but the excluded one (whose copy is
+// captured when the request asked for that).
+func (s *Service) fanOut(ctx context.Context, domains map[string]struct{}, method, path string, body any) {
+	skip := excludedPeer(ctx)
+	for domain := range domains {
+		if domain == skip {
+			if c, _ := ctx.Value(ctxKeyRelayCapture).(*relayCapture); c != nil {
+				c.add(method, path, body)
+			}
+			continue
+		}
+		if !s.fcfg.IsAllowedPeer(domain) {
+			continue
+		}
+		s.send(domain, method, path, body)
+	}
+}
+
+// spacePeers is the set of instances mirroring a space this instance hosts.
+func (s *Service) spacePeers(ctx context.Context, spaceID int64) map[string]struct{} {
+	list, err := s.repo.ListSpacePeers(ctx, spaceID)
+	if err != nil {
+		logger.Err("federation", err, map[string]any{"space_id": spaceID})
+		return nil
+	}
+	out := make(map[string]struct{}, len(list))
+	for _, d := range list {
+		out[d] = struct{}{}
+	}
+	return out
+}
+
+// relayTargets resolves who must hear about something that happened in a room: for a PM
+// or group, the home instances of its remote participants; for a channel of a space
+// hosted here, the instances mirroring the space; for a channel of a space hosted
+// elsewhere, nobody - writes there go to the origin, which tells everyone - except that
+// origin is returned for the few things a mirror sends on its own (typing).
+func (s *Service) relayTargets(ctx context.Context, roomID int64, participants []int64) (targets map[string]struct{}, origin string) {
+	room, err := s.roomRepo.GetByID(ctx, roomID)
+	if err != nil || room == nil || room.SpaceID == nil {
+		byDomain, _, err := s.remotePeers(ctx, participants)
+		if err != nil {
+			return nil, ""
+		}
+		targets = make(map[string]struct{}, len(byDomain))
+		for d := range byDomain {
+			targets[d] = struct{}{}
+		}
+		return targets, ""
+	}
+	m, err := s.repo.GetSpaceMapping(ctx, *room.SpaceID)
+	if err != nil || m == nil {
+		return nil, "" // a space nobody else has joined: nothing federates yet
+	}
+	if !s.IsLocalServer(m.OriginDomain) {
+		return nil, m.OriginDomain
+	}
+	return s.spacePeers(ctx, *room.SpaceID), ""
+}
+
+// spaceDomainsForUser is every instance that shares a space with the user: the mirrors
+// of spaces hosted here that they are in, and the origins of spaces they mirror.
+func (s *Service) spaceDomainsForUser(ctx context.Context, u *auth.User) map[string]struct{} {
+	out := map[string]struct{}{}
+	for _, spaceID := range u.Spaces {
+		m, err := s.repo.GetSpaceMapping(ctx, spaceID)
+		if err != nil || m == nil {
+			continue
+		}
+		if !s.IsLocalServer(m.OriginDomain) {
+			out[m.OriginDomain] = struct{}{}
+			continue
+		}
+		for d := range s.spacePeers(ctx, spaceID) {
+			out[d] = struct{}{}
+		}
+	}
+	return out
 }
 
 // ---- identity -------------------------------------------------------------------------
@@ -577,28 +778,24 @@ func (s *Service) AfterTyping(ctx context.Context, roomID, userID int64) {
 	if err != nil {
 		return
 	}
-	byDomain, _, err := s.remotePeers(ctx, ids)
-	if err != nil || len(byDomain) == 0 {
+	targets, origin := s.relayTargets(ctx, roomID, ids)
+	if origin != "" {
+		// A channel of a space hosted elsewhere: the origin passes it on to the others.
+		targets = map[string]struct{}{origin: {}}
+	}
+	if len(targets) == 0 {
 		return
 	}
 	body := TypingEvent{Room: RoomRef{OriginDomain: m.OriginDomain, OriginRoomID: id.Format(m.OriginRoomID)}, User: s.LocalFID(userID)}
-	for domain := range byDomain {
-		s.send(domain, http.MethodPost, "/rooms/typing", body)
-	}
+	s.fanOut(ctx, targets, http.MethodPost, "/rooms/typing", body)
 }
 
-func (s *Service) AfterMessageCreated(ctx context.Context, roomID int64, participants []int64, m *messages.Message) {
-	byDomain, all, err := s.remotePeers(ctx, participants)
-	if err != nil || len(byDomain) == 0 {
-		return
-	}
-	ref, err := s.roomRef(ctx, roomID)
-	if err != nil {
-		return
-	}
+// messageEvent is the wire form of a stored message (relays, and the origin's answers to
+// a mirror's writes and history reads). Reactions are attached when given.
+func (s *Service) messageEvent(ctx context.Context, ref RoomRef, m *messages.Message, reactions []messages.ReactionSummary) MessageEvent {
 	ev := MessageEvent{
 		Room:            ref,
-		Message:         MessageRef{OriginDomain: s.fcfg.Domain, OriginMessageID: id.Format(m.ID)},
+		Message:         s.messageRef(ctx, m.RoomID, m.ID),
 		Ciphertext:      m.Ciphertext,
 		Plaintext:       m.Plaintext,
 		MentionEveryone: m.MentionEveryone,
@@ -606,41 +803,55 @@ func (s *Service) AfterMessageCreated(ctx context.Context, roomID int64, partici
 		SystemType:      m.SystemType,
 		SystemPayload:   m.SystemPayload,
 		CreatedAt:       m.CreatedAt,
+		UpdatedAt:       m.UpdatedAt,
+		Reactions:       reactions,
 	}
 	if m.SenderDeviceID != 0 {
 		ev.SenderDeviceID = id.Format(m.SenderDeviceID)
 	}
-	byID := map[int64]*auth.User{}
-	for _, u := range all {
-		byID[u.ID] = u
-	}
 	if m.SenderID != 0 {
-		sender := byID[m.SenderID]
-		if sender == nil {
-			sender, _ = s.users.GetByID(ctx, m.SenderID)
-		}
-		if sender != nil {
+		if sender, _ := s.users.GetByID(ctx, m.SenderID); sender != nil {
 			p := s.ProfileOf(sender)
 			ev.Sender = &p
 		}
 	}
 	if m.ReplyToID != nil {
-		r := s.messageRef(ctx, roomID, *m.ReplyToID)
+		r := s.messageRef(ctx, m.RoomID, *m.ReplyToID)
 		ev.ReplyTo = &r
 	}
-	for _, uid := range m.Mentions {
-		if u := byID[uid]; u != nil {
-			ev.Mentions = append(ev.Mentions, s.FIDOf(u))
+	if len(m.Mentions) > 0 {
+		if users, err := s.users.GetByIDs(ctx, m.Mentions); err == nil {
+			for _, u := range users {
+				if u != nil {
+					ev.Mentions = append(ev.Mentions, s.FIDOf(u))
+				}
+			}
 		}
 	}
-	for domain := range byDomain {
-		s.send(domain, http.MethodPost, "/rooms/messages", ev)
+	for _, rid := range m.MentionRoles {
+		ev.MentionRoles = append(ev.MentionRoles, id.Format(rid))
 	}
+	return ev
+}
+
+func (s *Service) AfterMessageCreated(ctx context.Context, roomID int64, participants []int64, m *messages.Message) {
+	targets, _ := s.relayTargets(ctx, roomID, participants)
+	if len(targets) == 0 {
+		return
+	}
+	ref, err := s.roomRef(ctx, roomID)
+	if err != nil {
+		return
+	}
+	if m.RoomID == 0 {
+		m.RoomID = roomID
+	}
+	s.fanOut(ctx, targets, http.MethodPost, "/rooms/messages", s.messageEvent(ctx, ref, m, nil))
 }
 
 func (s *Service) AfterMessageEdited(ctx context.Context, roomID int64, participants []int64, m *messages.Message) {
-	byDomain, _, err := s.remotePeers(ctx, participants)
-	if err != nil || len(byDomain) == 0 {
+	targets, _ := s.relayTargets(ctx, roomID, participants)
+	if len(targets) == 0 {
 		return
 	}
 	ref, err := s.roomRef(ctx, roomID)
@@ -648,14 +859,12 @@ func (s *Service) AfterMessageEdited(ctx context.Context, roomID int64, particip
 		return
 	}
 	body := MessageEdit{Room: ref, Message: s.messageRef(ctx, roomID, m.ID), Ciphertext: m.Ciphertext, Plaintext: m.Plaintext}
-	for domain := range byDomain {
-		s.send(domain, http.MethodPatch, "/rooms/messages", body)
-	}
+	s.fanOut(ctx, targets, http.MethodPatch, "/rooms/messages", body)
 }
 
 func (s *Service) AfterMessageDeleted(ctx context.Context, roomID int64, participants []int64, msgID int64) {
-	byDomain, _, err := s.remotePeers(ctx, participants)
-	if err != nil || len(byDomain) == 0 {
+	targets, _ := s.relayTargets(ctx, roomID, participants)
+	if len(targets) == 0 {
 		return
 	}
 	ref, err := s.roomRef(ctx, roomID)
@@ -663,13 +872,12 @@ func (s *Service) AfterMessageDeleted(ctx context.Context, roomID int64, partici
 		return
 	}
 	body := MessageDelete{Room: ref, Message: s.messageRef(ctx, roomID, msgID)}
-	for domain := range byDomain {
-		s.send(domain, http.MethodPost, "/rooms/messages/delete", body)
-	}
+	s.fanOut(ctx, targets, http.MethodPost, "/rooms/messages/delete", body)
 }
 
 // AfterProfileUpdated tells every instance that holds a shadow of this user (any peer
-// sharing a room with them, or the home of a remote friend) about the new profile.
+// sharing a room or a space with them, or the home of a remote friend) about the new
+// profile.
 func (s *Service) AfterProfileUpdated(ctx context.Context, u *auth.User) {
 	if u == nil || u.IsRemote() {
 		return
@@ -697,13 +905,13 @@ func (s *Service) AfterProfileUpdated(ctx context.Context, u *auth.User) {
 			domains[d] = struct{}{}
 		}
 	}
+	for d := range s.spaceDomainsForUser(ctx, u) {
+		domains[d] = struct{}{}
+	}
 	if len(domains) == 0 {
 		return
 	}
-	body := ProfileUpdate{User: s.ProfileOf(u)}
-	for domain := range domains {
-		s.send(domain, http.MethodPost, "/users/update", body)
-	}
+	s.fanOut(ctx, domains, http.MethodPost, "/users/update", ProfileUpdate{User: s.ProfileOf(u)})
 }
 
 // ---- relationships (relationships.Federator) ------------------------------------------
@@ -725,18 +933,22 @@ func (s *Service) relayRelationship(action string, actor, target *auth.User) {
 // ---- reactions (messages.Federator) ---------------------------------------------------
 
 func (s *Service) relayReaction(ctx context.Context, path string, roomID int64, participants []int64, msgID, userID int64, emoji string) {
-	byDomain, _, err := s.remotePeers(ctx, participants)
-	if err != nil || len(byDomain) == 0 {
+	targets, _ := s.relayTargets(ctx, roomID, participants)
+	if len(targets) == 0 {
 		return
 	}
 	ref, err := s.roomRef(ctx, roomID)
 	if err != nil {
 		return
 	}
-	body := ReactionEvent{Room: ref, Message: s.messageRef(ctx, roomID, msgID), User: s.LocalFID(userID), Emoji: emoji}
-	for domain := range byDomain {
-		s.send(domain, http.MethodPost, path, body)
+	// In a space the reactor may be a member from a third instance; name them by their
+	// own identity so every mirror resolves the same shadow.
+	user := s.LocalFID(userID)
+	if u, _ := s.users.GetByID(ctx, userID); u != nil {
+		user = s.FIDOf(u)
 	}
+	body := ReactionEvent{Room: ref, Message: s.messageRef(ctx, roomID, msgID), User: user, Emoji: emoji}
+	s.fanOut(ctx, targets, http.MethodPost, path, body)
 }
 
 func (s *Service) AfterReactionAdded(ctx context.Context, roomID int64, participants []int64, msgID, userID int64, emoji string) {
@@ -753,20 +965,23 @@ func (s *Service) presenceEvent(u *auth.User) PresenceEvent {
 	return PresenceEvent{User: s.LocalFID(u.ID), Presence: auth.ToPublicPresence(u.Presence, true)}
 }
 
-// AfterPresenceChanged tells the home instance of each remote friend how the user now
-// appears to others - friends only, which is who the local gateway tells as well.
+// AfterPresenceChanged tells the home instance of each remote friend, and every instance
+// sharing a space with the user, how the user now appears to others - the same audience
+// the local gateway tells.
 func (s *Service) AfterPresenceChanged(ctx context.Context, u *auth.User) {
 	if u == nil || u.IsRemote() {
 		return
 	}
-	byDomain, _, err := s.remotePeers(ctx, u.Relationships)
-	if err != nil || len(byDomain) == 0 {
+	domains := s.spaceDomainsForUser(ctx, u)
+	if byDomain, _, err := s.remotePeers(ctx, u.Relationships); err == nil {
+		for d := range byDomain {
+			domains[d] = struct{}{}
+		}
+	}
+	if len(domains) == 0 {
 		return
 	}
-	body := s.presenceEvent(u)
-	for domain := range byDomain {
-		s.send(domain, http.MethodPost, "/users/presence", body)
-	}
+	s.fanOut(ctx, domains, http.MethodPost, "/users/presence", s.presenceEvent(u))
 }
 
 // sendPresence tells one instance how a local user appears right now.

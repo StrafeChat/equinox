@@ -105,6 +105,9 @@ func (h *Handler) ListReactors(c fiber.Ctx) error {
 }
 
 func reactionError(c fiber.Ctx, err error, roomID int64) error {
+	if res, ok := originError(c, err); ok {
+		return res
+	}
 	switch err {
 	case ErrNotParticipant:
 		return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": "not a participant"})

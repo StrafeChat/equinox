@@ -157,6 +157,11 @@ func (s *Service) ListSpaceRoles(ctx context.Context, actorID, spaceID int64) ([
 
 // CreateSpaceRole creates a custom role. Requires ManageRoles (or owner via SpacePermissionBase).
 func (s *Service) CreateSpaceRole(ctx context.Context, actorID, spaceID int64, in *CreateSpaceRoleInput) (*SpaceRole, error) {
+	if origin, actor, err := s.remoteSpace(ctx, actorID, spaceID); err != nil {
+		return nil, err
+	} else if origin != "" {
+		return s.fed.RemoteCreateRole(ctx, origin, spaceID, actor, in)
+	}
 	if err := s.canManageRoles(ctx, actorID, spaceID); err != nil {
 		return nil, err
 	}
@@ -204,6 +209,7 @@ func (s *Service) CreateSpaceRole(ctx context.Context, actorID, spaceID int64, i
 	}
 	s.invalidateSnapshot(ctx, spaceID)
 	s.publishSpaceEvent(ctx, spaceID, "SPACE_ROLE_CREATE", spaceRoleEventData(role))
+	s.fedRoleChanged(ctx, spaceID, role, false)
 	s.audit(ctx, spaceID, actorID, AuditRoleCreate, id.Format(role.ID), map[string]change{
 		"name":        {New: role.Name},
 		"permissions": {New: role.Permissions},
@@ -214,6 +220,11 @@ func (s *Service) CreateSpaceRole(ctx context.Context, actorID, spaceID int64, i
 // UpdateSpaceRole updates a role. @everyone may only have permissions changed (not name).
 // Non-owners cannot edit a role at or above their own highest role (Discord-style hierarchy).
 func (s *Service) UpdateSpaceRole(ctx context.Context, actorID, spaceID, roleID int64, in *UpdateSpaceRoleInput) (*SpaceRole, error) {
+	if origin, actor, err := s.remoteSpace(ctx, actorID, spaceID); err != nil {
+		return nil, err
+	} else if origin != "" {
+		return s.fed.RemoteUpdateRole(ctx, origin, spaceID, actor, roleID, in)
+	}
 	if err := s.canManageRoles(ctx, actorID, spaceID); err != nil {
 		return nil, err
 	}
@@ -286,6 +297,7 @@ func (s *Service) UpdateSpaceRole(ctx context.Context, actorID, spaceID, roleID 
 	}
 	s.invalidateSnapshot(ctx, spaceID)
 	s.publishSpaceEvent(ctx, spaceID, "SPACE_ROLE_UPDATE", spaceRoleEventData(role))
+	s.fedRoleChanged(ctx, spaceID, role, false)
 	changes := map[string]change{}
 	diff(changes, "name", before.Name, role.Name)
 	diff(changes, "permissions", before.Permissions, role.Permissions)
@@ -301,6 +313,11 @@ func (s *Service) UpdateSpaceRole(ctx context.Context, actorID, spaceID, roleID 
 
 // DeleteSpaceRole removes a custom role.
 func (s *Service) DeleteSpaceRole(ctx context.Context, actorID, spaceID, roleID int64) error {
+	if origin, actor, err := s.remoteSpace(ctx, actorID, spaceID); err != nil {
+		return err
+	} else if origin != "" {
+		return s.fed.RemoteDeleteRole(ctx, origin, spaceID, actor, roleID)
+	}
 	if err := s.canManageRoles(ctx, actorID, spaceID); err != nil {
 		return err
 	}
@@ -341,6 +358,7 @@ func (s *Service) DeleteSpaceRole(ctx context.Context, actorID, spaceID, roleID 
 	s.publishSpaceEvent(ctx, spaceID, "SPACE_ROLE_DELETE", map[string]interface{}{
 		"role_id": id.Format(roleID),
 	})
+	s.fedRoleChanged(ctx, spaceID, role, true)
 	s.audit(ctx, spaceID, actorID, AuditRoleDelete, id.Format(roleID), map[string]change{"name": {Old: role.Name}}, "")
 	return nil
 }
@@ -356,6 +374,11 @@ func (s *Service) DeleteSpaceRole(ctx context.Context, actorID, spaceID, roleID 
 //     taken away: roles the target already holds up there are carried over untouched,
 //     matching the locked checkboxes the client draws for them.
 func (s *Service) SetMemberRoles(ctx context.Context, actorID, spaceID, targetUserID int64, roleIDs []int64) error {
+	if origin, actor, err := s.remoteSpace(ctx, actorID, spaceID); err != nil {
+		return err
+	} else if origin != "" {
+		return s.fed.RemoteSetMemberRoles(ctx, origin, spaceID, actor, targetUserID, roleIDs)
+	}
 	if err := s.canManageRoles(ctx, actorID, spaceID); err != nil {
 		return err
 	}
@@ -397,6 +420,7 @@ func (s *Service) SetMemberRoles(ctx context.Context, actorID, spaceID, targetUs
 		"user_id":  id.Format(targetUserID),
 		"role_ids": formatRoleIDStrings(out),
 	})
+	s.fedMemberUpdated(ctx, spaceID, targetUserID)
 	s.audit(ctx, spaceID, actorID, AuditMemberRolesUpdate, id.Format(targetUserID), map[string]change{
 		"roles": {New: formatRoleIDStrings(out)},
 	}, "")
@@ -528,6 +552,11 @@ func (s *Service) checkOverrideGrant(ctx context.Context, actorID, spaceID, room
 
 // PutRoomRoleOverride sets allow/deny for a role in a room. Requires ManageRooms.
 func (s *Service) PutRoomRoleOverride(ctx context.Context, actorID, spaceID, roomID, roleID int64, in *PutRoomRoleOverrideInput) error {
+	if origin, actor, err := s.remoteSpace(ctx, actorID, spaceID); err != nil {
+		return err
+	} else if origin != "" {
+		return s.fed.RemoteOverride(ctx, origin, spaceID, actor, roomID, roleID, 0, in.Allow, in.Deny, false)
+	}
 	if err := s.canManageRooms(ctx, actorID, spaceID); err != nil {
 		return err
 	}
@@ -557,6 +586,7 @@ func (s *Service) PutRoomRoleOverride(ctx context.Context, actorID, spaceID, roo
 	}
 	s.invalidateSnapshot(ctx, spaceID)
 	s.publishSpaceEvent(ctx, spaceID, "SPACE_ROOM_OVERRIDE_UPDATE", roomOverrideEventData(o))
+	s.fedRoomChanged(ctx, spaceID, roomID, false)
 	s.audit(ctx, spaceID, actorID, AuditOverrideUpdate, id.Format(roomID)+":role:"+id.Format(roleID), map[string]change{
 		"allow": {New: o.Allow},
 		"deny":  {New: o.Deny},
@@ -566,6 +596,11 @@ func (s *Service) PutRoomRoleOverride(ctx context.Context, actorID, spaceID, roo
 
 // PutRoomUserOverride sets allow/deny for a user in a room. Requires ManageRooms.
 func (s *Service) PutRoomUserOverride(ctx context.Context, actorID, spaceID, roomID, targetUserID int64, in *PutRoomUserOverrideInput) error {
+	if origin, actor, err := s.remoteSpace(ctx, actorID, spaceID); err != nil {
+		return err
+	} else if origin != "" {
+		return s.fed.RemoteOverride(ctx, origin, spaceID, actor, roomID, 0, targetUserID, in.Allow, in.Deny, false)
+	}
 	if err := s.canManageRooms(ctx, actorID, spaceID); err != nil {
 		return err
 	}
@@ -598,6 +633,7 @@ func (s *Service) PutRoomUserOverride(ctx context.Context, actorID, spaceID, roo
 	}
 	s.invalidateSnapshot(ctx, spaceID)
 	s.publishSpaceEvent(ctx, spaceID, "SPACE_ROOM_USER_OVERRIDE_UPDATE", roomUserOverrideEventData(o))
+	s.fedRoomChanged(ctx, spaceID, roomID, false)
 	s.audit(ctx, spaceID, actorID, AuditOverrideUpdate, id.Format(roomID)+":user:"+id.Format(targetUserID), map[string]change{
 		"allow": {New: o.Allow},
 		"deny":  {New: o.Deny},
@@ -607,6 +643,11 @@ func (s *Service) PutRoomUserOverride(ctx context.Context, actorID, spaceID, roo
 
 // DeleteRoomRoleOverride removes an override row.
 func (s *Service) DeleteRoomRoleOverride(ctx context.Context, actorID, spaceID, roomID, roleID int64) error {
+	if origin, actor, err := s.remoteSpace(ctx, actorID, spaceID); err != nil {
+		return err
+	} else if origin != "" {
+		return s.fed.RemoteOverride(ctx, origin, spaceID, actor, roomID, roleID, 0, 0, 0, true)
+	}
 	if err := s.canManageRooms(ctx, actorID, spaceID); err != nil {
 		return err
 	}
@@ -621,12 +662,18 @@ func (s *Service) DeleteRoomRoleOverride(ctx context.Context, actorID, spaceID, 
 		"room_id": id.Format(roomID),
 		"role_id": id.Format(roleID),
 	})
+	s.fedRoomChanged(ctx, spaceID, roomID, false)
 	s.audit(ctx, spaceID, actorID, AuditOverrideDelete, id.Format(roomID)+":role:"+id.Format(roleID), nil, "")
 	return nil
 }
 
 // DeleteRoomUserOverride removes a user override row.
 func (s *Service) DeleteRoomUserOverride(ctx context.Context, actorID, spaceID, roomID, targetUserID int64) error {
+	if origin, actor, err := s.remoteSpace(ctx, actorID, spaceID); err != nil {
+		return err
+	} else if origin != "" {
+		return s.fed.RemoteOverride(ctx, origin, spaceID, actor, roomID, 0, targetUserID, 0, 0, true)
+	}
 	if err := s.canManageRooms(ctx, actorID, spaceID); err != nil {
 		return err
 	}
@@ -641,6 +688,7 @@ func (s *Service) DeleteRoomUserOverride(ctx context.Context, actorID, spaceID, 
 		"room_id": id.Format(roomID),
 		"user_id": id.Format(targetUserID),
 	})
+	s.fedRoomChanged(ctx, spaceID, roomID, false)
 	s.audit(ctx, spaceID, actorID, AuditOverrideDelete, id.Format(roomID)+":user:"+id.Format(targetUserID), nil, "")
 	return nil
 }
@@ -659,6 +707,11 @@ func (s *Service) assertRoomInSpace(ctx context.Context, spaceID, roomID int64) 
 // UpdateRoom applies a partial update to a room's metadata and/or its E2EE setting.
 // Requires ManageRooms.
 func (s *Service) UpdateRoom(ctx context.Context, actorID, spaceID, roomID int64, in *UpdateRoomInput) error {
+	if origin, actor, err := s.remoteSpace(ctx, actorID, spaceID); err != nil {
+		return err
+	} else if origin != "" {
+		return s.fed.RemoteUpdateRoom(ctx, origin, spaceID, actor, roomID, in)
+	}
 	if err := s.canManageRooms(ctx, actorID, spaceID); err != nil {
 		return err
 	}
@@ -755,6 +808,7 @@ func (s *Service) UpdateRoom(ctx context.Context, actorID, spaceID, roomID int64
 		if len(changes) > 0 {
 			s.audit(ctx, spaceID, actorID, AuditRoomUpdate, id.Format(roomID), changes, "")
 		}
+		s.fedRoomChanged(ctx, spaceID, roomID, false)
 	}
 	if e2eeTurnedOn {
 		// Clients only rotate a room's Megolm session on membership changes while the room
@@ -790,6 +844,11 @@ func voiceSettings(room *rooms.Room, userLimit, bitrate *int) (int, int, error) 
 
 // DeleteRoom removes a room and its override rows. Requires ManageRooms.
 func (s *Service) DeleteRoom(ctx context.Context, actorID, spaceID, roomID int64) error {
+	if origin, actor, err := s.remoteSpace(ctx, actorID, spaceID); err != nil {
+		return err
+	} else if origin != "" {
+		return s.fed.RemoteDeleteRoom(ctx, origin, spaceID, actor, roomID)
+	}
 	if err := s.canManageRooms(ctx, actorID, spaceID); err != nil {
 		return err
 	}
@@ -803,12 +862,18 @@ func (s *Service) DeleteRoom(ctx context.Context, actorID, spaceID, roomID int64
 	s.publishSpaceEvent(ctx, spaceID, "SPACE_ROOM_DELETE", map[string]interface{}{
 		"room_id": id.Format(roomID),
 	})
+	s.fedRoomChanged(ctx, spaceID, roomID, true)
 	s.audit(ctx, spaceID, actorID, AuditRoomDelete, id.Format(roomID), nil, "")
 	return nil
 }
 
 // CreateRoom creates a new room or section in the space. Requires ManageRooms.
 func (s *Service) CreateRoom(ctx context.Context, actorID, spaceID int64, in *CreateRoomInput) (*rooms.Room, error) {
+	if origin, actor, err := s.remoteSpace(ctx, actorID, spaceID); err != nil {
+		return nil, err
+	} else if origin != "" {
+		return s.fed.RemoteCreateRoom(ctx, origin, spaceID, actor, in)
+	}
 	if err := s.canManageRooms(ctx, actorID, spaceID); err != nil {
 		return nil, err
 	}
@@ -878,6 +943,7 @@ func (s *Service) CreateRoom(ctx context.Context, actorID, spaceID int64, in *Cr
 	payload := AttachOverrides(RoomMap(room), RoomOverrides{})
 	payload["room_id"] = id.Format(room.ID)
 	s.publishSpaceEvent(ctx, spaceID, "SPACE_ROOM_CREATE", payload)
+	s.fedRoomChanged(ctx, spaceID, room.ID, false)
 	s.audit(ctx, spaceID, actorID, AuditRoomCreate, id.Format(room.ID), map[string]change{
 		"name": {New: room.Name},
 		"type": {New: room.Type},
@@ -993,6 +1059,11 @@ func (s *Service) listRoomIDsForReorderGroup(ctx context.Context, spaceID int64,
 
 // ReorderRooms updates positions for a full sibling group (sections, top-level channels, or channels under one section).
 func (s *Service) ReorderRooms(ctx context.Context, actorID, spaceID int64, in *ReorderRoomsInput) error {
+	if origin, actor, err := s.remoteSpace(ctx, actorID, spaceID); err != nil {
+		return err
+	} else if origin != "" {
+		return s.fed.RemoteReorderRooms(ctx, origin, spaceID, actor, in)
+	}
 	if err := s.canManageRooms(ctx, actorID, spaceID); err != nil {
 		return err
 	}
@@ -1043,6 +1114,7 @@ func (s *Service) ReorderRooms(ctx context.Context, actorID, spaceID int64, in *
 		}
 		s.publishSpaceEvent(ctx, spaceID, "SPACE_ROOM_UPDATE", payload)
 	}
+	s.fedRoomsReordered(ctx, spaceID)
 	return nil
 }
 
@@ -1072,6 +1144,11 @@ func (s *Service) orderedSpaceChannelIDs(ctx context.Context, spaceID int64, par
 // MoveSpaceChannel moves a text/voice channel to another parent (nil = top-level) and renumbers affected sibling positions.
 // Use ReorderRooms when the channel stays in the same parent group.
 func (s *Service) MoveSpaceChannel(ctx context.Context, actorID, spaceID, channelRoomID int64, newParentSectionID *int64, beforeRoomID *int64) error {
+	if origin, actor, err := s.remoteSpace(ctx, actorID, spaceID); err != nil {
+		return err
+	} else if origin != "" {
+		return s.fed.RemoteMoveChannel(ctx, origin, spaceID, actor, channelRoomID, newParentSectionID, beforeRoomID)
+	}
 	if err := s.canManageRooms(ctx, actorID, spaceID); err != nil {
 		return err
 	}
@@ -1198,5 +1275,6 @@ func (s *Service) MoveSpaceChannel(ctx context.Context, actorID, spaceID, channe
 	for _, rid := range newOrder {
 		publishOne(rid)
 	}
+	s.fedRoomsReordered(ctx, spaceID)
 	return nil
 }

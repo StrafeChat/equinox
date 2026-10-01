@@ -1,6 +1,7 @@
 package federation
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -137,39 +138,261 @@ func (h *Handler) UserUpdated(c fiber.Ctx) error {
 		for _, row := range rows {
 			stargate.PublishToSpace(c.Context(), h.svc.redis, row.RoomID, "USER_UPDATE", payload, h.svc.cfg.Stargate.Region)
 		}
+		// Spaces they are in here (members of a mirrored space, or remote members of one
+		// hosted here) see the change in the member list too.
+		for _, spaceID := range u.Spaces {
+			stargate.PublishToSpace(c.Context(), h.svc.redis, spaceID, "USER_UPDATE", payload, h.svc.cfg.Stargate.Region)
+		}
 	}
 	return c.SendStatus(http.StatusNoContent)
 }
 
-// roomFor resolves a RoomRef to the local mirror and checks the requesting instance is
-// entitled to act on it (it created the room, or one of its users is a participant).
-func (h *Handler) roomFor(c fiber.Ctx, ref RoomRef) (*RoomMapping, []int64, error) {
+// roomScope is a federated room as this instance holds it: the mapping, the room row,
+// its participants (PMs and groups) or its space (channels), and who the requesting
+// instance is to it.
+type roomScope struct {
+	mapping      *RoomMapping
+	room         *rooms.Room
+	participants []int64
+	spaceID      int64
+	// fromOrigin: the requesting instance is the room's origin. hostedHere: this one is.
+	fromOrigin bool
+	hostedHere bool
+}
+
+// roomScope loads what a mapping points at.
+func (s *Service) roomScope(ctx context.Context, m *RoomMapping) (*roomScope, error) {
+	room, err := s.roomRepo.GetByID(ctx, m.RoomID)
+	if err != nil {
+		return nil, err
+	}
+	if room == nil {
+		return nil, rooms.ErrRoomNotFound
+	}
+	sc := &roomScope{mapping: m, room: room, hostedHere: s.IsLocalServer(m.OriginDomain)}
+	if room.SpaceID != nil {
+		sc.spaceID = *room.SpaceID
+		return sc, nil
+	}
+	if sc.participants, err = s.roomRepo.GetParticipants(ctx, m.RoomID); err != nil {
+		return nil, err
+	}
+	return sc, nil
+}
+
+// inRoom reports whether a local user id may act in the room: a participant, or a
+// member of the channel's space.
+func (s *Service) inRoom(ctx context.Context, sc *roomScope, uid int64) bool {
+	if sc.spaceID != 0 {
+		ok, _ := s.spaceSvc.IsMember(ctx, sc.spaceID, uid)
+		return ok
+	}
+	for _, pid := range sc.participants {
+		if pid == uid {
+			return true
+		}
+	}
+	return false
+}
+
+// roomParticipants is who a new message in the room fans out to.
+func (s *Service) roomParticipants(ctx context.Context, sc *roomScope) []int64 {
+	if sc.spaceID == 0 {
+		return sc.participants
+	}
+	ids, _ := s.spaceSvc.ListSpaceMemberUserIDs(ctx, sc.spaceID)
+	return ids
+}
+
+// roomFor resolves a RoomRef to the local room and checks the requesting instance is
+// entitled to act on it: for a PM or group, it created the room or one of its users is
+// a participant; for a space channel, it is the space's origin, or this instance is and
+// the requester mirrors the space.
+func (h *Handler) roomFor(c fiber.Ctx, ref RoomRef) (*roomScope, error) {
 	originRoomID, err := id.Parse(ref.OriginRoomID)
 	if err != nil {
-		return nil, nil, ErrInvalidFID
+		return nil, ErrInvalidFID
 	}
-	m, err := h.svc.repo.GetRoomByOrigin(c.Context(), ref.OriginDomain, originRoomID)
+	ctx := c.Context()
+	var m *RoomMapping
+	if h.svc.IsLocalServer(ref.OriginDomain) {
+		// A room hosted here is its own origin; its mapping is registered on first use
+		// (a mirror may ask about a channel before anything was ever relayed from it).
+		if room, err := h.svc.roomRepo.GetByID(ctx, originRoomID); err != nil {
+			return nil, err
+		} else if room == nil {
+			return nil, rooms.ErrRoomNotFound
+		}
+		if _, err := h.svc.roomRef(ctx, originRoomID); err != nil {
+			return nil, err
+		}
+		m = &RoomMapping{RoomID: originRoomID, OriginDomain: h.svc.fcfg.Domain, OriginRoomID: originRoomID}
+	} else {
+		var err error
+		if m, err = h.svc.repo.GetRoomByOrigin(ctx, ref.OriginDomain, originRoomID); err != nil {
+			return nil, err
+		}
+		if m == nil {
+			return nil, rooms.ErrRoomNotFound
+		}
+	}
+	sc, err := h.svc.roomScope(ctx, m)
 	if err != nil {
-		return nil, nil, err
-	}
-	if m == nil {
-		return nil, nil, rooms.ErrRoomNotFound
-	}
-	participants, err := h.svc.roomRepo.GetParticipants(c.Context(), m.RoomID)
-	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	requester := RequesterDomain(c)
-	if ref.OriginDomain != requester {
-		byDomain, _, err := h.svc.remotePeers(c.Context(), participants)
-		if err != nil {
-			return nil, nil, err
+	sc.fromOrigin = ref.OriginDomain == requester
+	if sc.fromOrigin {
+		return sc, nil
+	}
+	if sc.spaceID != 0 {
+		if !sc.hostedHere {
+			return nil, ErrPeerNotAllowed // a mirror takes a channel's events from its origin only
 		}
-		if _, ok := byDomain[requester]; !ok {
-			return nil, nil, ErrPeerNotAllowed
+		ok, err := h.svc.repo.IsSpacePeer(ctx, sc.spaceID, requester)
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			return nil, ErrPeerNotAllowed
+		}
+		return sc, nil
+	}
+	byDomain, _, err := h.svc.remotePeers(ctx, sc.participants)
+	if err != nil {
+		return nil, err
+	}
+	if _, ok := byDomain[requester]; !ok {
+		return nil, ErrPeerNotAllowed
+	}
+	return sc, nil
+}
+
+// senderAllowed: who may be named as the acting user in a relayed event. In a PM the
+// requester speaks for its own users only; in a space channel the origin relays what
+// any member did, so the requester must be the origin.
+func (h *Handler) senderAllowed(c fiber.Ctx, sc *roomScope, fid string) bool {
+	_, domain, err := ParseFID(fid)
+	if err != nil {
+		return false
+	}
+	if sc.spaceID != 0 {
+		return sc.fromOrigin
+	}
+	return domain == RequesterDomain(c)
+}
+
+// messageFromEvent turns a relayed message into this instance's ids without storing it.
+// from is the instance vouching for the profiles in it.
+func (s *Service) messageFromEvent(ctx context.Context, from string, sc *roomScope, ev MessageEvent) (*messages.Message, error) {
+	originMsgID, err := id.Parse(ev.Message.OriginMessageID)
+	if err != nil {
+		return nil, ErrInvalidFID
+	}
+	msg := &messages.Message{
+		RoomID:          sc.room.ID,
+		Ciphertext:      ev.Ciphertext,
+		Plaintext:       ev.Plaintext,
+		MentionEveryone: ev.MentionEveryone,
+		SystemType:      ev.SystemType,
+		SystemPayload:   ev.SystemPayload,
+		CreatedAt:       ev.CreatedAt.UTC(),
+		UpdatedAt:       ev.UpdatedAt.UTC(),
+	}
+	// A channel keeps the origin's message ids everywhere (every message in it comes
+	// from the origin), so replies, reactions and order agree without a lookup; a PM
+	// gets a local id like before.
+	if sc.spaceID != 0 {
+		msg.ID = originMsgID
+	} else {
+		msg.ID = id.Next()
+	}
+	if msg.CreatedAt.IsZero() {
+		msg.CreatedAt = time.Now().UTC()
+	}
+	if msg.UpdatedAt.IsZero() {
+		msg.UpdatedAt = msg.CreatedAt
+	}
+	if ev.Sender != nil {
+		sender, err := s.resolveProfile(ctx, *ev.Sender, from)
+		if err != nil {
+			return nil, err
+		}
+		if !s.inRoom(ctx, sc, sender.ID) {
+			return nil, errNotInRoom
+		}
+		msg.SenderID = sender.ID
+	} else if ev.SystemType == "" {
+		return nil, messages.ErrInvalidInput
+	}
+	if ev.SenderDeviceID != "" {
+		if did, err := id.Parse(ev.SenderDeviceID); err == nil {
+			msg.SenderDeviceID = did
 		}
 	}
-	return m, participants, nil
+	if ev.ReplyTo != nil {
+		if rid := s.localMessageID(ctx, sc.room.ID, *ev.ReplyTo); rid != 0 {
+			msg.ReplyToID = &rid
+		}
+	}
+	for _, fid := range ev.Mentions {
+		if len(msg.Mentions) >= messages.MaxMentionsPerMessage {
+			break
+		}
+		if uid, err := s.ResolveLocalID(ctx, fid); err == nil {
+			msg.Mentions = append(msg.Mentions, uid)
+		}
+	}
+	for _, raw := range ev.MentionRoles {
+		if len(msg.MentionRoles) >= messages.MaxMentionsPerMessage {
+			break
+		}
+		if rid, err := id.Parse(raw); err == nil {
+			msg.MentionRoles = append(msg.MentionRoles, rid)
+		}
+	}
+	msg.SetAttachments(sanitizeAttachments(ev.Attachments))
+	return msg, nil
+}
+
+// applyMessageEvent stores a relayed message (idempotent on its origin id) with the
+// bookkeeping a new message gets, and returns the local row.
+func (s *Service) applyMessageEvent(ctx context.Context, from string, sc *roomScope, ev MessageEvent) (*messages.Message, error) {
+	originMsgID, err := id.Parse(ev.Message.OriginMessageID)
+	if err != nil {
+		return nil, ErrInvalidFID
+	}
+	if existing, err := s.repo.GetMessageByOrigin(ctx, ev.Message.OriginDomain, originMsgID); err == nil && existing != nil {
+		if m, err := s.msgRepo.GetByID(ctx, existing.RoomID, existing.MessageID); err == nil && m != nil {
+			return m, nil
+		}
+	}
+	msg, err := s.messageFromEvent(ctx, from, sc, ev)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.msgSvc.CreateFederated(ctx, sc.room.ID, s.roomParticipants(ctx, sc), msg); err != nil {
+		return nil, err
+	}
+	if err := s.repo.PutMessageMapping(ctx, &MessageMapping{RoomID: sc.room.ID, MessageID: msg.ID, OriginDomain: ev.Message.OriginDomain, OriginMessageID: originMsgID}); err != nil {
+		logger.Err("federation", err, map[string]any{"room_id": sc.room.ID, "message_id": msg.ID})
+	}
+	return msg, nil
+}
+
+// localMessageID maps a message reference to this instance's id for it (0 if unknown).
+func (s *Service) localMessageID(ctx context.Context, roomID int64, ref MessageRef) int64 {
+	originID, err := id.Parse(ref.OriginMessageID)
+	if err != nil {
+		return 0
+	}
+	if s.IsLocalServer(ref.OriginDomain) {
+		return originID
+	}
+	if m, err := s.repo.GetMessageByOrigin(ctx, ref.OriginDomain, originID); err == nil && m != nil && m.RoomID == roomID {
+		return m.MessageID
+	}
+	return 0
 }
 
 // RoomCreate POST /rooms - mirror a room the requesting instance created.
@@ -251,10 +474,14 @@ func (h *Handler) RoomParticipants(c fiber.Ctx) error {
 	if len(body.Participants) > maxAnnouncedParticipants {
 		return fail(c, ErrPayloadTooLarge, nil)
 	}
-	m, _, err := h.roomFor(c, body.Room)
+	sc, err := h.roomFor(c, body.Room)
 	if err != nil {
 		return fail(c, err, nil)
 	}
+	if sc.spaceID != 0 {
+		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "a space channel has no participant list"})
+	}
+	m := sc.mapping
 	requester := RequesterDomain(c)
 	ctx := c.Context()
 	var target []int64
@@ -289,12 +516,15 @@ func (h *Handler) RoomPatch(c fiber.Ctx) error {
 	if body.Name != nil && utf8.RuneCountInString(*body.Name) > rooms.MaxRoomNameRunes {
 		return fail(c, ErrPayloadTooLarge, nil)
 	}
-	m, _, err := h.roomFor(c, body.Room)
+	sc, err := h.roomFor(c, body.Room)
 	if err != nil {
 		return fail(c, err, nil)
 	}
-	if _, err := h.svc.roomSvc.ApplyRoomPatch(c.Context(), m.RoomID, body.Name, body.E2EEEnabled); err != nil {
-		return fail(c, err, map[string]any{"room_id": m.RoomID})
+	if sc.spaceID != 0 {
+		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "space channels change through /spaces/rooms"})
+	}
+	if _, err := h.svc.roomSvc.ApplyRoomPatch(c.Context(), sc.room.ID, body.Name, body.E2EEEnabled); err != nil {
+		return fail(c, err, map[string]any{"room_id": sc.room.ID})
 	}
 	return c.SendStatus(http.StatusNoContent)
 }
@@ -305,19 +535,29 @@ func (h *Handler) RoomTyping(c fiber.Ctx) error {
 	if err := json.Unmarshal(c.Body(), &body); err != nil {
 		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "invalid JSON"})
 	}
-	m, _, err := h.roomFor(c, body.Room)
+	sc, err := h.roomFor(c, body.Room)
 	if err != nil {
 		return fail(c, err, nil)
 	}
-	_, domain, err := ParseFID(body.User)
-	if err != nil || domain != RequesterDomain(c) {
-		return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": "user must belong to the requesting instance"})
+	ctx := c.Context()
+	requester := RequesterDomain(c)
+	// In a channel hosted here a mirror sends its own members' typing; in a channel
+	// hosted elsewhere the origin passes everyone's on.
+	if _, domain, err := ParseFID(body.User); err != nil || (domain != requester && !(sc.spaceID != 0 && sc.fromOrigin)) {
+		return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": errForeignUser.Error()})
 	}
-	uid, err := h.svc.ResolveLocalID(c.Context(), body.User)
+	uid, err := h.svc.ResolveLocalID(ctx, body.User)
 	if err != nil {
 		return fail(c, err, nil)
 	}
-	h.svc.roomSvc.PublishTypingFrom(c.Context(), m.RoomID, uid)
+	if !h.svc.inRoom(ctx, sc, uid) {
+		return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": errNotInRoom.Error()})
+	}
+	h.svc.roomSvc.PublishTypingFrom(ctx, sc.room.ID, uid)
+	if sc.spaceID != 0 && sc.hostedHere {
+		// The origin tells the other mirrors (the sender's own instance already knows).
+		h.svc.fanOut(WithExcludedPeer(ctx, requester), h.svc.spacePeers(ctx, sc.spaceID), http.MethodPost, "/rooms/typing", body)
+	}
 	return c.SendStatus(http.StatusNoContent)
 }
 
@@ -331,96 +571,34 @@ func (h *Handler) MessageCreate(c fiber.Ctx) error {
 	if body.Message.OriginDomain != requester {
 		return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": "an instance may only relay its own messages"})
 	}
-	originMsgID, err := id.Parse(body.Message.OriginMessageID)
-	if err != nil {
+	if _, err := id.Parse(body.Message.OriginMessageID); err != nil {
 		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "invalid origin_message_id"})
 	}
-	m, participants, err := h.roomFor(c, body.Room)
+	sc, err := h.roomFor(c, body.Room)
 	if err != nil {
 		return fail(c, err, nil)
 	}
-	ctx := c.Context()
-	if existing, err := h.svc.repo.GetMessageByOrigin(ctx, requester, originMsgID); err == nil && existing != nil {
-		return c.JSON(fiber.Map{"message_id": id.Format(existing.MessageID)})
+	if sc.spaceID != 0 && !sc.fromOrigin {
+		return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": "a channel's messages come from its origin"})
 	}
-	senderID := int64(0)
-	if body.Sender != nil {
-		if _, domain, err := ParseFID(body.Sender.FID); err != nil || domain != requester {
-			return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": "sender must belong to the requesting instance"})
-		}
-		sender, err := h.svc.EnsureShadow(ctx, requester, *body.Sender)
-		if err != nil {
-			return fail(c, err, map[string]any{"peer": requester})
-		}
-		isParticipant := false
-		for _, pid := range participants {
-			if pid == sender.ID {
-				isParticipant = true
-				break
-			}
-		}
-		if !isParticipant {
-			return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": "sender is not in this room"})
-		}
-		senderID = sender.ID
-	} else if body.SystemType == "" {
+	if body.Sender != nil && !h.senderAllowed(c, sc, body.Sender.FID) {
+		return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": "sender must belong to the requesting instance"})
+	}
+	msg, err := h.svc.applyMessageEvent(c.Context(), requester, sc, body)
+	switch {
+	case err == nil:
+		return c.Status(http.StatusCreated).JSON(fiber.Map{"message_id": id.Format(msg.ID)})
+	case errors.Is(err, errNotInRoom):
+		return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": "sender is not in this room"})
+	case errors.Is(err, messages.ErrInvalidInput):
 		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "message needs a sender or a system_type"})
 	}
-	msg := &messages.Message{
-		ID:              id.Next(),
-		SenderID:        senderID,
-		Ciphertext:      body.Ciphertext,
-		Plaintext:       body.Plaintext,
-		MentionEveryone: body.MentionEveryone,
-		SystemType:      body.SystemType,
-		SystemPayload:   body.SystemPayload,
-		CreatedAt:       body.CreatedAt.UTC(),
-	}
-	if msg.CreatedAt.IsZero() {
-		msg.CreatedAt = time.Now().UTC()
-	}
-	msg.UpdatedAt = msg.CreatedAt
-	if body.SenderDeviceID != "" {
-		if did, err := id.Parse(body.SenderDeviceID); err == nil {
-			msg.SenderDeviceID = did
-		}
-	}
-	if body.ReplyTo != nil {
-		if rid := h.localMessageID(c, m.RoomID, *body.ReplyTo); rid != 0 {
-			msg.ReplyToID = &rid
-		}
-	}
-	for _, fid := range body.Mentions {
-		if len(msg.Mentions) >= messages.MaxMentionsPerMessage {
-			break
-		}
-		if uid, err := h.svc.ResolveLocalID(ctx, fid); err == nil {
-			msg.Mentions = append(msg.Mentions, uid)
-		}
-	}
-	msg.SetAttachments(sanitizeAttachments(body.Attachments))
-	if err := h.svc.msgSvc.CreateFederated(ctx, m.RoomID, participants, msg); err != nil {
-		return fail(c, err, map[string]any{"room_id": m.RoomID})
-	}
-	if err := h.svc.repo.PutMessageMapping(ctx, &MessageMapping{RoomID: m.RoomID, MessageID: msg.ID, OriginDomain: requester, OriginMessageID: originMsgID}); err != nil {
-		logger.Err("federation", err, map[string]any{"room_id": m.RoomID, "message_id": msg.ID})
-	}
-	return c.Status(http.StatusCreated).JSON(fiber.Map{"message_id": id.Format(msg.ID)})
+	return fail(c, err, map[string]any{"room_id": sc.room.ID})
 }
 
 // localMessageID maps a message reference to this instance's id for it (0 if unknown).
 func (h *Handler) localMessageID(c fiber.Ctx, roomID int64, ref MessageRef) int64 {
-	originID, err := id.Parse(ref.OriginMessageID)
-	if err != nil {
-		return 0
-	}
-	if h.svc.IsLocalServer(ref.OriginDomain) {
-		return originID
-	}
-	if m, err := h.svc.repo.GetMessageByOrigin(c.Context(), ref.OriginDomain, originID); err == nil && m != nil && m.RoomID == roomID {
-		return m.MessageID
-	}
-	return 0
+	return h.svc.localMessageID(c.Context(), roomID, ref)
 }
 
 // MessageEdit PATCH /rooms/messages.
@@ -432,16 +610,16 @@ func (h *Handler) MessageEdit(c fiber.Ctx) error {
 	if body.Message.OriginDomain != RequesterDomain(c) {
 		return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": "an instance may only edit its own messages"})
 	}
-	m, _, err := h.roomFor(c, body.Room)
+	sc, err := h.roomFor(c, body.Room)
 	if err != nil {
 		return fail(c, err, nil)
 	}
-	msgID := h.localMessageID(c, m.RoomID, body.Message)
+	msgID := h.localMessageID(c, sc.room.ID, body.Message)
 	if msgID == 0 {
 		return c.Status(http.StatusNotFound).JSON(fiber.Map{"error": "message not found"})
 	}
-	if _, err := h.svc.msgSvc.EditFederated(c.Context(), m.RoomID, msgID, body.Ciphertext, body.Plaintext); err != nil {
-		return fail(c, err, map[string]any{"room_id": m.RoomID, "message_id": msgID})
+	if _, err := h.svc.msgSvc.EditFederated(c.Context(), sc.room.ID, msgID, body.Ciphertext, body.Plaintext); err != nil {
+		return fail(c, err, map[string]any{"room_id": sc.room.ID, "message_id": msgID})
 	}
 	return c.SendStatus(http.StatusNoContent)
 }
@@ -455,16 +633,16 @@ func (h *Handler) MessageDelete(c fiber.Ctx) error {
 	if body.Message.OriginDomain != RequesterDomain(c) {
 		return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": "an instance may only delete its own messages"})
 	}
-	m, _, err := h.roomFor(c, body.Room)
+	sc, err := h.roomFor(c, body.Room)
 	if err != nil {
 		return fail(c, err, nil)
 	}
-	msgID := h.localMessageID(c, m.RoomID, body.Message)
+	msgID := h.localMessageID(c, sc.room.ID, body.Message)
 	if msgID == 0 {
 		return c.Status(http.StatusNotFound).JSON(fiber.Map{"error": "message not found"})
 	}
-	if err := h.svc.msgSvc.DeleteFederated(c.Context(), m.RoomID, msgID); err != nil {
-		return fail(c, err, map[string]any{"room_id": m.RoomID, "message_id": msgID})
+	if err := h.svc.msgSvc.DeleteFederated(c.Context(), sc.room.ID, msgID); err != nil {
+		return fail(c, err, map[string]any{"room_id": sc.room.ID, "message_id": msgID})
 	}
 	return c.SendStatus(http.StatusNoContent)
 }
@@ -594,37 +772,29 @@ func (h *Handler) applyReaction(c fiber.Ctx, remove bool) error {
 	if err := json.Unmarshal(c.Body(), &body); err != nil {
 		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "invalid JSON"})
 	}
-	requester := RequesterDomain(c)
-	if _, domain, err := ParseFID(body.User); err != nil || domain != requester {
-		return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": "user must belong to the requesting instance"})
-	}
-	m, participants, err := h.roomFor(c, body.Room)
+	sc, err := h.roomFor(c, body.Room)
 	if err != nil {
 		return fail(c, err, nil)
+	}
+	if !h.senderAllowed(c, sc, body.User) {
+		return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": "user must belong to the requesting instance"})
 	}
 	ctx := c.Context()
 	uid, err := h.svc.ResolveLocalID(ctx, body.User)
 	if err != nil {
 		return fail(c, err, nil)
 	}
-	isParticipant := false
-	for _, pid := range participants {
-		if pid == uid {
-			isParticipant = true
-			break
-		}
-	}
-	if !isParticipant {
+	if !h.svc.inRoom(ctx, sc, uid) {
 		return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": "user is not in this room"})
 	}
-	msgID := h.localMessageID(c, m.RoomID, body.Message)
+	msgID := h.localMessageID(c, sc.room.ID, body.Message)
 	if msgID == 0 {
 		return c.Status(http.StatusNotFound).JSON(fiber.Map{"error": "message not found"})
 	}
 	if remove {
-		err = h.svc.msgSvc.RemoveReactionFederated(ctx, m.RoomID, msgID, uid, body.Emoji)
+		err = h.svc.msgSvc.RemoveReactionFederated(ctx, sc.room.ID, msgID, uid, body.Emoji)
 	} else {
-		err = h.svc.msgSvc.AddReactionFederated(ctx, m.RoomID, msgID, uid, body.Emoji)
+		err = h.svc.msgSvc.AddReactionFederated(ctx, sc.room.ID, msgID, uid, body.Emoji)
 	}
 	switch {
 	case err == nil:
@@ -632,7 +802,7 @@ func (h *Handler) applyReaction(c fiber.Ctx, remove bool) error {
 	case errors.Is(err, messages.ErrInvalidReaction), errors.Is(err, messages.ErrTooManyReactions):
 		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
-	return fail(c, err, map[string]any{"room_id": m.RoomID, "message_id": msgID})
+	return fail(c, err, map[string]any{"room_id": sc.room.ID, "message_id": msgID})
 }
 
 func (h *Handler) ReactionAdd(c fiber.Ctx) error    { return h.applyReaction(c, false) }

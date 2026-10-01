@@ -57,6 +57,11 @@ func (s *Service) PatchSpace(ctx context.Context, actorID, spaceID int64, in *Pa
 	if in == nil {
 		return nil, ErrNothingToPatch
 	}
+	if origin, actor, err := s.remoteSpace(ctx, actorID, spaceID); err != nil {
+		return nil, err
+	} else if origin != "" {
+		return s.fed.RemotePatchSpace(ctx, origin, spaceID, actor, in)
+	}
 	base, err := s.SpacePermissionBase(ctx, actorID, spaceID)
 	if err != nil {
 		return nil, err
@@ -188,6 +193,7 @@ func (s *Service) PatchSpace(ctx context.Context, actorID, spaceID int64, in *Pa
 	if s.redis != nil {
 		stargate.PublishToSpace(ctx, s.redis, spaceID, "SPACE_UPDATE", spaceToEventPayload(sp), s.stargateRegion())
 	}
+	s.fedSpaceUpdated(ctx, sp)
 	return sp, nil
 }
 

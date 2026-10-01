@@ -38,6 +38,9 @@ type SpaceSummary struct {
 // canInstallBots is Discord's rule for adding a bot: the owner, an Administrator, or
 // someone with Manage Space.
 func (s *Service) canInstallBots(ctx context.Context, actorID, spaceID int64) (*Space, int64, error) {
+	if err := s.assertLocal(ctx, spaceID); err != nil {
+		return nil, 0, err
+	}
 	sp, err := s.repo.GetByID(ctx, spaceID)
 	if err != nil {
 		return nil, 0, err
@@ -214,6 +217,12 @@ func (s *Service) createBotRole(ctx context.Context, sp *Space, everyoneID int64
 	if err := s.repo.InsertSpaceRole(ctx, role); err != nil {
 		return nil, err
 	}
+	for i := range existing {
+		if existing[i].ID != everyoneID {
+			s.fedRoleChanged(ctx, sp.ID, &existing[i], false)
+		}
+	}
+	s.fedRoleChanged(ctx, sp.ID, role, false)
 	return role, nil
 }
 
@@ -236,6 +245,7 @@ func (s *Service) updateBotRole(ctx context.Context, sp *Space, bot *auth.User, 
 		}
 		s.invalidateSnapshot(ctx, sp.ID)
 		s.publishSpaceEvent(ctx, sp.ID, "SPACE_ROLE_UPDATE", spaceRoleEventData(r))
+		s.fedRoleChanged(ctx, sp.ID, r, false)
 		return granted, nil
 	}
 	eid, err := s.ensureEveryoneRoleID(ctx, sp)
@@ -264,6 +274,7 @@ func (s *Service) updateBotRole(ctx context.Context, sp *Space, bot *auth.User, 
 		"user_id":  id.Format(bot.ID),
 		"role_ids": formatRoleIDStrings(append(mem.RoleIDs, role.ID)),
 	})
+	s.fedMemberUpdated(ctx, sp.ID, bot.ID)
 	return granted, nil
 }
 
@@ -294,6 +305,7 @@ func (s *Service) cleanupBotRoles(ctx context.Context, spaceID, userID int64) {
 		s.publishSpaceEvent(ctx, spaceID, "SPACE_ROLE_DELETE", map[string]interface{}{
 			"role_id": id.Format(roles[i].ID),
 		})
+		s.fedRoleChanged(ctx, spaceID, &roles[i], true)
 	}
 	if len(gone) == 0 {
 		return
@@ -316,6 +328,7 @@ func (s *Service) cleanupBotRoles(ctx context.Context, spaceID, userID int64) {
 		r.Position -= shift
 		r.UpdatedAt = now
 		_ = s.repo.UpdateSpaceRole(ctx, r)
+		s.fedRoleChanged(ctx, spaceID, r, false)
 	}
 	s.invalidateSnapshot(ctx, spaceID)
 	if sp, err := s.repo.GetByID(ctx, spaceID); err == nil && sp != nil {
@@ -334,6 +347,9 @@ func (s *Service) cleanupBotRoles(ctx context.Context, spaceID, userID int64) {
 // Invite adds userID - who authorised it - to the space. Returns false when the user was
 // already a member.
 func (s *Service) AddMemberViaOAuth(ctx context.Context, actorID, spaceID, userID int64) (bool, error) {
+	if err := s.assertLocal(ctx, spaceID); err != nil {
+		return false, err
+	}
 	sp, err := s.repo.GetByID(ctx, spaceID)
 	if err != nil {
 		return false, err
@@ -384,6 +400,9 @@ func (s *Service) addMember(ctx context.Context, sp *Space, userID int64, roleID
 		return err
 	}
 	s.markPreJoinHistoryRead(ctx, sp.ID, userID)
+	// Tell the other instances first: a mirror must know the member before the join
+	// notice (relayed as a message in the same per-peer order) names them.
+	s.fedMemberAdded(ctx, sp.ID, userID)
 	s.postSystemMessage(ctx, sp, SystemRoomFlagSuppressJoin, SystemMemberJoin, map[string]interface{}{
 		"user_id": id.Format(userID),
 	})
@@ -399,25 +418,14 @@ func (s *Service) publishMemberAdd(ctx context.Context, sp *Space, userID int64)
 	if u == nil {
 		return
 	}
-	payload := map[string]interface{}{
-		"space_id":      id.Format(sp.ID),
-		"id":            id.Format(u.ID),
-		"username":      u.Username,
-		"discriminator": u.Discriminator,
-		"display_name":  u.DisplayName,
-		"avatar":        u.Avatar,
-		"banner":        u.Banner,
-		"bio":           u.Bio,
-		"about_me":      u.AboutMe,
-		"bot":           u.Bot,
-		"public_flags":  auth.PublicFlags(u),
-		"presence":      auth.ToPublicPresence(u.Presence, true),
-	}
+	payload := s.memberUserFields(u)
+	payload["space_id"] = id.Format(sp.ID)
 	if mem, _ := s.repo.GetMember(ctx, sp.ID, userID); mem != nil {
 		payload["role_ids"] = formatRoleIDStrings(mem.RoleIDs)
 	}
 	stargate.PublishToSpace(ctx, s.redis, sp.ID, "SPACE_MEMBER_ADD", payload, s.stargateRegion())
 
+	s.attachFederation(ctx, sp)
 	space := spaceToEventPayload(sp)
 	if roles, err := s.SpaceRoles(ctx, sp.ID); err == nil {
 		space["roles"] = RoleMaps(roles)

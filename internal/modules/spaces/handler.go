@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/gofiber/fiber/v3"
@@ -24,23 +25,45 @@ import (
 // happened repeatedly (CreateInvite, the kick/ban family, and every room/role handler that
 // can hit ErrSpaceNotFound via canManageRoles/canManageRooms all missed at least one case).
 func spaceError(c fiber.Ctx, err error, logFields map[string]any) error {
+	if status, msg, ok := HTTPError(err); ok {
+		return c.Status(status).JSON(fiber.Map{"error": msg})
+	}
+	logger.Err("spaces", err, logFields)
+	return c.Status(http.StatusInternalServerError).JSON(fiber.Map{"error": "internal error"})
+}
+
+// HTTPError maps a spaces-service error to the status and message a client gets; ok is
+// false for errors that are not the client's (internal). Shared with the federation
+// engine, which answers another instance's members with the same statuses.
+func HTTPError(err error) (status int, message string, ok bool) {
+	var oe *OriginError
+	if errors.As(err, &oe) {
+		// The instance hosting the space answered for us; its status and reason stand.
+		return oe.Status, oe.Message, true
+	}
 	switch {
+	case errors.Is(err, ErrOriginUnavailable):
+		return http.StatusBadGateway, err.Error(), true
+	case errors.Is(err, ErrRemoteSpace):
+		return http.StatusForbidden, err.Error(), true
+	case errors.Is(err, ErrFederationOff), errors.Is(err, ErrNotRemoteSpace):
+		return http.StatusBadRequest, err.Error(), true
 	case errors.Is(err, ErrSpaceNotFound):
-		return c.Status(http.StatusNotFound).JSON(fiber.Map{"error": "space not found"})
+		return http.StatusNotFound, "space not found", true
 	case errors.Is(err, ErrInviteNotFound):
-		return c.Status(http.StatusNotFound).JSON(fiber.Map{"error": "invite not found"})
+		return http.StatusNotFound, "invite not found", true
 	case errors.Is(err, ErrRoleNotFound):
-		return c.Status(http.StatusNotFound).JSON(fiber.Map{"error": "role not found"})
+		return http.StatusNotFound, "role not found", true
 	case errors.Is(err, ErrEmojiNotFound):
-		return c.Status(http.StatusNotFound).JSON(fiber.Map{"error": "emoji not found"})
+		return http.StatusNotFound, "emoji not found", true
 	case errors.Is(err, ErrInvalidEmojiName), errors.Is(err, ErrEmojiNameTaken), errors.Is(err, ErrEmojiLimit):
-		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+		return http.StatusBadRequest, err.Error(), true
 	case errors.Is(err, ErrInvalidRoom):
-		return c.Status(http.StatusNotFound).JSON(fiber.Map{"error": "room not found"})
+		return http.StatusNotFound, "room not found", true
 	case errors.Is(err, ErrNotMember), errors.Is(err, ErrMissingPerm), errors.Is(err, ErrRoleHierarchy),
 		errors.Is(err, ErrCannotModerateOwner), errors.Is(err, ErrNotSpaceOwner), errors.Is(err, ErrPermissionEscalation),
 		errors.Is(err, ErrInsufficientSpacePermission), errors.Is(err, ErrBanned):
-		return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": err.Error()})
+		return http.StatusForbidden, err.Error(), true
 	case errors.Is(err, ErrCannotEditEveryone), errors.Is(err, ErrInvalidSlowmode), errors.Is(err, ErrInvalidRoomType),
 		errors.Is(err, ErrInvalidReorder), errors.Is(err, ErrOwnerCannotLeave), errors.Is(err, ErrInvalidSpaceName),
 		errors.Is(err, ErrNothingToPatch), errors.Is(err, ErrInvalidRoleName), errors.Is(err, ErrCannotChangeOwnerRoles),
@@ -50,10 +73,9 @@ func spaceError(c fiber.Ctx, err error, logFields map[string]any) error {
 		errors.Is(err, ErrInvalidInvite), errors.Is(err, ErrInvalidUserLimit), errors.Is(err, ErrInvalidBitrate),
 		errors.Is(err, ErrAlreadyOwner), errors.Is(err, ErrSpaceNameMismatch), errors.Is(err, ErrInvalidBot),
 		errors.Is(err, ErrManagedRole):
-		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+		return http.StatusBadRequest, err.Error(), true
 	}
-	logger.Err("spaces", err, logFields)
-	return c.Status(http.StatusInternalServerError).JSON(fiber.Map{"error": "internal error"})
+	return 0, "", false
 }
 
 type Handler struct {
@@ -159,10 +181,16 @@ func (h *Handler) GetRooms(c fiber.Ctx) error {
 	// partition read for every room the user has state in, not one read per room.
 	mentionCounts, _ := h.svc.GetMentionCounts(c.Context(), user.ID)
 	userRows, _ := h.svc.UserRoomRows(c.Context(), user.ID)
+	roomIDs := make([]int64, 0, len(roomList))
+	for _, r := range roomList {
+		roomIDs = append(roomIDs, r.ID)
+	}
+	feds := h.svc.RoomFederations(c.Context(), roomIDs)
 	out := make([]fiber.Map, 0, len(roomList))
 	for _, r := range roomList {
 		m := spaceRoomToJSON(r)
 		AttachOverrides(m, snap.RoomOverridesFor(r.ID))
+		AttachFederation(m, feds[r.ID])
 		row := userRows[r.ID]
 		if row != nil && row.LastReadMessageID != nil {
 			m["last_read_message_id"] = id.Format(*row.LastReadMessageID)
@@ -173,6 +201,22 @@ func (h *Handler) GetRooms(c fiber.Ctx) error {
 		out = append(out, m)
 	}
 	return c.JSON(out)
+}
+
+// Resync POST /spaces/:id/resync - reconcile a mirrored space with its origin.
+func (h *Handler) Resync(c fiber.Ctx) error {
+	user := auth.GetUser(c)
+	if user == nil {
+		return c.Status(http.StatusUnauthorized).JSON(fiber.Map{"error": "unauthorized"})
+	}
+	spaceID, err := id.Parse(c.Params("id"))
+	if err != nil {
+		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "invalid space id"})
+	}
+	if err := h.svc.Resync(c.Context(), user.ID, spaceID); err != nil {
+		return spaceError(c, err, map[string]any{"space_id": spaceID})
+	}
+	return c.SendStatus(http.StatusNoContent)
 }
 
 // AckAll marks every text/voice room in the space read for the caller. POST /spaces/:id/ack-all.
@@ -236,6 +280,9 @@ func spaceToJSON(s *Space) fiber.Map {
 	}
 	if s.EveryoneRoleID != 0 {
 		m["everyone_role_id"] = id.Format(s.EveryoneRoleID)
+	}
+	if s.Federation != nil {
+		m["federation"] = s.Federation
 	}
 	return m
 }
@@ -315,26 +362,14 @@ func (h *Handler) Members(c fiber.Ctx) error {
 	}
 	out := make([]fiber.Map, 0, len(members))
 	for _, m := range members {
-		u := m.User
 		roleStrs := make([]string, len(m.Member.RoleIDs))
 		for i, rid := range m.Member.RoleIDs {
 			roleStrs[i] = id.Format(rid)
 		}
-		out = append(out, fiber.Map{
-			"id":            id.Format(u.ID),
-			"username":      u.Username,
-			"discriminator": u.Discriminator,
-			"display_name":  u.DisplayName,
-			"avatar":        u.Avatar,
-			"banner":        u.Banner,
-			"bio":           u.Bio,
-			"about_me":      u.AboutMe,
-			"joined_at":     m.Member.JoinedAt,
-			"roles":         roleStrs,
-			"presence":      auth.ToPublicPresence(u.Presence, true),
-			"public_flags":  auth.PublicFlags(u),
-			"bot":           u.Bot,
-		})
+		row := fiber.Map(h.svc.memberUserFields(m.User))
+		row["joined_at"] = m.Member.JoinedAt
+		row["roles"] = roleStrs
+		out = append(out, row)
 	}
 	return c.JSON(out)
 }
@@ -367,19 +402,30 @@ func (h *Handler) CreateInvite(c fiber.Ctx) error {
 
 // InvitePreview returns public space info for an invite (no auth). GET /spaces/invites/:code.
 func (h *Handler) InvitePreview(c fiber.Ctx) error {
-	code := c.Params("code")
-	space, inviterName, err := h.svc.GetInvitePreview(c.Context(), code)
+	code := inviteCodeParam(c)
+	preview, err := h.svc.GetInvitePreview(c.Context(), code)
 	if err != nil {
 		return spaceError(c, err, map[string]any{"code": code})
 	}
 	out := fiber.Map{
-		"space":   spaceToJSON(space),
-		"inviter": nil,
+		"space":        spaceToJSON(preview.Space),
+		"inviter":      nil,
+		"member_count": preview.MemberCount,
 	}
-	if inviterName != "" {
-		out["inviter"] = fiber.Map{"display_name": inviterName}
+	if preview.InviterName != "" {
+		out["inviter"] = fiber.Map{"display_name": preview.InviterName}
 	}
 	return c.JSON(out)
+}
+
+// inviteCodeParam decodes the :code segment - a federated code is code@domain, and the
+// app runs with Fiber's UnescapePath off, so the "@" arrives percent-encoded.
+func inviteCodeParam(c fiber.Ctx) string {
+	raw := c.Params("code")
+	if decoded, err := url.PathUnescape(raw); err == nil {
+		return decoded
+	}
+	return raw
 }
 
 // JoinByInvite joins a space via invite code. POST /spaces/invites/:code/join.
@@ -388,7 +434,7 @@ func (h *Handler) JoinByInvite(c fiber.Ctx) error {
 	if user == nil {
 		return c.Status(http.StatusUnauthorized).JSON(fiber.Map{"error": "unauthorized"})
 	}
-	code := c.Params("code")
+	code := inviteCodeParam(c)
 	space, err := h.svc.JoinByInvite(c.Context(), user.ID, code)
 	if err != nil {
 		return spaceError(c, err, map[string]any{"code": code})

@@ -93,6 +93,9 @@ func (a *App) register() error {
 		if err != nil {
 			return fmt.Errorf("federation: %w", err)
 		}
+		// Mirrors of spaces hosted elsewhere are brought back in line with their origin
+		// now and then, in case a relay was missed while this instance was down.
+		fed.StartMaintenance(context.Background())
 	}
 
 	// A nil interface, not a nil *mail.SMTP in an interface - route setup tests the

@@ -39,6 +39,11 @@ func (s *Service) assertOwner(ctx context.Context, actorID, spaceID int64) (*Spa
 // whatever roles they hold, which is what Discord does - and since role hierarchy is
 // evaluated against the *current* owner, they lose their ceiling-free standing at once.
 func (s *Service) TransferOwnership(ctx context.Context, actorID, spaceID, newOwnerID int64) (*Space, error) {
+	if origin, actor, err := s.remoteSpace(ctx, actorID, spaceID); err != nil {
+		return nil, err
+	} else if origin != "" {
+		return s.fed.RemoteTransferOwnership(ctx, origin, spaceID, actor, newOwnerID)
+	}
 	sp, err := s.assertOwner(ctx, actorID, spaceID)
 	if err != nil {
 		return nil, err
@@ -72,6 +77,7 @@ func (s *Service) TransferOwnership(ctx context.Context, actorID, spaceID, newOw
 	if s.redis != nil {
 		stargate.PublishToSpace(ctx, s.redis, spaceID, "SPACE_UPDATE", spaceToEventPayload(updated), s.stargateRegion())
 	}
+	s.fedSpaceUpdated(ctx, updated)
 	return updated, nil
 }
 
@@ -84,12 +90,20 @@ func (s *Service) TransferOwnership(ctx context.Context, actorID, spaceID, newOw
 // themselves. A failure part-way leaves a smaller space rather than orphaned rows in
 // somebody's sidebar.
 func (s *Service) DeleteSpace(ctx context.Context, actorID, spaceID int64, confirmName string) error {
+	if origin, actor, err := s.remoteSpace(ctx, actorID, spaceID); err != nil {
+		return err
+	} else if origin != "" {
+		return s.fed.RemoteDeleteSpace(ctx, origin, spaceID, actor, confirmName)
+	}
 	sp, err := s.assertOwner(ctx, actorID, spaceID)
 	if err != nil {
 		return err
 	}
 	if confirmName != sp.Name {
 		return ErrSpaceNameMismatch
+	}
+	if s.fed != nil {
+		s.fed.AfterSpaceDeleted(ctx, sp)
 	}
 	return s.deleteSpaceCascade(ctx, actorID, sp)
 }
@@ -108,11 +122,18 @@ func (s *Service) TakeDownSpace(ctx context.Context, actorID, spaceID int64) err
 	if sp == nil {
 		return ErrSpaceNotFound
 	}
+	if err := s.assertLocal(ctx, spaceID); err != nil {
+		return err // a mirror is taken down by leaving it, or by its origin
+	}
+	if s.fed != nil {
+		s.fed.AfterSpaceDeleted(ctx, sp)
+	}
 	return s.deleteSpaceCascade(ctx, actorID, sp)
 }
 
-// deleteSpaceCascade is the removal itself, shared by the owner's delete and an
-// administrator's takedown. See DeleteSpace for why the order matters.
+// deleteSpaceCascade is the removal itself, shared by the owner's delete, an
+// administrator's takedown and dropping a mirror. See DeleteSpace for why the order
+// matters.
 func (s *Service) deleteSpaceCascade(ctx context.Context, actorID int64, sp *Space) error {
 	spaceID := sp.ID
 	members, err := s.repo.ListMembers(ctx, spaceID)

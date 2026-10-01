@@ -203,12 +203,18 @@ func (p *readyDataProvider) GetReadyData(ctx context.Context, userID int64) (*st
 				}
 				spacesList = append(spacesList, spaceToReadyMap(space, snap))
 				channelIDs = append(channelIDs, id.Format(space.ID))
+				roomIDs := make([]int64, 0, len(roomListForSpace))
+				for _, r := range roomListForSpace {
+					roomIDs = append(roomIDs, r.ID)
+				}
+				roomFeds := p.spaceSvc.RoomFederations(ctx, roomIDs)
 				roomMaps := make([]map[string]interface{}, 0, len(roomListForSpace))
 				for _, r := range roomListForSpace {
 					if r.Type == rooms.TypeSpaceVoice {
 						voiceRoomIDs = append(voiceRoomIDs, r.ID)
 					}
 					m := spaces.AttachOverrides(spaces.RoomMap(r), snap.RoomOverridesFor(r.ID))
+					spaces.AttachFederation(m, roomFeds[r.ID])
 					ur := userRows[r.ID]
 					if ur != nil {
 						if ur.LastReadMessageID != nil {
@@ -288,6 +294,9 @@ func spaceToReadyMap(s *spaces.Space, snap *spaces.Snapshot) map[string]interfac
 	if s.WidgetRoomID != nil {
 		m["widget_room_id"] = id.Format(*s.WidgetRoomID)
 	}
+	if s.Federation != nil {
+		m["federation"] = s.Federation
+	}
 	if snap != nil {
 		if snap.EveryoneRoleID != 0 {
 			m["everyone_role_id"] = id.Format(snap.EveryoneRoleID)
@@ -339,8 +348,10 @@ func main() {
 	roomSvc := rooms.NewService(roomRepo, userRepo, redis, cfg, nil, spaceSvc)
 	if cfg.Federation.Enabled {
 		// READY must carry each federated room's global identity so clients key their
-		// Megolm sessions by it (see rooms.Federation).
-		roomSvc.SetFederationInfo(federation.NewInfoProvider(scylla))
+		// Megolm sessions by it (see rooms.Federation), and each mirrored space's origin.
+		info := federation.NewInfoProvider(scylla, cfg.Federation.Domain)
+		roomSvc.SetFederationInfo(info)
+		spaceSvc.SetFederationInfo(info)
 	}
 	relRepo := relationships.NewRepository(scylla)
 	relSvc := relationships.NewService(relRepo, userRepo, redis, cfg)

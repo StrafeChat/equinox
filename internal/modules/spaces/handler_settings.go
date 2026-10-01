@@ -43,7 +43,8 @@ func (h *Handler) DeleteInvite(c fiber.Ctx) error {
 	if err != nil {
 		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "invalid space id"})
 	}
-	code := strings.TrimSpace(c.Params("code"))
+	// A federated code is code@domain, with the "@" percent-encoded in the path.
+	code := strings.TrimSpace(inviteCodeParam(c))
 	if code == "" {
 		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "invalid invite code"})
 	}

@@ -181,15 +181,41 @@ type SpaceChannelAuth interface {
 }
 
 // Federator relays message events to the other instances whose users share the room.
-// Implemented by internal/federation; nil when this instance doesn't federate. Hooks are
-// best-effort and must not block the request.
+// Implemented by internal/federation; nil when this instance doesn't federate. The After*
+// hooks are best-effort and must not block the request.
+//
+// The *Remote methods serve a channel of a space another instance hosts (RemoteOrigin
+// names it): every write is made there, on behalf of the local user, and applied here
+// from the origin's answer; history is read there too, so a member sees the whole
+// channel and not just what arrived since they joined. They are synchronous: the
+// origin's refusal (an *OriginError) or absence (ErrOriginUnavailable) is the answer.
 type Federator interface {
 	AfterMessageCreated(ctx context.Context, roomID int64, participants []int64, m *Message)
 	AfterMessageEdited(ctx context.Context, roomID int64, participants []int64, m *Message)
 	AfterMessageDeleted(ctx context.Context, roomID int64, participants []int64, msgID int64)
 	AfterReactionAdded(ctx context.Context, roomID int64, participants []int64, msgID, userID int64, emoji string)
 	AfterReactionRemoved(ctx context.Context, roomID int64, participants []int64, msgID, userID int64, emoji string)
+
+	RemoteOrigin(ctx context.Context, room *rooms.Room) string
+	CreateRemote(ctx context.Context, origin string, room *rooms.Room, userID int64, in *CreateMessageInput, attachments []Attachment) (*Message, error)
+	EditRemote(ctx context.Context, origin string, room *rooms.Room, userID, msgID int64, in *EditMessageInput) (*Message, error)
+	DeleteRemote(ctx context.Context, origin string, room *rooms.Room, userID, msgID int64) error
+	ReactRemote(ctx context.Context, origin string, room *rooms.Room, userID, msgID int64, emoji string, remove bool) ([]ReactionSummary, error)
+	ListRemote(ctx context.Context, origin string, room *rooms.Room, userID int64, beforeID *int64, limit int) ([]Message, map[int64][]ReactionSummary, error)
+	GetRemote(ctx context.Context, origin string, room *rooms.Room, userID, msgID int64) (*Message, []ReactionSummary, error)
 }
+
+// OriginError is the hosting instance's refusal of a forwarded write, passed through to
+// the user with the origin's status and message.
+type OriginError struct {
+	Status  int
+	Message string
+}
+
+func (e *OriginError) Error() string { return e.Message }
+
+// ErrOriginUnavailable: the instance hosting the channel's space did not answer.
+var ErrOriginUnavailable = errors.New("the instance hosting this space could not be reached")
 
 type Service struct {
 	repo      Repository
@@ -386,7 +412,45 @@ func (s *Service) enforceSlowmode(ctx context.Context, userID, roomID int64, roo
 	return &SlowmodeError{RetryAfter: retry}
 }
 
+// remoteOrigin names the instance hosting a space channel when it is not this one.
+func (s *Service) remoteOrigin(ctx context.Context, room *rooms.Room) string {
+	if s.federator == nil || room == nil || room.SpaceID == nil {
+		return ""
+	}
+	return s.federator.RemoteOrigin(ctx, room)
+}
+
+// spaceParticipants is the member set a space channel fans out to (space channels have
+// no room_participants rows).
+func (s *Service) spaceParticipants(ctx context.Context, room *rooms.Room, participants []int64) []int64 {
+	if room.SpaceID != nil && len(participants) == 0 && s.spaceAuth != nil {
+		if room.Type == rooms.TypeSpaceText || room.Type == rooms.TypeSpaceVoice {
+			ids, err := s.spaceAuth.ListSpaceMemberUserIDs(ctx, *room.SpaceID)
+			if err == nil && len(ids) > 0 {
+				return ids
+			}
+		}
+	}
+	return participants
+}
+
 func (s *Service) Create(ctx context.Context, userID, roomID int64, in *CreateMessageInput) (*Message, error) {
+	return s.create(ctx, userID, roomID, in, nil)
+}
+
+// CreateFromRemote stores a message a member on another instance sent into a channel of
+// a space this instance hosts: the same checks and bookkeeping as Create, with the
+// attachments already resolved (they were uploaded to the sender's own instance, so
+// there is nothing here to claim).
+func (s *Service) CreateFromRemote(ctx context.Context, userID, roomID int64, in *CreateMessageInput, attachments []Attachment) (*Message, error) {
+	if attachments == nil {
+		attachments = []Attachment{}
+	}
+	return s.create(ctx, userID, roomID, in, attachments)
+}
+
+// create is Create with the attachments either still to be claimed (nil) or given.
+func (s *Service) create(ctx context.Context, userID, roomID int64, in *CreateMessageInput, given []Attachment) (*Message, error) {
 	if err := validateContent(in.Plaintext, in.Ciphertext); err != nil {
 		return nil, err
 	}
@@ -397,26 +461,26 @@ func (s *Service) Create(ctx context.Context, userID, roomID int64, in *CreateMe
 	if err != nil {
 		return nil, err
 	}
-	if err := s.enforceSlowmode(ctx, userID, roomID, room); err != nil {
-		return nil, err
-	}
-	// Space channels have no room_participants; fan out last_message_id to every space member.
-	if room.SpaceID != nil && len(participants) == 0 && s.spaceAuth != nil {
-		if room.Type == rooms.TypeSpaceText || room.Type == rooms.TypeSpaceVoice {
-			ids, err := s.spaceAuth.ListSpaceMemberUserIDs(ctx, *room.SpaceID)
-			if err == nil && len(ids) > 0 {
-				participants = ids
-			}
-		}
-	}
-	e2eeOff := roomE2EEOff(room)
 	// Attachments are claimed before content validation so an attachment-only message
 	// (no text) is valid in a plaintext room; E2EE rooms always carry ciphertext because
 	// the attachment metadata itself lives inside it.
-	attachments, err := s.claimAttachments(ctx, userID, roomID, in.Attachments)
-	if err != nil {
+	attachments := given
+	if attachments == nil {
+		attachments, err = s.claimAttachments(ctx, userID, roomID, in.Attachments)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if origin := s.remoteOrigin(ctx, room); origin != "" {
+		// A channel of a space hosted elsewhere: the origin applies the write with its own
+		// checks (slowmode, @everyone, bans) and tells every instance, this one included.
+		return s.federator.CreateRemote(ctx, origin, room, userID, in, attachments)
+	}
+	if err := s.enforceSlowmode(ctx, userID, roomID, room); err != nil {
 		return nil, err
 	}
+	participants = s.spaceParticipants(ctx, room, participants)
+	e2eeOff := roomE2EEOff(room)
 	var ciphertext, plaintext string
 	if e2eeOff {
 		plaintext = in.Plaintext
@@ -521,24 +585,72 @@ func (s *Service) Create(ctx context.Context, userID, roomID int64, in *CreateMe
 	if s.redis != nil && s.cfg != nil {
 		stargate.PublishToSpace(ctx, s.redis, roomID, "MESSAGE_CREATE", messageEventPayload(m), s.cfg.Stargate.Region)
 	}
-	if s.federator != nil && room.SpaceID == nil {
+	if s.federator != nil {
 		s.federator.AfterMessageCreated(ctx, roomID, participants, m)
 	}
 	return m, nil
 }
 
-func (s *Service) Get(ctx context.Context, userID, roomID, msgID int64) (*Message, error) {
-	if _, _, err := s.authorize(ctx, userID, roomID, permissions.PermViewRoom, permissions.PermReadMessageHistory); err != nil {
-		return nil, err
+// Get returns one message with its reactions as userID sees them. In a channel hosted
+// elsewhere a message this instance never stored is fetched from the origin.
+func (s *Service) Get(ctx context.Context, userID, roomID, msgID int64) (*Message, []ReactionSummary, error) {
+	room, _, err := s.authorize(ctx, userID, roomID, permissions.PermViewRoom, permissions.PermReadMessageHistory)
+	if err != nil {
+		return nil, nil, err
 	}
-	return s.repo.GetByID(ctx, roomID, msgID)
+	msg, err := s.repo.GetByID(ctx, roomID, msgID)
+	if err != nil {
+		return nil, nil, err
+	}
+	if msg == nil || (msg.DeletedAt != nil && !msg.DeletedAt.IsZero()) {
+		if origin := s.remoteOrigin(ctx, room); origin != "" {
+			return s.federator.GetRemote(ctx, origin, room, userID, msgID)
+		}
+		return nil, nil, ErrMessageNotFound
+	}
+	reactions, err := s.Reactions(ctx, userID, roomID, msgID)
+	if err != nil {
+		return nil, nil, err
+	}
+	return msg, reactions, nil
 }
 
 func (s *Service) List(ctx context.Context, userID, roomID int64, beforeID *int64, limit int) ([]Message, error) {
-	if _, _, err := s.authorize(ctx, userID, roomID, permissions.PermViewRoom, permissions.PermReadMessageHistory); err != nil {
-		return nil, err
+	msgs, _, err := s.ListWithReactions(ctx, userID, roomID, beforeID, limit)
+	return msgs, err
+}
+
+// ListWithReactions is a page of history with each message's reaction summary as
+// userID sees it. A channel of a space hosted elsewhere is read from the origin, which
+// has all of it (this instance only holds what was relayed since a local member
+// joined); if the origin cannot be reached, that local copy is served instead.
+func (s *Service) ListWithReactions(ctx context.Context, userID, roomID int64, beforeID *int64, limit int) ([]Message, map[int64][]ReactionSummary, error) {
+	room, _, err := s.authorize(ctx, userID, roomID, permissions.PermViewRoom, permissions.PermReadMessageHistory)
+	if err != nil {
+		return nil, nil, err
 	}
-	return s.repo.List(ctx, roomID, beforeID, limit)
+	if origin := s.remoteOrigin(ctx, room); origin != "" {
+		msgs, reactions, rerr := s.federator.ListRemote(ctx, origin, room, userID, beforeID, limit)
+		if rerr == nil {
+			return msgs, reactions, nil
+		}
+		logger.Warn("messages", "history for room %d from %s: %v (serving the local copy)", roomID, origin, rerr)
+	}
+	msgs, err := s.repo.List(ctx, roomID, beforeID, limit)
+	if err != nil {
+		return nil, nil, err
+	}
+	ids := make([]int64, len(msgs))
+	for i := range msgs {
+		ids[i] = msgs[i].ID
+	}
+	reactions, err := s.ReactionsForMessages(ctx, roomID, ids, userID)
+	if err != nil {
+		// Non-fatal: history is still useful without reaction counts.
+		logger.Err("messages", err, map[string]any{"room_id": roomID})
+		reactions = nil
+	}
+	return msgs, reactions, nil
 }
 
 func (s *Service) Edit(ctx context.Context, userID, roomID, msgID int64, in *EditMessageInput) (*Message, error) {
@@ -548,6 +660,9 @@ func (s *Service) Edit(ctx context.Context, userID, roomID, msgID int64, in *Edi
 	room, participants, err := s.authorize(ctx, userID, roomID, permissions.PermViewRoom)
 	if err != nil {
 		return nil, err
+	}
+	if origin := s.remoteOrigin(ctx, room); origin != "" {
+		return s.federator.EditRemote(ctx, origin, room, userID, msgID, in)
 	}
 	msg, err := s.repo.GetByID(ctx, roomID, msgID)
 	if err != nil || msg == nil {
@@ -580,7 +695,7 @@ func (s *Service) Edit(ctx context.Context, userID, roomID, msgID int64, in *Edi
 	if s.redis != nil && s.cfg != nil && updated != nil {
 		stargate.PublishToSpace(ctx, s.redis, roomID, "MESSAGE_UPDATE", messageEventPayload(updated), s.cfg.Stargate.Region)
 	}
-	if s.federator != nil && updated != nil && room.SpaceID == nil {
+	if s.federator != nil && updated != nil {
 		s.federator.AfterMessageEdited(ctx, roomID, participants, updated)
 	}
 	return updated, nil
@@ -590,6 +705,9 @@ func (s *Service) Delete(ctx context.Context, userID, roomID, msgID int64) error
 	room, participants, err := s.authorize(ctx, userID, roomID, permissions.PermViewRoom)
 	if err != nil {
 		return err
+	}
+	if origin := s.remoteOrigin(ctx, room); origin != "" {
+		return s.federator.DeleteRemote(ctx, origin, room, userID, msgID)
 	}
 	msg, err := s.repo.GetByID(ctx, roomID, msgID)
 	if err != nil || msg == nil {
@@ -619,7 +737,7 @@ func (s *Service) Delete(ctx context.Context, userID, roomID, msgID int64) error
 		}
 		stargate.PublishToSpace(ctx, s.redis, roomID, "MESSAGE_DELETE", payload, s.cfg.Stargate.Region)
 	}
-	if s.federator != nil && room.SpaceID == nil {
+	if s.federator != nil {
 		s.federator.AfterMessageDeleted(ctx, roomID, participants, msgID)
 	}
 	return nil
@@ -744,7 +862,7 @@ func (s *Service) cleanupAttachments(ctx context.Context, roomID int64, list []A
 		if aid, err := id.Parse(a.ID); err == nil {
 			_ = s.repo.DeleteAttachment(ctx, roomID, aid)
 		}
-		if !s.UploadsConfigured() {
+		if !s.UploadsConfigured() || !s.ownsAttachment(a.URL) {
 			continue
 		}
 		if key := nebula.KeyFromURL(a.URL); key != "" {
@@ -753,6 +871,22 @@ func (s *Service) cleanupAttachments(ctx context.Context, roomID int64, list []A
 			}
 		}
 	}
+}
+
+// ownsAttachment reports whether an attachment URL points at this instance's own CDN.
+// A member of a space hosted here may have uploaded to their own instance; that blob is
+// theirs to clean up, and a key derived from its URL would name nothing of ours.
+func (s *Service) ownsAttachment(u string) bool {
+	if s.cfg == nil {
+		return false
+	}
+	for _, base := range []string{s.cfg.Nebula.PublicURL, s.cfg.Nebula.BaseURL} {
+		base = strings.TrimRight(strings.TrimSpace(base), "/")
+		if base != "" && strings.HasPrefix(u, base+"/") {
+			return true
+		}
+	}
+	return false
 }
 
 func messageEventPayload(m *Message) map[string]interface{} {

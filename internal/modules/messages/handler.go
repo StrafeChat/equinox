@@ -41,6 +41,9 @@ func (h *Handler) Create(c fiber.Ctx) error {
 	}
 	msg, err := h.svc.Create(c.Context(), user.ID, roomID, &in)
 	if err != nil {
+		if res, ok := originError(c, err); ok {
+			return res
+		}
 		if err == ErrNotParticipant {
 			return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": "not a participant"})
 		}
@@ -161,24 +164,40 @@ func (h *Handler) Get(c fiber.Ctx) error {
 	if err != nil {
 		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "invalid message id"})
 	}
-	msg, err := h.svc.Get(c.Context(), user.ID, roomID, msgID)
+	msg, reactions, err := h.svc.Get(c.Context(), user.ID, roomID, msgID)
 	if err != nil {
+		if res, ok := originError(c, err); ok {
+			return res
+		}
 		if err == ErrNotParticipant {
 			return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": "not a participant"})
 		}
 		if err == ErrForbidden {
 			return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": "missing permission to read this channel"})
 		}
+		if err == ErrMessageNotFound {
+			return c.Status(http.StatusNotFound).JSON(fiber.Map{"error": "message not found"})
+		}
+		logger.Err("messages", err, map[string]any{"room_id": roomID, "message_id": msgID})
 		return c.Status(http.StatusInternalServerError).JSON(fiber.Map{"error": "internal error"})
 	}
 	if msg == nil {
 		return c.Status(http.StatusNotFound).JSON(fiber.Map{"error": "message not found"})
 	}
-	reactions, err := h.svc.Reactions(c.Context(), user.ID, roomID, msgID)
-	if err != nil {
-		logger.Err("messages", err, map[string]any{"room_id": roomID, "message_id": msgID})
-	}
 	return c.JSON(messageToJSON(msg, reactions))
+}
+
+// originError answers a write or read that a space's hosting instance refused or could
+// not be asked (channels of spaces hosted elsewhere).
+func originError(c fiber.Ctx, err error) (error, bool) {
+	var oe *OriginError
+	if errors.As(err, &oe) {
+		return c.Status(oe.Status).JSON(fiber.Map{"error": oe.Message}), true
+	}
+	if errors.Is(err, ErrOriginUnavailable) {
+		return c.Status(http.StatusBadGateway).JSON(fiber.Map{"error": err.Error()}), true
+	}
+	return nil, false
 }
 
 // List handles GET /rooms/:id/messages?before=id&limit=50
@@ -205,8 +224,11 @@ func (h *Handler) List(c fiber.Ctx) error {
 			limit = n
 		}
 	}
-	msgs, err := h.svc.List(c.Context(), user.ID, roomID, beforeID, limit)
+	msgs, reactionsByMsg, err := h.svc.ListWithReactions(c.Context(), user.ID, roomID, beforeID, limit)
 	if err != nil {
+		if res, ok := originError(c, err); ok {
+			return res
+		}
 		if err == ErrNotParticipant {
 			return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": "not a participant"})
 		}
@@ -215,15 +237,6 @@ func (h *Handler) List(c fiber.Ctx) error {
 		}
 		logger.Err("messages", err, map[string]any{"room_id": roomID})
 		return c.Status(http.StatusInternalServerError).JSON(fiber.Map{"error": "internal error"})
-	}
-	ids := make([]int64, len(msgs))
-	for i := range msgs {
-		ids[i] = msgs[i].ID
-	}
-	reactionsByMsg, rerr := h.svc.ReactionsForMessages(c.Context(), roomID, ids, user.ID)
-	if rerr != nil {
-		// Non-fatal: history is still useful without reaction counts.
-		logger.Err("messages", rerr, map[string]any{"room_id": roomID})
 	}
 	out := make([]fiber.Map, len(msgs))
 	for i := range msgs {
@@ -255,6 +268,9 @@ func (h *Handler) Edit(c fiber.Ctx) error {
 	}
 	msg, err := h.svc.Edit(c.Context(), user.ID, roomID, msgID, &in)
 	if err != nil {
+		if res, ok := originError(c, err); ok {
+			return res
+		}
 		if err == ErrNotParticipant {
 			return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": "not a participant"})
 		}
@@ -291,6 +307,9 @@ func (h *Handler) Delete(c fiber.Ctx) error {
 		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "invalid message id"})
 	}
 	if err := h.svc.Delete(c.Context(), user.ID, roomID, msgID); err != nil {
+		if res, ok := originError(c, err); ok {
+			return res
+		}
 		if err == ErrNotParticipant {
 			return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": "not a participant"})
 		}

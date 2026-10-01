@@ -71,6 +71,9 @@ func (s *Service) AddReaction(ctx context.Context, userID, roomID, msgID int64, 
 	if err != nil {
 		return nil, err
 	}
+	if origin := s.remoteOrigin(ctx, room); origin != "" {
+		return s.federator.ReactRemote(ctx, origin, room, userID, msgID, emoji, false)
+	}
 	if _, err := s.getLiveMessage(ctx, roomID, msgID); err != nil {
 		return nil, err
 	}
@@ -82,7 +85,7 @@ func (s *Service) AddReaction(ctx context.Context, userID, roomID, msgID int64, 
 		return summarize(existing, userID), nil
 	}
 	s.publishReaction(ctx, "MESSAGE_REACTION_ADD", roomID, msgID, userID, emoji)
-	if s.federator != nil && room.SpaceID == nil {
+	if s.federator != nil {
 		s.federator.AfterReactionAdded(ctx, roomID, participants, msgID, userID, emoji)
 	}
 	existing = append(existing, Reaction{RoomID: roomID, MessageID: msgID, Emoji: emoji, UserID: userID, CreatedAt: time.Now().UTC()})
@@ -100,6 +103,9 @@ func (s *Service) RemoveReaction(ctx context.Context, userID, roomID, msgID int6
 	if err != nil {
 		return nil, err
 	}
+	if origin := s.remoteOrigin(ctx, room); origin != "" {
+		return s.federator.ReactRemote(ctx, origin, room, userID, msgID, emoji, true)
+	}
 	if _, err := s.getLiveMessage(ctx, roomID, msgID); err != nil {
 		return nil, err
 	}
@@ -107,7 +113,7 @@ func (s *Service) RemoveReaction(ctx context.Context, userID, roomID, msgID int6
 		return nil, err
 	}
 	s.publishReaction(ctx, "MESSAGE_REACTION_REMOVE", roomID, msgID, userID, emoji)
-	if s.federator != nil && room.SpaceID == nil {
+	if s.federator != nil {
 		s.federator.AfterReactionRemoved(ctx, roomID, participants, msgID, userID, emoji)
 	}
 	remaining, err := s.repo.ListReactions(ctx, roomID, msgID)

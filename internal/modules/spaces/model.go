@@ -40,6 +40,9 @@ type Space struct {
 	WidgetInviteCode string    `db:"widget_invite_code" json:"-"`
 	CreatedAt        time.Time `db:"created_at" json:"created_at"`
 	UpdatedAt        time.Time `db:"updated_at" json:"updated_at"`
+	// Federation is set on a mirror of a space another instance hosts (see federation.go);
+	// not stored, filled from the federation mapping on read.
+	Federation *SpaceFederation `db:"-" json:"federation,omitempty"`
 }
 
 // System-room flags (spaces.system_room_flags): which server-generated notices are

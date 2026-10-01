@@ -39,6 +39,11 @@ func (s *Service) canManageInvites(ctx context.Context, actorID, spaceID int64) 
 // invite unless it's been explicitly restricted. in is optional (nil = never expires,
 // unlimited uses).
 func (s *Service) CreateInvite(ctx context.Context, actorID, spaceID int64, in *CreateInviteInput) (*SpaceInvite, error) {
+	if origin := s.mirrorOrigin(ctx, spaceID); origin != "" {
+		// The origin mints it (and checks the member may); the code comes back as
+		// code@origin so anyone can use it from any instance.
+		return s.createRemoteInvite(ctx, actorID, spaceID, origin, in)
+	}
 	ok, err := s.repo.IsMember(ctx, spaceID, actorID)
 	if err != nil {
 		return nil, err
@@ -111,6 +116,11 @@ func (s *Service) mintInvite(ctx context.Context, spaceID, inviterID int64, in *
 // ListInvites returns the space's live invites (expired ones are dropped as they are
 // seen) with the inviters' profiles. Requires Manage space, Administrator, or owner.
 func (s *Service) ListInvites(ctx context.Context, actorID, spaceID int64) ([]SpaceInvite, map[int64]*auth.User, error) {
+	if origin, actor, err := s.remoteSpace(ctx, actorID, spaceID); err != nil {
+		return nil, nil, err
+	} else if origin != "" {
+		return s.fed.RemoteListInvites(ctx, origin, spaceID, actor)
+	}
 	if _, err := s.canManageInvites(ctx, actorID, spaceID); err != nil {
 		return nil, nil, err
 	}
@@ -151,6 +161,16 @@ func (s *Service) ListInvites(ctx context.Context, actorID, spaceID int64) ([]Sp
 // DeleteInvite revokes an invite. Allowed for whoever can manage invites, and for the
 // member who created it.
 func (s *Service) DeleteInvite(ctx context.Context, actorID, spaceID int64, code string) error {
+	if origin, actor, err := s.remoteSpace(ctx, actorID, spaceID); err != nil {
+		return err
+	} else if origin != "" {
+		// The client shows the code as code@origin; the origin knows the bare code.
+		bare, _, perr := ParseInviteCode(code)
+		if perr != nil {
+			return ErrInviteNotFound
+		}
+		return s.fed.RemoteDeleteInvite(ctx, origin, spaceID, actor, bare)
+	}
 	inv, err := s.repo.GetInviteByCode(ctx, code)
 	if err != nil {
 		return err

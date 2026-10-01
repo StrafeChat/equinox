@@ -121,6 +121,11 @@ func (s *Service) audit(ctx context.Context, spaceID, actorID int64, action, tar
 // ListAuditLog returns a page of the space's audit log (newest first) plus every user it
 // refers to (actors and user targets). Requires Manage space, Administrator, or owner.
 func (s *Service) ListAuditLog(ctx context.Context, actorID, spaceID, beforeID int64, limit int, action string) ([]SpaceAuditEntry, map[int64]*auth.User, error) {
+	if origin, actor, err := s.remoteSpace(ctx, actorID, spaceID); err != nil {
+		return nil, nil, err
+	} else if origin != "" {
+		return s.fed.RemoteListAuditLog(ctx, origin, spaceID, actor, beforeID, limit, action)
+	}
 	sp, err := s.repo.GetByID(ctx, spaceID)
 	if err != nil {
 		return nil, nil, err

@@ -49,6 +49,10 @@ type Service struct {
 	cfg      *config.Config
 	// systemMessenger is nil until routes wire one in (see SetSystemMessenger).
 	systemMessenger SystemMessenger
+	// fed relays changes to the other instances in a space and forwards a mirror's
+	// member actions to the origin; fedInfo is its read-only part (see federation.go).
+	fed     Federator
+	fedInfo FederationInfo
 }
 
 func NewService(repo Repository, roomRepo rooms.Repository, userRepo auth.UserRepository, redis *redis.Client, cfg *config.Config) *Service {
@@ -287,6 +291,7 @@ func (s *Service) GetSpaceForUser(ctx context.Context, userID, spaceID int64) (*
 	if space == nil {
 		return nil, ErrSpaceNotFound
 	}
+	s.attachFederation(ctx, space)
 	return space, nil
 }
 
@@ -437,7 +442,12 @@ func (s *Service) SpaceRoomsWithOverrides(ctx context.Context, spaceID int64) ([
 
 // GetSpaces batch-loads spaces (nil entries for ids that do not exist).
 func (s *Service) GetSpaces(ctx context.Context, ids []int64) ([]*Space, error) {
-	return s.repo.GetByIDs(ctx, ids)
+	list, err := s.repo.GetByIDs(ctx, ids)
+	if err != nil {
+		return nil, err
+	}
+	s.attachFederation(ctx, list...)
+	return list, nil
 }
 
 // markPreJoinHistoryRead marks a newly-joined member's read cursor caught up to each
@@ -559,28 +569,47 @@ func (s *Service) generateInviteCode(ctx context.Context) (string, error) {
 	return id.Format(id.Next()), nil
 }
 
-// GetInvitePreview returns public space info for an invite code (no auth required). Does not join.
-func (s *Service) GetInvitePreview(ctx context.Context, code string) (space *Space, inviterDisplayName string, err error) {
+// GetInvitePreview returns public space info for an invite code (no auth required). Does
+// not join. A code of the form code@domain is answered by the instance hosting the space.
+func (s *Service) GetInvitePreview(ctx context.Context, raw string) (*InvitePreview, error) {
+	code, domain, err := s.remoteInviteDomain(raw)
+	if err != nil {
+		return nil, err
+	}
+	if domain != "" {
+		return s.fed.PreviewRemoteInvite(ctx, domain, code)
+	}
 	inv, err := s.consumeInvite(ctx, code, false)
 	if err != nil {
-		return nil, "", err
+		return nil, err
 	}
-	space, err = s.repo.GetByID(ctx, inv.SpaceID)
+	space, err := s.repo.GetByID(ctx, inv.SpaceID)
 	if err != nil || space == nil {
-		return nil, "", ErrSpaceNotFound
+		return nil, ErrSpaceNotFound
 	}
-	inviter, _ := s.userRepo.GetByID(ctx, inv.InviterID)
-	if inviter != nil {
-		inviterDisplayName = inviter.DisplayName
-		if inviterDisplayName == "" {
-			inviterDisplayName = inviter.Username
+	out := &InvitePreview{Space: space}
+	if inviter, _ := s.userRepo.GetByID(ctx, inv.InviterID); inviter != nil {
+		out.InviterName = inviter.DisplayName
+		if out.InviterName == "" {
+			out.InviterName = inviter.Username
 		}
 	}
-	return space, inviterDisplayName, nil
+	if members, err := s.repo.ListMembers(ctx, space.ID); err == nil {
+		out.MemberCount = len(members)
+	}
+	return out, nil
 }
 
-// JoinByInvite adds the user to the space referenced by the invite code (idempotent).
-func (s *Service) JoinByInvite(ctx context.Context, actorID int64, code string) (*Space, error) {
+// JoinByInvite adds the user to the space referenced by the invite code (idempotent). A
+// code of the form code@domain joins a space another instance hosts, through it.
+func (s *Service) JoinByInvite(ctx context.Context, actorID int64, raw string) (*Space, error) {
+	code, domain, err := s.remoteInviteDomain(raw)
+	if err != nil {
+		return nil, err
+	}
+	if domain != "" {
+		return s.joinRemote(ctx, actorID, domain, code)
+	}
 	inv, err := s.consumeInvite(ctx, code, false)
 	if err != nil {
 		return nil, err
@@ -619,6 +648,7 @@ func (s *Service) JoinByInvite(ctx context.Context, actorID int64, code string) 
 	if space == nil {
 		return nil, ErrSpaceNotFound
 	}
+	s.attachFederation(ctx, space)
 	return space, nil
 }
 
@@ -692,6 +722,11 @@ func (s *Service) publishMemberRemoved(ctx context.Context, spaceID, userID int6
 
 // KickMember removes a member from the space. They can rejoin with a new invite.
 func (s *Service) KickMember(ctx context.Context, actorID, spaceID, targetUserID int64) error {
+	if origin, actor, err := s.remoteSpace(ctx, actorID, spaceID); err != nil {
+		return err
+	} else if origin != "" {
+		return s.fed.RemoteModerate(ctx, origin, spaceID, actor, "kick", targetUserID, "")
+	}
 	if err := s.canModerateMember(ctx, spaceID, actorID, targetUserID, permissions.PermKickMembers); err != nil {
 		return err
 	}
@@ -701,11 +736,17 @@ func (s *Service) KickMember(ctx context.Context, actorID, spaceID, targetUserID
 	s.afterMemberRemoved(ctx, spaceID, targetUserID)
 	s.audit(ctx, spaceID, actorID, AuditMemberKick, id.Format(targetUserID), nil, "")
 	s.announceLeave(ctx, spaceID, targetUserID, "kicked")
+	s.fedMemberRemoved(ctx, spaceID, targetUserID, "kicked")
 	return nil
 }
 
 // BanMember removes a member (if present) and blocks them from rejoining via invite until unbanned.
 func (s *Service) BanMember(ctx context.Context, actorID, spaceID, targetUserID int64, reason string) error {
+	if origin, actor, err := s.remoteSpace(ctx, actorID, spaceID); err != nil {
+		return err
+	} else if origin != "" {
+		return s.fed.RemoteModerate(ctx, origin, spaceID, actor, "ban", targetUserID, reason)
+	}
 	if err := s.canModerateMember(ctx, spaceID, actorID, targetUserID, permissions.PermBanMembers); err != nil {
 		return err
 	}
@@ -729,6 +770,7 @@ func (s *Service) BanMember(ctx context.Context, actorID, spaceID, targetUserID 
 	s.afterMemberRemoved(ctx, spaceID, targetUserID)
 	s.audit(ctx, spaceID, actorID, AuditMemberBanAdd, id.Format(targetUserID), nil, reason)
 	s.announceLeave(ctx, spaceID, targetUserID, "banned")
+	s.fedMemberRemoved(ctx, spaceID, targetUserID, "banned")
 	return nil
 }
 
@@ -736,6 +778,11 @@ func (s *Service) BanMember(ctx context.Context, actorID, spaceID, targetUserID 
 // (or Administrator, or owner) - same gate as banning, no hierarchy check needed since the
 // target isn't necessarily a current member.
 func (s *Service) UnbanMember(ctx context.Context, actorID, spaceID, targetUserID int64) error {
+	if origin, actor, err := s.remoteSpace(ctx, actorID, spaceID); err != nil {
+		return err
+	} else if origin != "" {
+		return s.fed.RemoteModerate(ctx, origin, spaceID, actor, "unban", targetUserID, "")
+	}
 	sp, err := s.repo.GetByID(ctx, spaceID)
 	if err != nil {
 		return err
@@ -762,6 +809,11 @@ func (s *Service) UnbanMember(ctx context.Context, actorID, spaceID, targetUserI
 // ListBans returns the space's ban list plus the profiles of the banned users and the
 // moderators who banned them. Requires Ban Members (or Administrator, or owner).
 func (s *Service) ListBans(ctx context.Context, actorID, spaceID int64) ([]SpaceBan, map[int64]*auth.User, error) {
+	if origin, actor, err := s.remoteSpace(ctx, actorID, spaceID); err != nil {
+		return nil, nil, err
+	} else if origin != "" {
+		return s.fed.RemoteListBans(ctx, origin, spaceID, actor)
+	}
 	sp, err := s.repo.GetByID(ctx, spaceID)
 	if err != nil {
 		return nil, nil, err
@@ -818,6 +870,9 @@ func (s *Service) LeaveSpace(ctx context.Context, actorID, spaceID int64) error 
 	if sp == nil {
 		return ErrSpaceNotFound
 	}
+	if origin := s.mirrorOrigin(ctx, spaceID); origin != "" {
+		return s.leaveRemote(ctx, actorID, spaceID, origin)
+	}
 	if sp.OwnerID == actorID {
 		return ErrOwnerCannotLeave
 	}
@@ -833,6 +888,7 @@ func (s *Service) LeaveSpace(ctx context.Context, actorID, spaceID int64) error 
 	}
 	s.afterMemberRemoved(ctx, spaceID, actorID)
 	s.announceLeave(ctx, spaceID, actorID, "left")
+	s.fedMemberRemoved(ctx, spaceID, actorID, "left")
 	return nil
 }
 
@@ -874,6 +930,9 @@ func spaceToEventPayload(s *Space) map[string]interface{} {
 	}
 	if s.WidgetRoomID != nil {
 		m["widget_room_id"] = id.Format(*s.WidgetRoomID)
+	}
+	if s.Federation != nil {
+		m["federation"] = s.Federation
 	}
 	return m
 }

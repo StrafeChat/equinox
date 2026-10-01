@@ -205,8 +205,9 @@ func (h *Handler) DeleteEmoji(c fiber.Ctx) error {
 		return spaceError(c, err, map[string]any{"space_id": spaceID, "emoji_id": emojiID})
 	}
 	// Existing messages keep rendering the old URL until the blob is gone; that's the
-	// intended "deleted emoji" behaviour (they fall back to :name:).
-	if h.cfg != nil && strings.TrimSpace(h.cfg.Nebula.BaseURL) != "" {
+	// intended "deleted emoji" behaviour (they fall back to :name:). An image that lives
+	// on another instance's CDN (an emoji of a space hosted there) is theirs to remove.
+	if h.cfg != nil && strings.TrimSpace(h.cfg.Nebula.BaseURL) != "" && ownsBlob(h.cfg.Nebula.BaseURL, h.cfg.Nebula.PublicURL, e.URL) {
 		if key := nebula.KeyFromURL(e.URL); key != "" {
 			if err := nebula.Delete(c.Context(), h.cfg.Nebula.BaseURL, h.cfg.Nebula.UploadSecret, key); err != nil {
 				logger.Err("spaces", err, map[string]any{"space_id": spaceID, "key": key})
@@ -214,6 +215,17 @@ func (h *Handler) DeleteEmoji(c fiber.Ctx) error {
 		}
 	}
 	return c.SendStatus(http.StatusNoContent)
+}
+
+// ownsBlob reports whether a URL points at this instance's own CDN.
+func ownsBlob(baseURL, publicURL, u string) bool {
+	for _, base := range []string{publicURL, baseURL} {
+		base = strings.TrimRight(strings.TrimSpace(base), "/")
+		if base != "" && strings.HasPrefix(u, base+"/") {
+			return true
+		}
+	}
+	return false
 }
 
 func formatKB(bytes int) string {

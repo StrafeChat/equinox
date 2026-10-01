@@ -320,8 +320,8 @@ func (s *Service) RingRemoteCall(ctx context.Context, origin string, room *rooms
 }
 
 func (s *Service) AfterVoiceStateChanged(ctx context.Context, room *rooms.RoomWithParticipants, st *voice.State, left bool) {
-	byDomain, _, err := s.remotePeers(ctx, room.ParticipantIDs)
-	if err != nil || len(byDomain) == 0 {
+	targets, _ := s.relayTargets(ctx, room.ID, room.ParticipantIDs)
+	if len(targets) == 0 {
 		return
 	}
 	ref, err := s.roomRef(ctx, room.ID)
@@ -333,15 +333,12 @@ func (s *Service) AfterVoiceStateChanged(ctx context.Context, room *rooms.RoomWi
 		logger.Err("federation", err, map[string]any{"room_id": room.ID, "user_id": st.UserID})
 		return
 	}
-	ev := VoiceStateEvent{Room: ref, State: w, Left: left}
-	for domain := range byDomain {
-		s.send(domain, http.MethodPost, "/rooms/voice/state", ev)
-	}
+	s.fanOut(ctx, targets, http.MethodPost, "/rooms/voice/state", VoiceStateEvent{Room: ref, State: w, Left: left})
 }
 
 func (s *Service) AfterCallChanged(ctx context.Context, room *rooms.RoomWithParticipants, event string, call *voice.Call, starter *auth.User, rerung bool) {
-	byDomain, _, err := s.remotePeers(ctx, room.ParticipantIDs)
-	if err != nil || len(byDomain) == 0 {
+	targets, _ := s.relayTargets(ctx, room.ID, room.ParticipantIDs)
+	if len(targets) == 0 {
 		return
 	}
 	ref, err := s.roomRef(ctx, room.ID)
@@ -353,9 +350,7 @@ func (s *Service) AfterCallChanged(ctx context.Context, room *rooms.RoomWithPart
 		p := s.ProfileOf(starter)
 		ev.Starter = &p
 	}
-	for domain := range byDomain {
-		s.send(domain, http.MethodPost, "/rooms/voice/call", ev)
-	}
+	s.fanOut(ctx, targets, http.MethodPost, "/rooms/voice/call", ev)
 }
 
 // ---- inbound ----------------------------------------------------------------------------
@@ -364,18 +359,18 @@ var errNotHosting = errors.New("this instance does not host that call")
 
 // voiceHosted resolves a room the requesting instance may act in and checks this
 // instance is the one hosting its call.
-func (h *Handler) voiceHosted(c fiber.Ctx, ref RoomRef) (*RoomMapping, []int64, error) {
-	m, participants, err := h.roomFor(c, ref)
+func (h *Handler) voiceHosted(c fiber.Ctx, ref RoomRef) (*roomScope, error) {
+	sc, err := h.roomFor(c, ref)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
-	if !h.svc.IsLocalServer(m.OriginDomain) {
-		return nil, nil, errNotHosting
+	if !sc.hostedHere {
+		return nil, errNotHosting
 	}
 	if h.svc.voice == nil {
-		return nil, nil, voice.ErrDisabled
+		return nil, voice.ErrDisabled
 	}
-	return m, participants, nil
+	return sc, nil
 }
 
 func voiceFail(c fiber.Ctx, err error, fields map[string]any) error {
@@ -392,7 +387,7 @@ func voiceFail(c fiber.Ctx, err error, fields map[string]any) error {
 
 // voiceActor resolves the requesting instance's user named by fid and checks they are
 // in the room.
-func (h *Handler) voiceActor(c fiber.Ctx, fid string, participants []int64) (*auth.User, error) {
+func (h *Handler) voiceActor(c fiber.Ctx, fid string, sc *roomScope) (*auth.User, error) {
 	requester := RequesterDomain(c)
 	if _, domain, err := ParseFID(fid); err != nil || domain != requester {
 		return nil, errForeignUser
@@ -408,12 +403,10 @@ func (h *Handler) voiceActor(c fiber.Ctx, fid string, participants []int64) (*au
 	if u == nil {
 		return nil, ErrRemoteUserNotFound
 	}
-	for _, pid := range participants {
-		if pid == u.ID {
-			return u, nil
-		}
+	if !h.svc.inRoom(c.Context(), sc, u.ID) {
+		return nil, errNotInRoom
 	}
-	return nil, errNotInRoom
+	return u, nil
 }
 
 var (
@@ -440,7 +433,7 @@ func (h *Handler) VoiceJoin(c fiber.Ctx) error {
 	if _, domain, err := ParseFID(body.User.FID); err != nil || domain != requester {
 		return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": errForeignUser.Error()})
 	}
-	m, participants, err := h.voiceHosted(c, body.Room)
+	sc, err := h.voiceHosted(c, body.Room)
 	if err != nil {
 		return voiceFail(c, err, nil)
 	}
@@ -449,23 +442,17 @@ func (h *Handler) VoiceJoin(c fiber.Ctx) error {
 	if err != nil {
 		return fail(c, err, map[string]any{"peer": requester})
 	}
-	isParticipant := false
-	for _, pid := range participants {
-		if pid == user.ID {
-			isParticipant = true
-			break
-		}
-	}
-	if !isParticipant {
+	if !h.svc.inRoom(ctx, sc, user.ID) {
 		return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": errNotInRoom.Error()})
 	}
-	res, err := h.svc.voice.Join(ctx, user, m.RoomID, voice.JoinInput{SelfMute: body.SelfMute, SelfDeaf: body.SelfDeaf})
+	roomID := sc.room.ID
+	res, err := h.svc.voice.Join(ctx, user, roomID, voice.JoinInput{SelfMute: body.SelfMute, SelfDeaf: body.SelfDeaf})
 	if err != nil {
-		return voice.WriteError(c, err, map[string]any{"room_id": m.RoomID, "user_id": user.ID})
+		return voice.WriteError(c, err, map[string]any{"room_id": roomID, "user_id": user.ID})
 	}
 	reply := VoiceJoinReply{URL: res.URL, Token: res.Token, RoomName: res.RoomName, Bitrate: res.Bitrate, States: []VoiceState{}}
 	if reply.State, err = h.svc.voiceStateToWire(ctx, res.State); err != nil {
-		return fail(c, err, map[string]any{"room_id": m.RoomID})
+		return fail(c, err, map[string]any{"room_id": roomID})
 	}
 	for i := range res.States {
 		w, err := h.svc.voiceStateToWire(ctx, &res.States[i])
@@ -474,7 +461,7 @@ func (h *Handler) VoiceJoin(c fiber.Ctx) error {
 		}
 		reply.States = append(reply.States, w)
 	}
-	if _, call, err := h.svc.voice.RoomStates(ctx, user.ID, m.RoomID); err == nil {
+	if _, call, err := h.svc.voice.RoomStates(ctx, user.ID, roomID); err == nil {
 		reply.Call = h.svc.callToWire(ctx, call)
 	}
 	return c.JSON(reply)
@@ -486,16 +473,16 @@ func (h *Handler) VoiceLeave(c fiber.Ctx) error {
 	if err := json.Unmarshal(c.Body(), &body); err != nil {
 		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "invalid JSON"})
 	}
-	m, participants, err := h.voiceHosted(c, body.Room)
+	sc, err := h.voiceHosted(c, body.Room)
 	if err != nil {
 		return voiceFail(c, err, nil)
 	}
-	user, err := h.voiceActor(c, body.User, participants)
+	user, err := h.voiceActor(c, body.User, sc)
 	if err != nil {
 		return actorFail(c, err)
 	}
-	if err := h.svc.voice.LeaveFederated(c.Context(), user.ID, m.RoomID); err != nil {
-		return voice.WriteError(c, err, map[string]any{"room_id": m.RoomID, "user_id": user.ID})
+	if err := h.svc.voice.LeaveFederated(c.Context(), user.ID, sc.room.ID); err != nil {
+		return voice.WriteError(c, err, map[string]any{"room_id": sc.room.ID, "user_id": user.ID})
 	}
 	return c.SendStatus(http.StatusNoContent)
 }
@@ -506,11 +493,11 @@ func (h *Handler) VoiceSelf(c fiber.Ctx) error {
 	if err := json.Unmarshal(c.Body(), &body); err != nil {
 		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "invalid JSON"})
 	}
-	_, participants, err := h.voiceHosted(c, body.Room)
+	sc, err := h.voiceHosted(c, body.Room)
 	if err != nil {
 		return voiceFail(c, err, nil)
 	}
-	user, err := h.voiceActor(c, body.User, participants)
+	user, err := h.voiceActor(c, body.User, sc)
 	if err != nil {
 		return actorFail(c, err)
 	}
@@ -530,11 +517,11 @@ func (h *Handler) VoiceRing(c fiber.Ctx) error {
 	if err := json.Unmarshal(c.Body(), &body); err != nil {
 		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "invalid JSON"})
 	}
-	m, participants, err := h.voiceHosted(c, body.Room)
+	sc, err := h.voiceHosted(c, body.Room)
 	if err != nil {
 		return voiceFail(c, err, nil)
 	}
-	user, err := h.voiceActor(c, body.User, participants)
+	user, err := h.voiceActor(c, body.User, sc)
 	if err != nil {
 		return actorFail(c, err)
 	}
@@ -545,8 +532,8 @@ func (h *Handler) VoiceRing(c fiber.Ctx) error {
 			targets = append(targets, uid)
 		}
 	}
-	if _, err := h.svc.voice.Ring(ctx, user, m.RoomID, targets); err != nil {
-		return voice.WriteError(c, err, map[string]any{"room_id": m.RoomID})
+	if _, err := h.svc.voice.Ring(ctx, user, sc.room.ID, targets); err != nil {
+		return voice.WriteError(c, err, map[string]any{"room_id": sc.room.ID})
 	}
 	return c.SendStatus(http.StatusNoContent)
 }
@@ -557,16 +544,16 @@ func (h *Handler) VoiceDecline(c fiber.Ctx) error {
 	if err := json.Unmarshal(c.Body(), &body); err != nil {
 		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "invalid JSON"})
 	}
-	m, participants, err := h.voiceHosted(c, body.Room)
+	sc, err := h.voiceHosted(c, body.Room)
 	if err != nil {
 		return voiceFail(c, err, nil)
 	}
-	user, err := h.voiceActor(c, body.User, participants)
+	user, err := h.voiceActor(c, body.User, sc)
 	if err != nil {
 		return actorFail(c, err)
 	}
-	if err := h.svc.voice.Decline(c.Context(), user, m.RoomID); err != nil && !errors.Is(err, voice.ErrNoCall) {
-		return voice.WriteError(c, err, map[string]any{"room_id": m.RoomID})
+	if err := h.svc.voice.Decline(c.Context(), user, sc.room.ID); err != nil && !errors.Is(err, voice.ErrNoCall) {
+		return voice.WriteError(c, err, map[string]any{"room_id": sc.room.ID})
 	}
 	return c.SendStatus(http.StatusNoContent)
 }
@@ -574,14 +561,14 @@ func (h *Handler) VoiceDecline(c fiber.Ctx) error {
 // voiceMirror resolves a relayed room and checks the requesting instance is its origin,
 // the only instance that may push voice state for it.
 func (h *Handler) voiceMirror(c fiber.Ctx, ref RoomRef) (*rooms.RoomWithParticipants, error) {
-	m, _, err := h.roomFor(c, ref)
+	sc, err := h.roomFor(c, ref)
 	if err != nil {
 		return nil, err
 	}
-	if ref.OriginDomain != RequesterDomain(c) {
+	if !sc.fromOrigin {
 		return nil, errNotOrigin
 	}
-	return h.svc.roomSvc.LoadRoom(c.Context(), m.RoomID)
+	return h.svc.roomSvc.LoadRoom(c.Context(), sc.room.ID)
 }
 
 var errNotOrigin = errors.New("only the room's origin hosts its call")

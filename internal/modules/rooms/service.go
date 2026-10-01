@@ -925,7 +925,7 @@ func (s *Service) Typing(ctx context.Context, userID, roomID int64) error {
 		"timestamp": time.Now().Unix(),
 	}
 	stargate.PublishToSpace(ctx, s.redis, roomID, "TYPING_START", payload, s.cfg.Stargate.Region)
-	if s.federator != nil && room.SpaceID == nil {
+	if s.federator != nil {
 		s.federator.AfterTyping(ctx, roomID, userID)
 	}
 	return nil
