@@ -18,6 +18,7 @@ import (
 	"github.com/StrafeChat/equinox/internal/config"
 	"github.com/StrafeChat/equinox/internal/id"
 	"github.com/StrafeChat/equinox/internal/logger"
+	"github.com/StrafeChat/equinox/internal/mail"
 )
 
 var (
@@ -48,6 +49,7 @@ var dummyHash, _ = bcrypt.GenerateFromPassword([]byte("dummy-password-for-timing
 
 type Service interface {
 	TwoFactorService
+	EmailService
 
 	Register(ctx context.Context, in RegisterInput) (*User, error)
 	// Login returns a LoginResult: either a session (Token set) or, when the account has a
@@ -98,6 +100,13 @@ type service struct {
 
 	redis       *redis.Client
 	redisPrefix string
+	// mailer is nil unless the instance has SMTP_HOST configured (see config.MailConfig);
+	// with it nil every email feature reports ErrEmailDisabled and Login never asks for a
+	// verified address, whatever EMAIL_VERIFICATION says.
+	mailer mail.Mailer
+	// revokeNotify tells the gateway to drop a user's live connections after a password
+	// reset ended their sessions. Set by route setup (auth cannot import stargate).
+	revokeNotify func(ctx context.Context, userID int64)
 	// webauthn is nil until the instance has WEB_URL set (see config.loadTwoFactorConfig):
 	// passkey endpoints report ErrWebAuthnNotConfigured while it is nil, TOTP and recovery
 	// codes are unaffected either way.
@@ -324,6 +333,18 @@ func (s *service) Login(ctx context.Context, email, password, ip, userAgent stri
 		if banned {
 			return nil, &BannedError{Reason: reason}
 		}
+	}
+
+	// Also after the password, for the same reason: whether an address is verified is
+	// only the account owner's to learn. Re-send the link while we are here (the
+	// per-account cooldown keeps a stuck user from being mailed on every attempt), so
+	// "verify your email first" always arrives together with the means to.
+	if s.mailer != nil && s.cfg.Mail.VerificationRequired && !u.VerifiedEmail {
+		err := s.SendVerificationEmail(ctx, u)
+		if err != nil && !errors.Is(err, ErrEmailCooldown) {
+			logger.Err("auth", err, map[string]any{"stage": "verification_email", "user_id": u.ID})
+		}
+		return nil, &EmailUnverifiedError{Sent: err == nil}
 	}
 
 	hasWebAuthn := false

@@ -46,6 +46,12 @@ type UserRepository interface {
 	// SetTOTP writes the encrypted TOTP secret and enabled flag together, since they only
 	// ever change as a pair (setup/enable writes both, disable clears both).
 	SetTOTP(ctx context.Context, userID int64, secret string, enabled bool) error
+	// SetEmailVerified records that the account's address was confirmed through a link
+	// sent to it (or disproved - a future address change clears it).
+	SetEmailVerified(ctx context.Context, userID int64, verified bool) error
+	// SetPassword replaces the bcrypt hash. Sessions are the caller's business: a reset
+	// revokes them, a routine change may not.
+	SetPassword(ctx context.Context, userID int64, hash string) error
 
 	// Federation shadows (see User.HomeDomain). UpsertShadow writes the users row and the
 	// users_by_remote lookup; it never touches the email/username lookup tables.
@@ -410,4 +416,16 @@ func (r *scyllaUserRepo) SetTOTP(ctx context.Context, userID int64, secret strin
 	stmt, names := userTable.Update("totp_secret", "totp_enabled")
 	q := r.session.Query(stmt, names).WithContext(ctx)
 	return q.Bind(secret, enabled, userID).ExecRelease()
+}
+
+func (r *scyllaUserRepo) SetEmailVerified(ctx context.Context, userID int64, verified bool) error {
+	stmt, names := userTable.Update("verified_email", "updated_at")
+	q := r.session.Query(stmt, names).WithContext(ctx)
+	return q.Bind(verified, time.Now().UTC(), userID).ExecRelease()
+}
+
+func (r *scyllaUserRepo) SetPassword(ctx context.Context, userID int64, hash string) error {
+	stmt, names := userTable.Update("password", "updated_at")
+	q := r.session.Query(stmt, names).WithContext(ctx)
+	return q.Bind(hash, time.Now().UTC(), userID).ExecRelease()
 }

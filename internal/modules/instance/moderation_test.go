@@ -156,7 +156,7 @@ func (f *fakeUsers) DiscriminatorsForUsername(_ context.Context, name string) ([
 	return out, nil
 }
 func (f *fakeUsers) UpdateRelationships(context.Context, int64, []int64, []int64) error { return nil }
-func (f *fakeUsers) UpdateBlocks(context.Context, int64, []int64, []int64) error         { return nil }
+func (f *fakeUsers) UpdateBlocks(context.Context, int64, []int64, []int64) error        { return nil }
 func (f *fakeUsers) UpdateProfile(context.Context, int64, *auth.ProfileUpdate) (*auth.User, error) {
 	return nil, nil
 }
@@ -164,7 +164,9 @@ func (f *fakeUsers) UpsertShadow(context.Context, *auth.User) error { return nil
 func (f *fakeUsers) GetByRemote(context.Context, string, int64) (*auth.User, error) {
 	return nil, nil
 }
-func (f *fakeUsers) SetTOTP(context.Context, int64, string, bool) error { return nil }
+func (f *fakeUsers) SetTOTP(context.Context, int64, string, bool) error  { return nil }
+func (f *fakeUsers) SetEmailVerified(context.Context, int64, bool) error { return nil }
+func (f *fakeUsers) SetPassword(context.Context, int64, string) error    { return nil }
 
 type fakeSessions struct{ revoked []int64 }
 

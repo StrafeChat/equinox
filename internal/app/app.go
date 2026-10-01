@@ -18,6 +18,7 @@ import (
 	"github.com/StrafeChat/equinox/internal/db"
 	"github.com/StrafeChat/equinox/internal/federation"
 	"github.com/StrafeChat/equinox/internal/logger"
+	"github.com/StrafeChat/equinox/internal/mail"
 	"github.com/StrafeChat/equinox/internal/middleware"
 	"github.com/StrafeChat/equinox/internal/routes"
 )
@@ -94,12 +95,29 @@ func (a *App) register() error {
 		}
 	}
 
+	// A nil interface, not a nil *mail.SMTP in an interface - route setup tests the
+	// interface against nil to decide whether email features exist.
+	var mailer mail.Mailer
+	if a.Config.Mail.Enabled {
+		m, err := mail.NewSMTP(a.Config.Mail)
+		if err != nil {
+			return fmt.Errorf("mail: %w", err)
+		}
+		mailer = m
+		policy := "verification optional"
+		if a.Config.Mail.VerificationRequired {
+			policy = "verification required to sign in"
+		}
+		logger.Info("mail", "sending through %s:%d (%s) as %s - %s", a.Config.Mail.Host, a.Config.Mail.Port, a.Config.Mail.TLS, a.Config.Mail.From, policy)
+	}
+
 	routes.SetupRoutes(routes.Deps{
 		App:        a.Fiber,
 		Config:     a.Config,
 		Scylla:     a.Scylla,
 		Redis:      a.Redis,
 		Federation: fed,
+		Mailer:     mailer,
 	})
 	return nil
 }

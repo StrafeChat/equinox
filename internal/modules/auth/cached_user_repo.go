@@ -335,3 +335,19 @@ func (r *CachedUserRepository) SetTOTP(ctx context.Context, userID int64, secret
 	r.invalidateUser(context.Background(), userID)
 	return nil
 }
+
+func (r *CachedUserRepository) SetEmailVerified(ctx context.Context, userID int64, verified bool) error {
+	if err := r.repo.SetEmailVerified(ctx, userID, verified); err != nil {
+		return err
+	}
+	r.invalidateUser(context.Background(), userID)
+	return nil
+}
+
+func (r *CachedUserRepository) SetPassword(ctx context.Context, userID int64, hash string) error {
+	if err := r.repo.SetPassword(ctx, userID, hash); err != nil {
+		return err
+	}
+	r.invalidateUser(context.Background(), userID)
+	return nil
+}

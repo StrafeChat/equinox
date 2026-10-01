@@ -76,6 +76,17 @@ Go identifiers, error strings, docs:
 - **Background goroutines go through `internal/safego`** (`safego.Go` for fire-and-forget,
   `safego.Run` inside a WaitGroup worker). Fiber's recover middleware only covers the
   request goroutine; a bare `go func()` that panics takes the whole API process down.
+- **Email (`internal/mail` + `auth/service_email.go`)**: the API only ever speaks SMTP to
+  one configured server (`SMTP_HOST`; the compose deployment bundles a send-only maddy
+  relay, see `deploy/docs/EMAIL.md`) - never direct-to-MX, never a provider API. Two mails
+  exist: the verification link and the password-reset link. Each is a 32-byte token stored
+  hashed in Redis with a TTL (24 h / 1 h) *together with the address it was issued for*,
+  redeemed with `GETDEL` so it is single-use. Login refuses an unverified account only when
+  `EMAIL_VERIFICATION=true`, after the password check (so nothing leaks to a stranger), and
+  re-sends the link under a one-a-minute cooldown. Forgot-password answers 200 for every
+  well-formed address and sends off the request goroutine - a synchronous SMTP round trip
+  would be a timing oracle for which addresses exist. A user loaded through the cache has
+  no `PasswordHash` (see `cached_user_repo.go`); never branch on it after `GetByID`.
 - **Auth is the `Authorization` header only** — no cookie, no `?token=` query parameter.
   The header carries one of three credentials, all resolved by `middleware.RequireAuth`:
   a session `Bearer` token; an OAuth2 `Bearer` access token (tried when the token is not a

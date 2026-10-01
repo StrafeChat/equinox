@@ -53,25 +53,26 @@ func (h *Handler) Me(c fiber.Ctx) error {
 
 	// An OAuth2 access token only sees the account's email if it was granted the email
 	// scope; a session (no scopes recorded) sees everything, as before.
-	email := user.Email
+	email, verified := user.Email, user.VerifiedEmail
 	if scopes, ok := c.Locals(middleware.LocalsKeyScopes).([]string); ok && !oauth.HasScope(scopes, oauth.ScopeEmail) {
-		email = ""
+		email, verified = "", false
 	}
 
 	return c.JSON(fiber.Map{
-		"id":            id.Format(user.ID),
-		"email":         email,
-		"username":      user.Username,
-		"discriminator": fmt.Sprintf("%04d", user.Discriminator),
-		"display_name":  user.DisplayName,
-		"bio":           user.Bio,
-		"about_me":      user.AboutMe,
-		"avatar":        user.Avatar,
-		"banner":        user.Banner,
-		"accent_color":  user.AccentColor,
-		"public_flags":  auth.PublicFlags(user),
-		"bot":           user.Bot,
-		"presence":      auth.ToPublicPresence(user.Presence, false),
+		"id":             id.Format(user.ID),
+		"email":          email,
+		"verified_email": verified,
+		"username":       user.Username,
+		"discriminator":  fmt.Sprintf("%04d", user.Discriminator),
+		"display_name":   user.DisplayName,
+		"bio":            user.Bio,
+		"about_me":       user.AboutMe,
+		"avatar":         user.Avatar,
+		"banner":         user.Banner,
+		"accent_color":   user.AccentColor,
+		"public_flags":   auth.PublicFlags(user),
+		"bot":            user.Bot,
+		"presence":       auth.ToPublicPresence(user.Presence, false),
 	})
 }
 

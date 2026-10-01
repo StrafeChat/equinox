@@ -70,6 +70,17 @@ func (h *Handler) Login(c fiber.Ctx) error {
 		if errors.As(err, &banned) {
 			return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": banned.Error(), "code": "banned", "reason": banned.Reason})
 		}
+		// The password was right, so telling this caller the address is unverified
+		// reveals nothing they do not own. verification_email_sent lets the client say
+		// "we just sent you a new link" or "check the one you already have".
+		var unverified *EmailUnverifiedError
+		if errors.As(err, &unverified) {
+			return c.Status(http.StatusForbidden).JSON(fiber.Map{
+				"error":                   unverified.Error(),
+				"code":                    "email_unverified",
+				"verification_email_sent": unverified.Sent,
+			})
+		}
 		logger.Err("auth", err, map[string]any{"email": in.Email})
 		return c.Status(http.StatusInternalServerError).JSON(fiber.Map{"error": "internal error"})
 	}
@@ -172,13 +183,24 @@ func (h *Handler) Register(c fiber.Ctx) error {
 		}
 	}
 
+	// The verification link goes out before the response so that "check your inbox" is
+	// true by the time the client shows it. A relay that is down costs the user a
+	// "resend" (their next sign-in attempt sends again), never the account.
+	_, verificationRequired := h.svc.EmailPolicy()
+	if verificationRequired {
+		if err := h.svc.SendVerificationEmail(c.Context(), user); err != nil {
+			logger.Err("auth", err, map[string]any{"stage": "verification_email", "user_id": user.ID})
+		}
+	}
+
 	return c.Status(http.StatusCreated).JSON(fiber.Map{
-		"id":            id.Format(user.ID),
-		"email":         user.Email,
-		"username":      user.Username,
-		"discriminator": user.Discriminator,
-		"display_name":  user.DisplayName,
-		"created_at":    user.CreatedAt,
+		"id":                          id.Format(user.ID),
+		"email":                       user.Email,
+		"username":                    user.Username,
+		"discriminator":               user.Discriminator,
+		"display_name":                user.DisplayName,
+		"created_at":                  user.CreatedAt,
+		"email_verification_required": verificationRequired,
 	})
 }
 

@@ -113,16 +113,17 @@ func (h *Handler) uploadProfileImage(c fiber.Ctx, target *auth.User, kind profil
 // ownProfileJSON is the self view returned by the profile endpoints.
 func ownProfileJSON(u *auth.User) fiber.Map {
 	return fiber.Map{
-		"id":            id.Format(u.ID),
-		"email":         u.Email,
-		"username":      u.Username,
-		"discriminator": fmt.Sprintf("%04d", u.Discriminator),
-		"display_name":  u.DisplayName,
-		"bio":           u.Bio,
-		"about_me":      u.AboutMe,
-		"avatar":        u.Avatar,
-		"banner":        u.Banner,
-		"accent_color":  u.AccentColor,
-		"presence":      auth.ToPublicPresence(u.Presence, false),
+		"id":             id.Format(u.ID),
+		"email":          u.Email,
+		"verified_email": u.VerifiedEmail,
+		"username":       u.Username,
+		"discriminator":  fmt.Sprintf("%04d", u.Discriminator),
+		"display_name":   u.DisplayName,
+		"bio":            u.Bio,
+		"about_me":       u.AboutMe,
+		"avatar":         u.Avatar,
+		"banner":         u.Banner,
+		"accent_color":   u.AccentColor,
+		"presence":       auth.ToPublicPresence(u.Presence, false),
 	}
 }

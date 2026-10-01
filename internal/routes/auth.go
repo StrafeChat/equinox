@@ -1,13 +1,38 @@
 package routes
 
 import (
+	"context"
 	"time"
 
 	"github.com/StrafeChat/equinox/internal/captcha"
 	"github.com/StrafeChat/equinox/internal/middleware"
 	"github.com/StrafeChat/equinox/internal/modules/auth"
+	"github.com/StrafeChat/equinox/internal/modules/instance"
+	"github.com/StrafeChat/equinox/internal/stargate"
 	"github.com/gofiber/fiber/v3/middleware/limiter"
 )
+
+// wireMail hands the auth service the mailer (nil when SMTP_HOST is unset, which turns
+// every email feature off) and the gateway hook a password reset uses to drop the live
+// connections of the sessions it just ended - the same SESSION_REVOKED path a ban takes.
+func wireMail(d Deps, svc auth.Service) {
+	ms, ok := svc.(auth.MailSetter)
+	if !ok {
+		return
+	}
+	if d.Mailer != nil {
+		ms.SetMailer(d.Mailer)
+	}
+	redis, region := d.Redis, d.Config.Stargate.Region
+	ms.SetRevokeNotifier(func(ctx context.Context, userID int64) {
+		if redis == nil {
+			return
+		}
+		stargate.PublishToUser(ctx, redis, userID, instance.SessionRevokedEvent, map[string]interface{}{
+			"reason": "password_reset",
+		}, region)
+	})
+}
 
 // newCaptchaVerifier returns nil when the instance has no challenge configured, which is
 // what turns the whole feature off. config.validate already rejected a CAPTCHA=true
@@ -51,6 +76,7 @@ func SetupAuthRoutes(d Deps) {
 		setter.SetInviteGate(inst)
 		setter.SetBanChecker(inst)
 	}
+	wireMail(d, svc)
 	h := auth.NewHandlerWithCaptcha(svc, newCaptchaVerifier(d))
 
 	requireAuth := middleware.RequireAuth(sessionRepo, userRepo)
@@ -90,6 +116,19 @@ func SetupAuthRoutes(d Deps) {
 	r.Post("/2fa/recovery", mfaLimiter, h.VerifyRecoveryCode)
 	r.Post("/2fa/webauthn/begin", mfaLimiter, h.BeginWebAuthnLogin)
 	r.Post("/2fa/webauthn/finish", mfaLimiter, h.FinishWebAuthnLogin)
+
+	// Email links are redeemed here with no session - the person may be in a different
+	// browser than the one they registered in. The token is the credential; the limiters
+	// bound how fast one could be guessed (it is 256 bits, so this is belt and braces).
+	// Forgot-password is tighter still: each call can cost the relay a delivery, and the
+	// per-address cooldown in the service is the other half of that bound.
+	emailRequestLimiter := limiter.New(limiter.Config{
+		Max:        5,
+		Expiration: 15 * time.Minute,
+	})
+	r.Post("/email/verify", authLimiter, h.VerifyEmail)
+	r.Post("/password/forgot", emailRequestLimiter, h.ForgotPassword)
+	r.Post("/password/reset", authLimiter, h.ResetPassword)
 
 	r.Post("/logout", requireAuth, h.Logout)
 	r.Post("/logout_all", requireAuth, h.LogoutAll)

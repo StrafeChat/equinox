@@ -7,6 +7,7 @@ import (
 
 	"github.com/StrafeChat/equinox/internal/config"
 	"github.com/StrafeChat/equinox/internal/federation"
+	"github.com/StrafeChat/equinox/internal/mail"
 )
 
 type Deps struct {
@@ -17,4 +18,7 @@ type Deps struct {
 	// Federation is nil unless FEDERATION_DOMAIN is configured. Route setups that own
 	// federating services wire it in with their SetFederator/SetRouter hooks.
 	Federation *federation.Service
+	// Mailer is nil unless SMTP_HOST is configured. Auth hands it to its service; with it
+	// nil, verification and password reset report "email is not configured".
+	Mailer mail.Mailer
 }

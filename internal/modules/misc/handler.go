@@ -31,9 +31,17 @@ type CaptchaFeature struct {
 	APIURL string `json:"api_url,omitempty"`
 }
 
+// EmailFeature says whether this instance can send email at all (so the client offers
+// "forgot password" and shows an address's verification state) and whether a new account
+// must verify its address before it can sign in.
+type EmailFeature struct {
+	Enabled              bool `json:"enabled"`
+	VerificationRequired bool `json:"verification_required"`
+}
+
 type Features struct {
 	Captcha    CaptchaFeature `json:"captcha"`
-	Email      Feature        `json:"email"`
+	Email      EmailFeature   `json:"email"`
 	InviteOnly Feature        `json:"invite_only"`
 	// Voice is on when a LiveKit server is configured; clients hide every call control
 	// otherwise.
@@ -92,6 +100,13 @@ func captchaFeature(cfg *config.Config) CaptchaFeature {
 	return f
 }
 
+func emailFeature(cfg *config.Config) EmailFeature {
+	return EmailFeature{
+		Enabled:              cfg.Mail.Enabled,
+		VerificationRequired: cfg.Mail.Enabled && cfg.Mail.VerificationRequired,
+	}
+}
+
 func boolPtr(b bool) *bool { return &b }
 
 // services advertises the instance's components and their browser-facing URLs. Required
@@ -141,7 +156,7 @@ func (h *Handler) Index(c fiber.Ctx) error {
 		},
 		Features: Features{
 			Captcha:    captchaFeature(h.cfg),
-			Email:      Feature{Enabled: h.cfg.Flags.Email},
+			Email:      emailFeature(h.cfg),
 			InviteOnly: Feature{Enabled: h.cfg.Flags.InviteOnly},
 			Voice:      Feature{Enabled: h.cfg.Voice.Enabled},
 		},

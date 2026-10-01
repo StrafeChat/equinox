@@ -20,7 +20,9 @@ func SetupUsersRoutes(d Deps) {
 	requireAuth := middleware.RequireAuth(sessionRepo, userRepo)
 
 	twoFactorRepo := auth.NewTwoFactorRepository(d.Scylla)
-	authHandler := auth.NewHandler(auth.NewService(d.Config, userRepo, sessionRepo, twoFactorRepo, d.Redis))
+	authSvc := auth.NewService(d.Config, userRepo, sessionRepo, twoFactorRepo, d.Redis)
+	wireMail(d, authSvc)
+	authHandler := auth.NewHandler(authSvc)
 
 	relRepo := relationships.NewRepository(d.Scylla)
 	relSvc := relationships.NewService(relRepo, userRepo, d.Redis, d.Config)
@@ -70,6 +72,15 @@ func SetupUsersRoutes(d Deps) {
 	me.Post("/2fa/webauthn/register/finish", authHandler.FinishWebAuthnRegistration)
 	me.Delete("/2fa/webauthn/:credential_id", twoFactorLimiter, authHandler.DeleteWebAuthnCredential)
 	me.Post("/2fa/recovery_codes/regenerate", twoFactorLimiter, authHandler.RegenerateRecoveryCodes)
+
+	// Ask for the email verification link again. Each call is a delivery, so the same
+	// budget as the unauthenticated forgot-password route, on top of the per-account
+	// one-a-minute cooldown in the service.
+	emailRequestLimiter := limiter.New(limiter.Config{
+		Max:        5,
+		Expiration: 15 * time.Minute,
+	})
+	me.Post("/email/verification", emailRequestLimiter, authHandler.SendVerificationEmail)
 
 	// /users/@me/relationships
 	r := me.Group("/relationships")

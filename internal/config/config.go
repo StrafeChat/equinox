@@ -3,6 +3,7 @@ package config
 import (
 	"encoding/hex"
 	"errors"
+	netmail "net/mail"
 	neturl "net/url"
 	"strconv"
 	"strings"
@@ -21,6 +22,7 @@ type Config struct {
 	Captcha    CaptchaConfig
 	Voice      VoiceConfig
 	TwoFactor  TwoFactorConfig
+	Mail       MailConfig
 	Database   DatabaseConfig
 	Log        LogConfig
 }
@@ -149,7 +151,6 @@ type SessionConfig struct {
 
 type FeatureFlags struct {
 	Captcha    bool
-	Email      bool
 	InviteOnly bool
 	// InstanceAdmins may mint and revoke instance invites regardless of what the database
 	// says. The account that registers first is made an admin automatically, so this is
@@ -200,6 +201,38 @@ type TwoFactorConfig struct {
 	WebAuthnRPID    string
 	WebAuthnRPName  string
 	WebAuthnOrigins []string
+}
+
+// MailConfig is outbound email: the verification link a new account gets and the
+// password-reset link anyone can ask for. Off unless SMTP_HOST is set; everything else has
+// a default. The compose deployment points this at its bundled send-only relay
+// (deploy/mail, a maddy instance on the private network); any other SMTP server - an
+// existing mail server, a provider's submission endpoint - works the same way.
+type MailConfig struct {
+	Enabled  bool
+	Host     string
+	Port     int
+	Username string
+	Password string
+	// TLS is how the connection to Host is protected: "starttls" (the default; STARTTLS
+	// is required and a server that will not upgrade is refused), "tls" (implicit TLS
+	// from the first byte, usually port 465) or "none" (plaintext - only for a relay on
+	// the same private network, which is what the bundled one is).
+	TLS string
+	// From is the sender address; its domain is what SPF/DKIM/DMARC are checked against,
+	// so it must be a domain whose DNS you control. Defaults to noreply@<FEDERATION_DOMAIN>
+	// (or the WEB_URL host).
+	From     string
+	FromName string
+	// VerificationRequired gates sign-in on a verified address: a new account is sent a
+	// link at registration and cannot log in until it is clicked. Accounts that predate
+	// the switch are asked to verify once at their next sign-in. Needs Enabled.
+	VerificationRequired bool
+	// LinkBase is the web client's URL (App.WebURL); every link in an email is under it.
+	LinkBase string
+	// InstanceName is how the instance introduces itself in subjects and bodies: the
+	// federation domain, else the WEB_URL host, else "StrafeChat".
+	InstanceName string
 }
 
 type DatabaseConfig struct {
@@ -268,7 +301,6 @@ func Load() (*Config, error) {
 		},
 		Flags: FeatureFlags{
 			Captcha:        getEnvBool("CAPTCHA", false),
-			Email:          getEnvBool("EMAIL", false),
 			InviteOnly:     getEnvBool("INVITE_ONLY", false),
 			InstanceAdmins: parseIDList(getEnvArray("INSTANCE_ADMINS", nil)),
 		},
@@ -295,6 +327,7 @@ func Load() (*Config, error) {
 
 	cfg.Federation.Enabled = cfg.Federation.Domain != ""
 	cfg.TwoFactor = loadTwoFactorConfig(getEnvString("TOTP_ENCRYPTION_KEY", ""), cfg.App.WebURL)
+	cfg.Mail = loadMailConfig(cfg.App.WebURL, cfg.Federation.Domain)
 
 	// The body limit has to fit the largest attachment plus multipart overhead, or uploads
 	// fail with a 413 before the attachment code ever sees them. Deriving it means raising
@@ -398,6 +431,9 @@ func validate(cfg *Config) error {
 	if err := validateTwoFactor(cfg.TwoFactor); err != nil {
 		return err
 	}
+	if err := validateMail(cfg.Mail); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -429,6 +465,88 @@ func validateTwoFactor(tf TwoFactorConfig) error {
 	}
 	if _, err := hex.DecodeString(tf.TOTPEncryptionKey); err != nil {
 		return errors.New("TOTP_ENCRYPTION_KEY must be hex-encoded (openssl rand -hex 32)")
+	}
+	return nil
+}
+
+// loadMailConfig reads SMTP_* / MAIL_* / EMAIL_VERIFICATION. Enabled is simply "SMTP_HOST
+// is set": there is no separate on/off flag to fall out of step with the host, the same
+// shape voice uses with LIVEKIT_URL. The sender address and the instance's display name
+// fall back to the identity the instance already has (its federation domain, its web URL)
+// so a compose deployment needs to fill in nothing beyond the host.
+func loadMailConfig(webURL, federationDomain string) MailConfig {
+	env := func(k string) string { return strings.TrimSpace(getEnvString(k, "")) }
+	m := MailConfig{
+		Host:                 env("SMTP_HOST"),
+		Port:                 getEnvInt("SMTP_PORT", 0),
+		Username:             env("SMTP_USERNAME"),
+		Password:             getEnvString("SMTP_PASSWORD", ""),
+		TLS:                  strings.ToLower(env("SMTP_TLS")),
+		From:                 env("MAIL_FROM"),
+		FromName:             env("MAIL_FROM_NAME"),
+		VerificationRequired: getEnvBool("EMAIL_VERIFICATION", false),
+		LinkBase:             strings.TrimRight(webURL, "/"),
+	}
+	m.Enabled = m.Host != ""
+	if m.TLS == "" {
+		m.TLS = "starttls"
+	}
+	if m.Port == 0 {
+		if m.TLS == "tls" {
+			m.Port = 465
+		} else {
+			m.Port = 587
+		}
+	}
+	if m.FromName == "" {
+		m.FromName = "StrafeChat"
+	}
+	domain := federationDomain
+	if domain == "" {
+		if u, err := neturl.Parse(webURL); err == nil {
+			domain = u.Hostname()
+		}
+	}
+	m.InstanceName = domain
+	if m.InstanceName == "" {
+		m.InstanceName = "StrafeChat"
+	}
+	if m.From == "" && domain != "" {
+		m.From = "noreply@" + domain
+	}
+	return m
+}
+
+// validateMail refuses the configurations that would fail at the first email rather than
+// at boot: a verification requirement with nothing to send through, a sender address that
+// is not one, links with nowhere to point. Reaching the SMTP server itself is checked
+// per send - a relay being down must not keep the whole API from starting.
+func validateMail(m MailConfig) error {
+	if !m.Enabled {
+		if m.VerificationRequired {
+			return errors.New("EMAIL_VERIFICATION=true requires SMTP_HOST (an SMTP server to send the verification links through)")
+		}
+		return nil
+	}
+	switch m.TLS {
+	case "starttls", "tls", "none":
+	default:
+		return errors.New("SMTP_TLS must be starttls, tls or none")
+	}
+	if m.Port < 1 || m.Port > 65535 {
+		return errors.New("SMTP_PORT must be 1-65535")
+	}
+	if (m.Username == "") != (m.Password == "") {
+		return errors.New("SMTP_USERNAME and SMTP_PASSWORD must be set together (or neither, for a relay that trusts the network)")
+	}
+	if m.From == "" {
+		return errors.New("MAIL_FROM is required when SMTP_HOST is set and neither FEDERATION_DOMAIN nor WEB_URL gives a domain to derive it from")
+	}
+	if addr, err := netmail.ParseAddress(m.From); err != nil || addr.Address != m.From {
+		return errors.New("MAIL_FROM must be a bare address like noreply@chat.example.com (the display name comes from MAIL_FROM_NAME)")
+	}
+	if m.LinkBase == "" {
+		return errors.New("WEB_URL is required when SMTP_HOST is set - the links in every email point at the web client")
 	}
 	return nil
 }

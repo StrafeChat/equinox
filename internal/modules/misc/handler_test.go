@@ -102,3 +102,25 @@ func TestServicesCDNNeedsBaseAndSecret(t *testing.T) {
 		t.Errorf("half-configured cdn should carry no url, got %q", s.CDN.URL)
 	}
 }
+
+// Email is advertised as on only when an SMTP host is configured, and "verification
+// required" never shows without it - config.Load refuses that combination, but the
+// feature map must not depend on that having run.
+func TestEmailFeature(t *testing.T) {
+	cfg := &config.Config{}
+	if f := emailFeature(cfg); f.Enabled || f.VerificationRequired {
+		t.Errorf("no SMTP host: want all off, got %+v", f)
+	}
+	cfg.Mail.VerificationRequired = true
+	if f := emailFeature(cfg); f.Enabled || f.VerificationRequired {
+		t.Errorf("verification without mail must read as off, got %+v", f)
+	}
+	cfg.Mail.Enabled = true
+	if f := emailFeature(cfg); !f.Enabled || !f.VerificationRequired {
+		t.Errorf("mail on + verification: want both on, got %+v", f)
+	}
+	cfg.Mail.VerificationRequired = false
+	if f := emailFeature(cfg); !f.Enabled || f.VerificationRequired {
+		t.Errorf("mail on, verification off: got %+v", f)
+	}
+}
