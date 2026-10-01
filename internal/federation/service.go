@@ -23,6 +23,7 @@ import (
 	"github.com/StrafeChat/equinox/internal/modules/messages"
 	"github.com/StrafeChat/equinox/internal/modules/relationships"
 	"github.com/StrafeChat/equinox/internal/modules/rooms"
+	"github.com/StrafeChat/equinox/internal/modules/voice"
 	"github.com/StrafeChat/equinox/internal/safego"
 )
 
@@ -43,6 +44,9 @@ type Service struct {
 	msgSvc    *messages.Service
 	devSvc    *devices.Service
 	relSvc    *relationships.Service
+	// voice is the API's voice service (SetVoice); nil in a process without voice, where
+	// relayed calls are acknowledged and ignored.
+	voice *voice.Service
 
 	// One outbound queue per peer, drained by one goroutine each, so relays to a peer
 	// arrive in the order they were made (see send).

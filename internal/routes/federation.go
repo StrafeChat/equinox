@@ -28,6 +28,15 @@ func SetupFederationRoutes(d Deps) {
 	g.Post("/relationships", s2s, h.Relationship)
 	g.Post("/rooms/reactions", s2s, h.ReactionAdd)
 	g.Post("/rooms/reactions/delete", s2s, h.ReactionRemove)
+	// Calls: the first five are asked of the room's origin, the last two are what the
+	// origin pushes to everyone else.
+	g.Post("/rooms/voice/join", s2s, h.VoiceJoin)
+	g.Post("/rooms/voice/leave", s2s, h.VoiceLeave)
+	g.Post("/rooms/voice/self", s2s, h.VoiceSelf)
+	g.Post("/rooms/voice/ring", s2s, h.VoiceRing)
+	g.Post("/rooms/voice/decline", s2s, h.VoiceDecline)
+	g.Post("/rooms/voice/state", s2s, h.VoiceState)
+	g.Post("/rooms/voice/call", s2s, h.VoiceCall)
 	g.Post("/rooms", s2s, h.RoomCreate)
 	g.Put("/rooms/participants", s2s, h.RoomParticipants)
 	g.Patch("/rooms", s2s, h.RoomPatch)

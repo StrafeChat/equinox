@@ -38,6 +38,12 @@ func SetupVoiceRoutes(d Deps) {
 	store := voice.NewStore(d.Redis, d.Config.Database.Redis.CachePrefix)
 	svc := voice.NewService(store, voice.NewLiveKit(d.Config.Voice), roomSvc, spaceSvc, userRepo, d.Redis, d.Config, onSystemEvent)
 	h := voice.NewHandler(svc)
+	if d.Federation != nil {
+		// Calls in federated PMs/groups: the room's origin hosts them and the other
+		// instances mirror; both directions go through the federation engine.
+		svc.SetFederator(d.Federation)
+		d.Federation.SetVoice(svc)
+	}
 
 	// Existing spaces predate the voice permission bits; give their @everyone role the
 	// defaults once so members can actually connect.

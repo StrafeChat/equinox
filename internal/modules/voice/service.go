@@ -25,14 +25,14 @@ import (
 )
 
 var (
-	ErrDisabled         = errors.New("voice is not configured on this instance")
-	ErrNotVoiceRoom     = errors.New("this room has no voice")
-	ErrNotInVoice       = errors.New("not connected to a voice room")
-	ErrTargetNotInVoice = errors.New("that member is not in a voice room of this space")
-	ErrRoomFull         = errors.New("voice room is full")
-	ErrMissingPerm      = errors.New("missing permission")
-	ErrNoCall           = errors.New("no call in this room")
-	ErrInvalidTarget    = errors.New("invalid target room")
+	ErrDisabled            = errors.New("voice is not configured on this instance")
+	ErrNotVoiceRoom        = errors.New("this room has no voice")
+	ErrNotInVoice          = errors.New("not connected to a voice room")
+	ErrTargetNotInVoice    = errors.New("that member is not in a voice room of this space")
+	ErrRoomFull            = errors.New("voice room is full")
+	ErrMissingPerm         = errors.New("missing permission")
+	ErrNoCall              = errors.New("no call in this room")
+	ErrInvalidTarget       = errors.New("invalid target room")
 	ErrCannotModerateOwner = errors.New("cannot moderate the space owner")
 )
 
@@ -68,6 +68,8 @@ type Service struct {
 	cfg    *config.Config
 	// onSystemEvent posts "call started" / "call ended" messages in PM rooms.
 	onSystemEvent rooms.OnRoomSystemEvent
+	// fed is the federation engine; nil when this instance doesn't federate.
+	fed Federator
 }
 
 func NewService(store *Store, lk *LiveKit, roomSvc *rooms.Service, spaceSvc *spaces.Service, users auth.UserRepository, rdb *redis.Client, cfg *config.Config, onSystemEvent rooms.OnRoomSystemEvent) *Service {
@@ -129,6 +131,10 @@ func (s *Service) Join(ctx context.Context, user *auth.User, roomID int64, in Jo
 	if !perms.Connect {
 		return nil, ErrMissingPerm
 	}
+	if origin := s.remoteOrigin(room); origin != "" {
+		// Not our call to host: the origin instance mints the token and owns the state.
+		return s.joinViaOrigin(ctx, user, room, origin, in)
+	}
 	prev, err := s.store.GetState(ctx, roomID, user.ID)
 	if err != nil {
 		return nil, err
@@ -155,10 +161,12 @@ func (s *Service) Join(ctx context.Context, user *auth.User, roomID int64, in Jo
 	}
 
 	now := time.Now().UTC()
+	session := newSessionID()
 	st := &State{
 		UserID:    user.ID,
 		RoomID:    roomID,
-		SessionID: newSessionID(),
+		SessionID: session,
+		Ident:     s.identityFor(room, user, session),
 		SelfMute:  in.SelfMute,
 		SelfDeaf:  in.SelfDeaf,
 		Suppress:  !perms.Speak,
@@ -234,6 +242,8 @@ func (s *Service) Leave(ctx context.Context, userID int64) error {
 
 // leave removes the state, tells everyone, kicks the LiveKit participant when asked
 // (not when LiveKit itself reported them gone), and ends a PM call that emptied out.
+// For a call another instance hosts, the local mirror is dropped at once and the origin
+// is told; it drops the LiveKit participant and tells everyone else.
 func (s *Service) leave(ctx context.Context, userID, roomID int64, removeFromLiveKit bool) error {
 	st, err := s.store.GetState(ctx, roomID, userID)
 	if err != nil {
@@ -242,20 +252,32 @@ func (s *Service) leave(ctx context.Context, userID, roomID int64, removeFromLiv
 	if st == nil {
 		return nil
 	}
+	room, roomErr := s.rooms.LoadRoom(ctx, roomID)
+	origin := ""
+	if roomErr == nil {
+		origin = s.remoteOrigin(room)
+	}
 	if err := s.store.DeleteState(ctx, roomID, userID); err != nil {
 		return err
 	}
-	if removeFromLiveKit {
+	if removeFromLiveKit && origin == "" {
 		if err := s.lk.RemoveParticipant(ctx, RoomName(roomID), st.Identity()); err != nil {
 			logger.Warn("voice", "remove participant %s from %d: %v", st.Identity(), roomID, err)
 		}
 	}
-	room, err := s.rooms.LoadRoom(ctx, roomID)
-	if err != nil {
+	if roomErr != nil {
 		// The room is gone (deleted); nobody is left to tell.
 		return nil
 	}
 	s.publishState(ctx, room, st, true)
+	if origin != "" {
+		if removeFromLiveKit {
+			if user, err := s.users.GetByID(ctx, userID); err == nil && user != nil {
+				s.fed.LeaveRemoteVoice(ctx, origin, room, user)
+			}
+		}
+		return nil
+	}
 	if room.Type == rooms.TypePM || room.Type == rooms.TypeGroupPM {
 		s.maybeEndCall(ctx, room)
 	}
@@ -309,6 +331,10 @@ func (s *Service) UpdateSelf(ctx context.Context, user *auth.User, in SelfInput)
 		return nil, err
 	}
 	s.publishState(ctx, room, st, false)
+	if origin := s.remoteOrigin(room); origin != "" {
+		// The origin owns the state; it applies the same flags and tells everyone else.
+		s.fed.UpdateRemoteVoiceSelf(ctx, origin, room, user, in)
+	}
 	return st, nil
 }
 
@@ -527,15 +553,13 @@ func (s *Service) joinCall(ctx context.Context, room *rooms.RoomWithParticipants
 			logger.Err("voice", err, map[string]any{"room_id": room.ID})
 			return nil
 		}
-		data := call.toMap()
-		data["starter"] = summaryOf(user)
-		stargate.PublishToUsers(ctx, s.redis, room.ParticipantIDs, EventCallCreate, data, s.region())
+		s.publishCall(ctx, room, EventCallCreate, call, user, false)
 		s.systemMessage(ctx, room, SystemCallStarted, map[string]interface{}{"actor_id": id.Format(user.ID)})
 		return call
 	}
 	if call.stopRinging(user.ID) {
 		if err := s.store.PutCall(ctx, call); err == nil {
-			stargate.PublishToUsers(ctx, s.redis, room.ParticipantIDs, EventCallUpdate, call.toMap(), s.region())
+			s.publishCall(ctx, room, EventCallUpdate, call, nil, false)
 		}
 	}
 	return call
@@ -552,9 +576,7 @@ func (s *Service) maybeEndCall(ctx context.Context, room *rooms.RoomWithParticip
 		return
 	}
 	_ = s.store.DeleteCall(ctx, room.ID)
-	stargate.PublishToUsers(ctx, s.redis, room.ParticipantIDs, EventCallDelete, map[string]interface{}{
-		"room_id": id.Format(room.ID),
-	}, s.region())
+	s.publishCall(ctx, room, EventCallDelete, nil, nil, false)
 	s.systemMessage(ctx, room, SystemCallEnded, map[string]interface{}{
 		"actor_id":         id.Format(call.StartedBy),
 		"duration_seconds": int(time.Since(call.StartedAt).Seconds()),
@@ -580,6 +602,11 @@ func (s *Service) Ring(ctx context.Context, user *auth.User, roomID int64, userI
 	}
 	if st, _ := s.store.GetState(ctx, roomID, user.ID); st == nil {
 		return nil, ErrNotInVoice
+	}
+	if origin := s.remoteOrigin(room); origin != "" {
+		// The origin owns the call: it rings and relays the update back to this mirror.
+		s.fed.RingRemoteCall(ctx, origin, room, user, userIDs)
+		return call, nil
 	}
 	states, _ := s.store.RoomStates(ctx, roomID)
 	connected := make(map[int64]struct{}, len(states))
@@ -612,9 +639,7 @@ func (s *Service) Ring(ctx context.Context, user *auth.User, roomID int64, userI
 	}
 	// Publish even when nothing changed: a re-ring restarts the ringtone on the
 	// callee's devices.
-	data := call.toMap()
-	data["rerung"] = true
-	stargate.PublishToUsers(ctx, s.redis, room.ParticipantIDs, EventCallUpdate, data, s.region())
+	s.publishCall(ctx, room, EventCallUpdate, call, nil, true)
 	return call, nil
 }
 
@@ -637,8 +662,45 @@ func (s *Service) Decline(ctx context.Context, user *auth.User, roomID int64) er
 	if err := s.store.PutCall(ctx, call); err != nil {
 		return err
 	}
-	stargate.PublishToUsers(ctx, s.redis, room.ParticipantIDs, EventCallUpdate, call.toMap(), s.region())
+	s.publishCall(ctx, room, EventCallUpdate, call, nil, false)
+	if origin := s.remoteOrigin(room); origin != "" {
+		s.fed.DeclineRemoteCall(ctx, origin, room, user)
+	}
 	return nil
+}
+
+// callData is the wire form of a call event.
+func callData(call *Call, starter *auth.User, rerung bool) map[string]interface{} {
+	data := call.toMap()
+	if starter != nil {
+		data["starter"] = summaryOf(starter)
+	}
+	if rerung {
+		data["rerung"] = true
+	}
+	return data
+}
+
+// publishCall sends a call event to the room's participants and, when this instance
+// hosts the call, to the other instances in the room. A nil call is a CALL_DELETE.
+func (s *Service) publishCall(ctx context.Context, room *rooms.RoomWithParticipants, event string, call *Call, starter *auth.User, rerung bool) {
+	var data map[string]interface{}
+	if call != nil {
+		data = callData(call, starter, rerung)
+	} else {
+		data = map[string]interface{}{"room_id": id.Format(room.ID)}
+	}
+	s.publishCallLocal(ctx, room, event, data)
+	if s.hosting(room) {
+		s.fed.AfterCallChanged(ctx, room, event, call, starter, rerung)
+	}
+}
+
+func (s *Service) publishCallLocal(ctx context.Context, room *rooms.RoomWithParticipants, event string, data map[string]interface{}) {
+	if s.redis == nil {
+		return
+	}
+	stargate.PublishToUsers(ctx, s.redis, room.ParticipantIDs, event, data, s.region())
 }
 
 func (s *Service) systemMessage(ctx context.Context, room *rooms.RoomWithParticipants, typ string, payload map[string]interface{}) {
@@ -676,6 +738,9 @@ func (s *Service) publishStateExtra(ctx context.Context, room *rooms.RoomWithPar
 		return
 	}
 	stargate.PublishToUsers(ctx, s.redis, room.ParticipantIDs, EventVoiceStateUpdate, data, s.region())
+	if s.hosting(room) {
+		s.fed.AfterVoiceStateChanged(ctx, room, st, left)
+	}
 }
 
 // stateMap is the wire form of a state - the same JSON the struct produces, as a map so
@@ -742,7 +807,7 @@ func (s *Service) HandleWebhook(ctx context.Context, ev *livekit.WebhookEvent) {
 		if ev.Participant == nil {
 			return
 		}
-		uid, session, ok := parseIdentity(ev.Participant.Identity)
+		uid, session, ok := s.userOfIdentity(ctx, ev.Participant.Identity)
 		if !ok {
 			return
 		}
@@ -823,6 +888,9 @@ func (s *Service) reconcile(ctx context.Context) {
 		if len(states) == 0 {
 			_ = s.redis.SRem(ctx, s.store.roomsKey(), id.Format(roomID)).Err()
 			continue
+		}
+		if room, err := s.rooms.LoadRoom(ctx, roomID); err == nil && s.remoteOrigin(room) != "" {
+			continue // another instance's LiveKit backs these; it tells us when they end
 		}
 		present, err := s.lk.ListIdentities(ctx, RoomName(roomID))
 		if err != nil {

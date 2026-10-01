@@ -23,8 +23,22 @@ func NewHandler(svc *Service) *Handler {
 	return &Handler{svc: svc}
 }
 
+// WriteError is voiceError for other packages answering on this module's behalf (the
+// federation handlers that serve a remote instance's users).
+func WriteError(c fiber.Ctx, err error, fields map[string]any) error {
+	return voiceError(c, err, fields)
+}
+
 func voiceError(c fiber.Ctx, err error, fields map[string]any) error {
+	var origin *OriginError
 	switch {
+	case errors.As(err, &origin):
+		// The instance hosting the call answered; pass its verdict through.
+		return c.Status(origin.Status).JSON(fiber.Map{"error": origin.Message})
+	case errors.Is(err, ErrOriginUnavailable):
+		return c.Status(http.StatusBadGateway).JSON(fiber.Map{"error": err.Error()})
+	case errors.Is(err, ErrDisabled):
+		return c.Status(http.StatusServiceUnavailable).JSON(fiber.Map{"error": err.Error()})
 	case errors.Is(err, rooms.ErrRoomNotFound), errors.Is(err, spaces.ErrSpaceNotFound):
 		return c.Status(http.StatusNotFound).JSON(fiber.Map{"error": err.Error()})
 	case errors.Is(err, rooms.ErrNotParticipant), errors.Is(err, ErrMissingPerm), errors.Is(err, spaces.ErrMissingPerm),

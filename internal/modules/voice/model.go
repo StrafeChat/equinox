@@ -24,20 +24,32 @@ type UserSummary struct {
 	Discriminator int    `json:"discriminator"`
 	DisplayName   string `json:"display_name"`
 	Avatar        string `json:"avatar,omitempty"`
+	// Set for a user on another instance, so a client can map the participant's
+	// federated LiveKit identity back to this row.
+	HomeDomain string `json:"home_domain,omitempty"`
+	OriginID   string `json:"origin_id,omitempty"`
 }
 
 func summaryOf(u *auth.User) *UserSummary {
 	if u == nil {
 		return nil
 	}
-	return &UserSummary{
+	out := &UserSummary{
 		ID:            id.Format(u.ID),
 		Username:      u.Username,
 		Discriminator: u.Discriminator,
 		DisplayName:   u.DisplayName,
 		Avatar:        u.Avatar,
 	}
+	if u.IsRemote() {
+		out.HomeDomain = u.HomeDomain
+		out.OriginID = id.Format(u.OriginID())
+	}
+	return out
 }
+
+// SummaryOf is summaryOf for other packages building states.
+func SummaryOf(u *auth.User) *UserSummary { return summaryOf(u) }
 
 // State is one user's presence in one voice room - Discord's VoiceState. A user is in
 // at most one voice room across the whole instance. Self* flags are what the user
@@ -49,7 +61,10 @@ type State struct {
 	SpaceID int64 `json:"space_id,string,omitempty"`
 	// SessionID makes the LiveKit identity (user.session) unique per join, so a late
 	// participant_left webhook from an earlier connection can't remove a newer state.
-	SessionID  string    `json:"session_id"`
+	SessionID string `json:"session_id"`
+	// Ident is the LiveKit identity as issued. Empty for states written before federated
+	// identities existed; Identity() falls back to the local form then.
+	Ident      string    `json:"identity,omitempty"`
 	SelfMute   bool      `json:"self_mute"`
 	SelfDeaf   bool      `json:"self_deaf"`
 	Mute       bool      `json:"mute"`
@@ -68,6 +83,9 @@ type State struct {
 
 // Identity is the LiveKit participant identity for this state.
 func (s *State) Identity() string {
+	if s.Ident != "" {
+		return s.Ident
+	}
 	return id.Format(s.UserID) + "." + s.SessionID
 }
 
