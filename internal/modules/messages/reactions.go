@@ -55,6 +55,13 @@ var (
 // variation selectors, without maintaining a full Unicode emoji property table server-side.
 var unicodeReactionRe = regexp.MustCompile(`^[^\x00-\x7F]+$`)
 
+// keycapReactionRe matches the keycap emoji (0️⃣-9️⃣, #️⃣, *️⃣) - the only emoji that begin
+// with an ASCII character: a digit, '#' or '*', then the enclosing-keycap mark (U+20E3),
+// optionally with the emoji variation selector (U+FE0F) between them. unicodeReactionRe's
+// all-non-ASCII rule rejects them on that leading ASCII byte, so they are accepted here
+// explicitly rather than by loosening that rule (which is what keeps a bare ASCII typo out).
+var keycapReactionRe = regexp.MustCompile(`^[0-9#*]\x{FE0F}?\x{20E3}$`)
+
 // ValidateReactionEmoji normalises and checks a client-supplied emoji key: either a bare
 // unicode emoji, or "custom:<id>" referencing a space's custom emoji. Existence of a
 // custom emoji isn't verified here - the same trust level the message composer already
@@ -73,7 +80,7 @@ func ValidateReactionEmoji(raw string) (string, error) {
 		}
 		return raw, nil
 	}
-	if len(raw) > 64 || !unicodeReactionRe.MatchString(raw) {
+	if len(raw) > 64 || !(unicodeReactionRe.MatchString(raw) || keycapReactionRe.MatchString(raw)) {
 		return "", ErrInvalidReaction
 	}
 	return raw, nil
