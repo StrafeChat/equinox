@@ -40,6 +40,17 @@ const (
 	mfaPendingTTL  = 5 * time.Minute
 	mfaCeremonyTTL = 2 * time.Minute
 	mfaMaxAttempts = 5
+
+	// totpStepSeconds mirrors totpValidateOpts().Period.
+	totpStepSeconds = 30
+	// How long a "this time step was already used" marker lives: comfortably past the ±1
+	// step of skew a code is accepted within, so the same code cannot be replayed for as
+	// long as it would otherwise still validate.
+	totpUsedTTL = 3 * totpStepSeconds * time.Second
+
+	// A passkey label is rendered in the passkeys list; bound it rather than storing
+	// whatever length a crafted query string carries.
+	maxPasskeyNameRunes = 64
 )
 
 // TwoFactorService is the account-security half of Service: verifying a second factor
@@ -67,10 +78,18 @@ type pendingMFA struct {
 	UserID int64 `json:"user_id"`
 }
 
-func (s *service) mfaPendingKey(token string) string   { return s.redisPrefix + "mfa:pending:" + mfaTokenHash(token) }
-func (s *service) mfaAttemptsKey(token string) string  { return s.redisPrefix + "mfa:attempts:" + mfaTokenHash(token) }
-func (s *service) mfaCeremonyKey(token string) string  { return s.redisPrefix + "mfa:ceremony:" + mfaTokenHash(token) }
-func (s *service) webauthnRegKey(userID int64) string  { return s.redisPrefix + "webauthn:reg:" + fmt.Sprint(userID) }
+func (s *service) mfaPendingKey(token string) string {
+	return s.redisPrefix + "mfa:pending:" + mfaTokenHash(token)
+}
+func (s *service) mfaAttemptsKey(token string) string {
+	return s.redisPrefix + "mfa:attempts:" + mfaTokenHash(token)
+}
+func (s *service) mfaCeremonyKey(token string) string {
+	return s.redisPrefix + "mfa:ceremony:" + mfaTokenHash(token)
+}
+func (s *service) webauthnRegKey(userID int64) string {
+	return s.redisPrefix + "webauthn:reg:" + fmt.Sprint(userID)
+}
 
 // mfaTokenHash mirrors how a session bearer token is looked up by its hash rather than its
 // raw value (middleware/auth.go): the pending token is bearer-equivalent for its short
@@ -146,7 +165,42 @@ func (s *service) checkAndIncrementAttempts(ctx context.Context, mfaToken string
 func totpValidateOpts() totp.ValidateOpts {
 	// Skew 1 tolerates the code either side of "now" by one 30s step, the same drift
 	// Google/Microsoft/Discord authenticators are built to expect from the server side.
-	return totp.ValidateOpts{Period: 30, Skew: 1, Digits: otp.DigitsSix, Algorithm: otp.AlgorithmSHA1}
+	return totp.ValidateOpts{Period: totpStepSeconds, Skew: 1, Digits: otp.DigitsSix, Algorithm: otp.AlgorithmSHA1}
+}
+
+func (s *service) totpUsedKey(userID int64, step int64) string {
+	return fmt.Sprintf("%smfa:totp:used:%d:%d", s.redisPrefix, userID, step)
+}
+
+// verifyTOTPCode validates code against secret with the usual ±1-step skew and, on success,
+// burns the exact time step it matched so the same code is refused if it is presented again
+// (RFC 6238 §5.2). The per-token attempt budget cannot cover this case: a replayed code is
+// *correct*, so without the marker a code read over someone's shoulder, or phished and
+// relayed, stayed usable for up to 90 seconds. Each candidate step is checked on its own
+// (skew 0 at now-1, now, now+1) so the marker names the step that actually matched; the
+// marker is a SET NX, so two simultaneous submissions of one code cannot both pass.
+func (s *service) verifyTOTPCode(ctx context.Context, userID int64, code, secret string) error {
+	code = strings.TrimSpace(code)
+	now := time.Now()
+	opts := totpValidateOpts()
+	opts.Skew = 0
+	for _, k := range []int64{0, -1, 1} {
+		at := now.Add(time.Duration(k) * totpStepSeconds * time.Second)
+		ok, err := totp.ValidateCustom(code, secret, at, opts)
+		if err != nil || !ok {
+			continue
+		}
+		step := at.Unix() / totpStepSeconds
+		fresh, err := s.redis.SetNX(ctx, s.totpUsedKey(userID, step), 1, totpUsedTTL).Result()
+		if err != nil {
+			return err
+		}
+		if !fresh {
+			return ErrInvalidTOTPCode // this very code was already accepted; a replay
+		}
+		return nil
+	}
+	return ErrInvalidTOTPCode
 }
 
 func (s *service) VerifyTOTPLogin(ctx context.Context, mfaToken, code, ip, userAgent string) (*User, string, error) {
@@ -168,9 +222,8 @@ func (s *service) VerifyTOTPLogin(ctx context.Context, mfaToken, code, ip, userA
 	if err != nil {
 		return nil, "", err
 	}
-	ok, err := totp.ValidateCustom(strings.TrimSpace(code), secret, time.Now(), totpValidateOpts())
-	if err != nil || !ok {
-		return nil, "", ErrInvalidTOTPCode
+	if err := s.verifyTOTPCode(ctx, userID, code, secret); err != nil {
+		return nil, "", err
 	}
 	u, err := s.repo.GetByID(ctx, userID)
 	if err != nil {
@@ -370,9 +423,8 @@ func (s *service) EnableTOTP(ctx context.Context, userID int64, code string) ([]
 	if err != nil {
 		return nil, err
 	}
-	ok, err := totp.ValidateCustom(strings.TrimSpace(code), secret, time.Now(), totpValidateOpts())
-	if err != nil || !ok {
-		return nil, ErrInvalidTOTPCode
+	if err := s.verifyTOTPCode(ctx, userID, code, secret); err != nil {
+		return nil, err
 	}
 	if err := s.repo.SetTOTP(ctx, userID, secretCipher, true); err != nil {
 		return nil, err
@@ -470,6 +522,9 @@ func (s *service) FinishWebAuthnRegistration(ctx context.Context, userID int64, 
 	displayName := strings.TrimSpace(name)
 	if displayName == "" {
 		displayName = "Passkey"
+	}
+	if r := []rune(displayName); len(r) > maxPasskeyNameRunes {
+		displayName = string(r[:maxPasskeyNameRunes])
 	}
 	row := &WebAuthnCredentialRow{
 		UserID:       userID,

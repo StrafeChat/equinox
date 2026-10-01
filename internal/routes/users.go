@@ -1,6 +1,8 @@
 package routes
 
 import (
+	"time"
+
 	"github.com/StrafeChat/equinox/internal/middleware"
 	"github.com/StrafeChat/equinox/internal/modules/applications"
 	"github.com/StrafeChat/equinox/internal/modules/auth"
@@ -9,6 +11,7 @@ import (
 	"github.com/StrafeChat/equinox/internal/modules/rooms"
 	"github.com/StrafeChat/equinox/internal/modules/spaces"
 	"github.com/StrafeChat/equinox/internal/modules/users"
+	"github.com/gofiber/fiber/v3/middleware/limiter"
 )
 
 func SetupUsersRoutes(d Deps) {
@@ -48,15 +51,25 @@ func SetupUsersRoutes(d Deps) {
 	me.Post("/avatar", usersHandler.PostAvatar)
 	me.Post("/banner", usersHandler.PostBanner)
 
-	// /users/@me/2fa - TOTP, passkeys, recovery codes
+	// /users/@me/2fa - TOTP, passkeys, recovery codes.
+	//
+	// The endpoints that take the account password (disable, remove a passkey, regenerate
+	// codes) re-verify it with bcrypt, which makes them an online password-guessing
+	// surface for anyone holding a stolen session - requireAuth alone put no ceiling on
+	// that. Same budget as the login-time MFA routes; enable gets it too, since it accepts
+	// a six-digit code.
+	twoFactorLimiter := limiter.New(limiter.Config{
+		Max:        10,
+		Expiration: time.Minute,
+	})
 	me.Get("/2fa", authHandler.TwoFactorStatus)
 	me.Post("/2fa/totp/setup", authHandler.SetupTOTP)
-	me.Post("/2fa/totp/enable", authHandler.EnableTOTP)
-	me.Post("/2fa/totp/disable", authHandler.DisableTOTP)
+	me.Post("/2fa/totp/enable", twoFactorLimiter, authHandler.EnableTOTP)
+	me.Post("/2fa/totp/disable", twoFactorLimiter, authHandler.DisableTOTP)
 	me.Post("/2fa/webauthn/register/begin", authHandler.BeginWebAuthnRegistration)
 	me.Post("/2fa/webauthn/register/finish", authHandler.FinishWebAuthnRegistration)
-	me.Delete("/2fa/webauthn/:credential_id", authHandler.DeleteWebAuthnCredential)
-	me.Post("/2fa/recovery_codes/regenerate", authHandler.RegenerateRecoveryCodes)
+	me.Delete("/2fa/webauthn/:credential_id", twoFactorLimiter, authHandler.DeleteWebAuthnCredential)
+	me.Post("/2fa/recovery_codes/regenerate", twoFactorLimiter, authHandler.RegenerateRecoveryCodes)
 
 	// /users/@me/relationships
 	r := me.Group("/relationships")
