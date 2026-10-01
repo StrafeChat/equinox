@@ -90,30 +90,44 @@ func (s *SMTP) client() (*gomail.Client, error) {
 	return gomail.NewClient(s.cfg.Host, opts...)
 }
 
-// Send delivers one message, or returns why the relay would not take it.
-func (s *SMTP) Send(ctx context.Context, msg Message) error {
+// build turns a Message into a go-mail Msg with the headers every provider now insists on:
+// a From, a Date (go-mail adds it), and - the one Gmail rejects outright when wrong - a
+// valid RFC 5322 Message-ID. The relay runs maddy's plain `smtp` endpoint, which does not
+// add a Message-ID the way the `submission` endpoint would, so it has to be set here.
+func (s *SMTP) build(msg Message) (*gomail.Msg, error) {
 	if msg.To == "" || msg.Subject == "" || msg.Text == "" {
-		return errors.New("mail: message needs To, Subject and Text")
+		return nil, errors.New("mail: message needs To, Subject and Text")
 	}
 	m := gomail.NewMsg()
 	if err := m.FromFormat(s.cfg.FromName, s.cfg.From); err != nil {
-		return fmt.Errorf("mail: from: %w", err)
+		return nil, fmt.Errorf("mail: from: %w", err)
 	}
 	if err := m.To(msg.To); err != nil {
-		return fmt.Errorf("mail: to: %w", err)
+		return nil, fmt.Errorf("mail: to: %w", err)
 	}
 	m.Subject(msg.Subject)
-	// A Message-ID under the sender's domain, not the container hostname go-mail would
-	// otherwise use - a bare non-FQDN there is a spam signal at the big providers.
+	// The id is the "<...>" body only: SetMessageIDWithValue wraps it in angle brackets
+	// itself, so passing them here once produced "<<id@domain>>", which Gmail refuses as a
+	// missing/invalid Message-ID (RFC 5322) while laxer providers accept it. The domain,
+	// not go-mail's default container hostname, keeps the id a proper FQDN.
 	var idBytes [16]byte
 	if _, err := rand.Read(idBytes[:]); err != nil {
-		return err
+		return nil, err
 	}
-	m.SetMessageIDWithValue(fmt.Sprintf("<%s@%s>", hex.EncodeToString(idBytes[:]), s.fromDomain))
+	m.SetMessageIDWithValue(fmt.Sprintf("%s@%s", hex.EncodeToString(idBytes[:]), s.fromDomain))
 	m.SetUserAgent("StrafeChat")
 	m.SetBodyString(gomail.TypeTextPlain, msg.Text)
 	if msg.HTML != "" {
 		m.AddAlternativeString(gomail.TypeTextHTML, msg.HTML)
+	}
+	return m, nil
+}
+
+// Send delivers one message, or returns why the relay would not take it.
+func (s *SMTP) Send(ctx context.Context, msg Message) error {
+	m, err := s.build(msg)
+	if err != nil {
+		return err
 	}
 
 	c, err := s.client()
