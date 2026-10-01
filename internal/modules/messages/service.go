@@ -116,7 +116,7 @@ type SlowmodeError struct {
 	RetryAfter time.Duration
 }
 
-func (e *SlowmodeError) Error() string { return ErrSlowmode.Error() }
+func (e *SlowmodeError) Error() string        { return ErrSlowmode.Error() }
 func (e *SlowmodeError) Is(target error) bool { return target == ErrSlowmode }
 
 // validateContent enforces the size caps on whichever body a message carries.
@@ -187,6 +187,8 @@ type Federator interface {
 	AfterMessageCreated(ctx context.Context, roomID int64, participants []int64, m *Message)
 	AfterMessageEdited(ctx context.Context, roomID int64, participants []int64, m *Message)
 	AfterMessageDeleted(ctx context.Context, roomID int64, participants []int64, msgID int64)
+	AfterReactionAdded(ctx context.Context, roomID int64, participants []int64, msgID, userID int64, emoji string)
+	AfterReactionRemoved(ctx context.Context, roomID int64, participants []int64, msgID, userID int64, emoji string)
 }
 
 type Service struct {

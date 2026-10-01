@@ -13,6 +13,7 @@ import (
 
 	"github.com/StrafeChat/equinox/internal/id"
 	"github.com/StrafeChat/equinox/internal/logger"
+	"github.com/StrafeChat/equinox/internal/modules/auth"
 	"github.com/StrafeChat/equinox/internal/modules/devices"
 	"github.com/StrafeChat/equinox/internal/modules/messages"
 	"github.com/StrafeChat/equinox/internal/modules/relationships"
@@ -573,6 +574,10 @@ func (h *Handler) Relationship(c fiber.Ctx) error {
 	}
 	switch {
 	case err == nil:
+		if body.Action == "accept" {
+			// A new friendship: give their side our user's current status right away.
+			h.svc.sendPresence(target, requester)
+		}
 		return c.SendStatus(http.StatusNoContent)
 	case errors.Is(err, relationships.ErrRequestNotFound):
 		return c.Status(http.StatusNotFound).JSON(fiber.Map{"error": err.Error()})
@@ -580,6 +585,105 @@ func (h *Handler) Relationship(c fiber.Ctx) error {
 		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
 	return fail(c, err, map[string]any{"peer": requester, "action": body.Action})
+}
+
+// applyReaction serves POST /rooms/reactions (add) and /rooms/reactions/delete: a
+// reaction by one of the requesting instance's users on a message in a shared room.
+func (h *Handler) applyReaction(c fiber.Ctx, remove bool) error {
+	var body ReactionEvent
+	if err := json.Unmarshal(c.Body(), &body); err != nil {
+		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "invalid JSON"})
+	}
+	requester := RequesterDomain(c)
+	if _, domain, err := ParseFID(body.User); err != nil || domain != requester {
+		return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": "user must belong to the requesting instance"})
+	}
+	m, participants, err := h.roomFor(c, body.Room)
+	if err != nil {
+		return fail(c, err, nil)
+	}
+	ctx := c.Context()
+	uid, err := h.svc.ResolveLocalID(ctx, body.User)
+	if err != nil {
+		return fail(c, err, nil)
+	}
+	isParticipant := false
+	for _, pid := range participants {
+		if pid == uid {
+			isParticipant = true
+			break
+		}
+	}
+	if !isParticipant {
+		return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": "user is not in this room"})
+	}
+	msgID := h.localMessageID(c, m.RoomID, body.Message)
+	if msgID == 0 {
+		return c.Status(http.StatusNotFound).JSON(fiber.Map{"error": "message not found"})
+	}
+	if remove {
+		err = h.svc.msgSvc.RemoveReactionFederated(ctx, m.RoomID, msgID, uid, body.Emoji)
+	} else {
+		err = h.svc.msgSvc.AddReactionFederated(ctx, m.RoomID, msgID, uid, body.Emoji)
+	}
+	switch {
+	case err == nil:
+		return c.SendStatus(http.StatusNoContent)
+	case errors.Is(err, messages.ErrInvalidReaction), errors.Is(err, messages.ErrTooManyReactions):
+		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	}
+	return fail(c, err, map[string]any{"room_id": m.RoomID, "message_id": msgID})
+}
+
+func (h *Handler) ReactionAdd(c fiber.Ctx) error    { return h.applyReaction(c, false) }
+func (h *Handler) ReactionRemove(c fiber.Ctx) error { return h.applyReaction(c, true) }
+
+// maxRelayedCustomStatus mirrors the local limit (users/schema.go).
+const maxRelayedCustomStatus = 128
+
+// Presence POST /users/presence - how a user on the requesting instance now appears to
+// others. Applied to their shadow row (so lists and READY carry it) and fanned out to
+// their local friends like a local presence change.
+func (h *Handler) Presence(c fiber.Ctx) error {
+	var body PresenceEvent
+	if err := json.Unmarshal(c.Body(), &body); err != nil {
+		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "invalid JSON"})
+	}
+	requester := RequesterDomain(c)
+	originID, domain, err := ParseFID(body.User)
+	if err != nil || domain != requester {
+		return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": "user must belong to the requesting instance"})
+	}
+	switch body.Presence.Status {
+	case "online", "idle", "dnd", "offline":
+	default:
+		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "invalid status"})
+	}
+	if utf8.RuneCountInString(body.Presence.CustomStatus) > maxRelayedCustomStatus {
+		return fail(c, ErrPayloadTooLarge, nil)
+	}
+	ctx := c.Context()
+	shadow, err := h.svc.users.GetByRemote(ctx, requester, originID)
+	if err != nil {
+		return fail(c, err, map[string]any{"peer": requester})
+	}
+	if shadow == nil {
+		// Nobody here knows them yet; the shadow is created by the first real contact.
+		return c.SendStatus(http.StatusNoContent)
+	}
+	online := body.Presence.Status != "offline"
+	status := body.Presence.Status
+	custom := strings.TrimSpace(body.Presence.CustomStatus)
+	updated, err := h.svc.users.UpdateProfile(ctx, shadow.ID, &auth.ProfileUpdate{
+		Presence: &auth.PresenceUpdate{Online: &online, Status: &status, CustomStatus: &custom},
+	})
+	if err != nil {
+		return fail(c, err, map[string]any{"peer": requester, "user_id": shadow.ID})
+	}
+	if updated != nil {
+		stargate.PublishPresenceUpdate(ctx, h.svc.redis, h.svc.cfg.Stargate.Region, updated)
+	}
+	return c.SendStatus(http.StatusNoContent)
 }
 
 // Peers GET /federation/peers (client-authenticated, not S2S): instances we've talked to.

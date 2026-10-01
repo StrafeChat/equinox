@@ -2,11 +2,9 @@ package relationships
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -16,8 +14,6 @@ import (
 	"github.com/StrafeChat/equinox/internal/modules/auth"
 	"github.com/StrafeChat/equinox/internal/stargate"
 )
-
-const relListCacheTTL = 3 * time.Minute
 
 var (
 	ErrUserNotFound         = errors.New("user not found")
@@ -55,23 +51,6 @@ func NewService(repo Repository, user auth.UserRepository, redis *redis.Client, 
 // SetFederator wires outbound federation for relationships.
 func (s *Service) SetFederator(f Federator) {
 	s.federator = f
-}
-
-func (s *Service) relListKey(userID int64) string {
-	prefix := s.cfg.Database.Redis.CachePrefix
-	if prefix != "" && !strings.HasSuffix(prefix, ":") {
-		prefix += ":"
-	}
-	return prefix + "rel:" + strconv.FormatInt(userID, 10) + ":list"
-}
-
-func (s *Service) invalidateRelList(ctx context.Context, userIDs ...int64) {
-	if s.redis == nil || !s.cfg.Database.Redis.CacheEnabled {
-		return
-	}
-	for _, uid := range userIDs {
-		_ = s.redis.Del(ctx, s.relListKey(uid))
-	}
 }
 
 // parseDiscriminator parses string discriminator (e.g. "1234", "0") to int (1-9999 or 0).
@@ -141,7 +120,6 @@ func (s *Service) SendRequestTo(ctx context.Context, actorID int64, target *auth
 		return err
 	}
 	s.publishRequest(ctx, me, target)
-	s.invalidateRelList(ctx, actorID, target.ID)
 	if s.federator != nil && target.IsRemote() {
 		s.federator.AfterRelationshipRequested(ctx, me, target)
 	}
@@ -205,7 +183,6 @@ func (s *Service) befriend(ctx context.Context, actor, from *auth.User) error {
 	}
 	s.publishAdd(ctx, from, actor, TypeFriend)
 	s.publishAdd(ctx, actor, from, TypeFriend)
-	s.invalidateRelList(ctx, actor.ID, from.ID)
 	return nil
 }
 
@@ -224,7 +201,6 @@ func (s *Service) RejectRequest(ctx context.Context, actorID, fromUserID int64) 
 	// The sender's outgoing request is gone.
 	from, _ := s.user.GetByID(ctx, fromUserID)
 	s.publishRemoveTo(ctx, fromUserID, from, actorID)
-	s.invalidateRelList(ctx, actorID, fromUserID)
 	s.relayRemoved(ctx, actorID, from)
 	return nil
 }
@@ -244,7 +220,6 @@ func (s *Service) CancelRequest(ctx context.Context, actorID, targetID int64) er
 	// The recipient's incoming request is gone.
 	target, _ := s.user.GetByID(ctx, targetID)
 	s.publishRemoveTo(ctx, targetID, target, actorID)
-	s.invalidateRelList(ctx, actorID, targetID)
 	s.relayRemoved(ctx, actorID, target)
 	return nil
 }
@@ -277,7 +252,6 @@ func (s *Service) unfriend(ctx context.Context, actor *auth.User, friendID int64
 	}
 	s.publishRemoveTo(ctx, actor.ID, actor, friendID)
 	s.publishRemoveTo(ctx, friendID, friend, actor.ID)
-	s.invalidateRelList(ctx, actor.ID, friendID)
 	return nil
 }
 
@@ -369,7 +343,6 @@ func (s *Service) ApplyRemoteRequest(ctx context.Context, actor, target *auth.Us
 		return err
 	}
 	s.publishRequest(ctx, actor, target)
-	s.invalidateRelList(ctx, actor.ID, target.ID)
 	return nil
 }
 
@@ -402,7 +375,6 @@ func (s *Service) ApplyRemoteRemove(ctx context.Context, actor, target *auth.Use
 	}
 	if changed {
 		s.publishRemoveTo(ctx, target.ID, target, actor.ID)
-		s.invalidateRelList(ctx, actor.ID, target.ID)
 	}
 	return nil
 }
@@ -460,7 +432,6 @@ func (s *Service) Block(ctx context.Context, actorID, targetID int64) error {
 		return err
 	}
 	s.publishAdd(ctx, actor, target, TypeBlocked)
-	s.invalidateRelList(ctx, actorID, targetID)
 	if hadTie {
 		s.relayRemoved(ctx, actorID, target)
 	}
@@ -473,7 +444,6 @@ func (s *Service) Unblock(ctx context.Context, actorID, targetID int64) error {
 		return err
 	}
 	stargate.PublishToUser(ctx, s.redis, actorID, "RELATIONSHIP_REMOVE", map[string]interface{}{"id": id.Format(targetID)}, s.cfg.Stargate.Region)
-	s.invalidateRelList(ctx, actorID, targetID)
 	return nil
 }
 
@@ -520,19 +490,11 @@ func buildRelationshipFromUser(u *auth.User, targetID int64, relType int, since 
 	return rel
 }
 
-// ListRelationships returns all relationships. Batch-fetches users for performance.
+// ListRelationships returns all relationships, batch-fetching the user rows. Built fresh
+// every time: the list embeds each person's presence, and a cached copy went stale for
+// minutes whenever a read raced a write (the read re-populated the cache after the write
+// had invalidated it). Four reads per call is cheap enough not to need one.
 func (s *Service) ListRelationships(ctx context.Context, actorID int64) ([]Relationship, error) {
-	if s.redis != nil && s.cfg.Database.Redis.CacheEnabled {
-		key := s.relListKey(actorID)
-		val, err := s.redis.Get(ctx, key).Bytes()
-		if err == nil {
-			var out []Relationship
-			if json.Unmarshal(val, &out) == nil {
-				return out, nil
-			}
-		}
-	}
-
 	u, err := s.user.GetByID(ctx, actorID)
 	if err != nil || u == nil {
 		return nil, ErrUserNotFound
@@ -599,12 +561,6 @@ func (s *Service) ListRelationships(ctx context.Context, actorID int64) ([]Relat
 			out = append(out, *r)
 		}
 	}
-
-	if s.redis != nil && s.cfg.Database.Redis.CacheEnabled {
-		if b, err := json.Marshal(out); err == nil {
-			_ = s.redis.Set(ctx, s.relListKey(actorID), b, relListCacheTTL)
-		}
-	}
 	return out, nil
 }
 
@@ -635,15 +591,9 @@ func (s *Service) Patch(ctx context.Context, actorID, targetID int64, nickname *
 		return nil // no change requested
 	}
 	if *nickname == "" {
-		err = s.repo.DeleteNickname(ctx, actorID, targetID)
-	} else {
-		err = s.repo.SetNickname(ctx, actorID, targetID, *nickname)
+		return s.repo.DeleteNickname(ctx, actorID, targetID)
 	}
-	if err != nil {
-		return err
-	}
-	s.invalidateRelList(ctx, actorID)
-	return nil
+	return s.repo.SetNickname(ctx, actorID, targetID, *nickname)
 }
 
 // BulkDelete removes multiple relationships.
@@ -664,9 +614,6 @@ func (s *Service) BulkDelete(ctx context.Context, actorID int64, relationshipTyp
 		if from, _ := s.user.GetByID(ctx, req.FromUserID); from != nil && from.IsRemote() {
 			s.relayRemoved(ctx, actorID, from)
 		}
-	}
-	if lastErr == nil {
-		s.invalidateRelList(ctx, actorID)
 	}
 	return lastErr
 }

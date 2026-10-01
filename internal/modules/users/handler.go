@@ -21,9 +21,11 @@ import (
 	"github.com/StrafeChat/equinox/internal/stargate"
 )
 
-// ProfileFederator relays profile changes to the instances holding a shadow of the user.
+// ProfileFederator relays profile and presence changes to the instances holding a shadow
+// of the user.
 type ProfileFederator interface {
 	AfterProfileUpdated(ctx context.Context, u *auth.User)
+	AfterPresenceChanged(ctx context.Context, u *auth.User)
 }
 
 type Handler struct {
@@ -120,6 +122,9 @@ func (h *Handler) PatchMe(c fiber.Ctx) error {
 		// Reaches the user's own devices (real status), friends, and every space they are
 		// in (co-members), so a status change is seen everywhere - not just by friends.
 		stargate.PublishPresenceUpdate(c.Context(), h.redis, region, updated)
+		if h.federator != nil {
+			h.federator.AfterPresenceChanged(c.Context(), updated)
+		}
 	}
 
 	if hasProfileFieldsForRealtime(&upd) && h.redis != nil {

@@ -19,11 +19,18 @@ const presenceUpdateEvent = "PRESENCE_UPDATE"
 // a single-instance deployment; a multi-instance deployment would want per-node sets.
 const OnlinePresenceKey = "presence:online"
 
+// PresenceFederator relays a presence change to the home instances of the user's remote
+// friends. Implemented by internal/federation; nil when this instance doesn't federate.
+type PresenceFederator interface {
+	AfterPresenceChanged(ctx context.Context, u *auth.User)
+}
+
 // DefaultPresenceNotifier updates user presence in the DB and publishes to friends on connect/disconnect.
 type DefaultPresenceNotifier struct {
-	userRepo auth.UserRepository
-	redis    *redis.Client
-	region   string
+	userRepo  auth.UserRepository
+	redis     *redis.Client
+	region    string
+	federator PresenceFederator
 }
 
 func NewDefaultPresenceNotifier(userRepo auth.UserRepository, redis *redis.Client, region string) *DefaultPresenceNotifier {
@@ -31,6 +38,11 @@ func NewDefaultPresenceNotifier(userRepo auth.UserRepository, redis *redis.Clien
 		region = "default"
 	}
 	return &DefaultPresenceNotifier{userRepo: userRepo, redis: redis, region: region}
+}
+
+// SetFederator wires outbound federation for connect/disconnect presence changes.
+func (p *DefaultPresenceNotifier) SetFederator(f PresenceFederator) {
+	p.federator = f
 }
 
 func (p *DefaultPresenceNotifier) OnConnect(ctx context.Context, userID int64) {
@@ -64,6 +76,9 @@ func (p *DefaultPresenceNotifier) setOnline(ctx context.Context, userID int64, o
 		return
 	}
 	PublishPresenceUpdate(ctx, p.redis, p.region, updated)
+	if p.federator != nil {
+		p.federator.AfterPresenceChanged(ctx, updated)
+	}
 }
 
 // PublishPresenceUpdate broadcasts a user's presence to everyone who should see it: the

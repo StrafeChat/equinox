@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -42,7 +43,16 @@ type Service struct {
 	msgSvc    *messages.Service
 	devSvc    *devices.Service
 	relSvc    *relationships.Service
+
+	// One outbound queue per peer, drained by one goroutine each, so relays to a peer
+	// arrive in the order they were made (see send).
+	outMu     sync.Mutex
+	outQueues map[string]chan func()
 }
+
+// outboxDepth bounds each peer's queue; beyond it relays are dropped and logged rather
+// than growing memory without limit while a peer is down.
+const outboxDepth = 4096
 
 // New builds the engine with its own repository/service instances (stateless wrappers
 // over the same Scylla session the API uses).
@@ -54,6 +64,24 @@ func New(cfg *config.Config, session gocqlx.Session, rdb *redis.Client) (*Servic
 	if err != nil {
 		return nil, err
 	}
+	return newService(cfg, session, rdb, signer), nil
+}
+
+// NewWithExistingKey is New for a process that shares the API's signing key but must never
+// create it (the gateway): until the API has written the key this fails instead of
+// minting a second identity that no peer would accept.
+func NewWithExistingKey(cfg *config.Config, session gocqlx.Session, rdb *redis.Client) (*Service, error) {
+	if !cfg.Federation.Enabled {
+		return nil, ErrFederationOff
+	}
+	signer, err := LoadExistingSigner(cfg.Federation)
+	if err != nil {
+		return nil, err
+	}
+	return newService(cfg, session, rdb, signer), nil
+}
+
+func newService(cfg *config.Config, session gocqlx.Session, rdb *redis.Client, signer *Signer) *Service {
 	users := auth.NewCachedUserRepository(auth.NewUserRepository(session), rdb, cfg)
 	roomRepo := rooms.NewRepository(session)
 	roomSvc := rooms.NewService(roomRepo, users, rdb, cfg, nil, nil)
@@ -77,6 +105,7 @@ func New(cfg *config.Config, session gocqlx.Session, rdb *redis.Client) (*Servic
 		msgSvc:    msgSvc,
 		devSvc:    devSvc,
 		relSvc:    relSvc,
+		outQueues: map[string]chan func(){},
 	}
 	roomSvc.SetFederationInfo(s)
 	devSvc.SetRouter(s)
@@ -84,7 +113,7 @@ func New(cfg *config.Config, session gocqlx.Session, rdb *redis.Client) (*Servic
 	// request produces, which the peer has not seen.
 	relSvc.SetFederator(s)
 	logger.Info("federation", "enabled as %s (key %s)", cfg.Federation.Domain, signer.KeyID)
-	return s, nil
+	return s
 }
 
 // infoProvider is the read-only slice of the engine (room → global identity) for
@@ -382,11 +411,11 @@ func (s *Service) messageRef(ctx context.Context, roomID, msgID int64) MessageRe
 
 // send relays one request in the background. Federation is fire-and-forget from the
 // sender's point of view: the local write already succeeded, and a peer being slow or
-// down must never fail or delay the user's own request.
+// down must never fail or delay the user's own request. Relays to one peer go out in
+// order, one at a time: a message sent right after its room was created must not
+// overtake the room announce, or the peer drops it as "room not found".
 func (s *Service) send(domain, method, path string, body any) {
-	// safego: this runs outside any request, so nothing else would catch a panic - and a
-	// peer sending back something unexpected must not take the whole API down.
-	safego.Go("federation", func() {
+	s.enqueue(domain, func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		if _, err := s.client.Do(ctx, domain, method, path, body, nil); err != nil {
@@ -395,6 +424,38 @@ func (s *Service) send(domain, method, path string, body any) {
 		}
 		s.touchPeer(ctx, domain)
 	})
+}
+
+func (s *Service) enqueue(domain string, job func()) {
+	s.outMu.Lock()
+	q, ok := s.outQueues[domain]
+	if !ok {
+		q = make(chan func(), outboxDepth)
+		s.outQueues[domain] = q
+		// safego: this runs outside any request, so nothing else would catch a panic - and
+		// a peer sending back something unexpected must not take the whole API down. One
+		// panicking job must not kill the peer's worker either, hence the per-job recover.
+		safego.Go("federation", func() {
+			for job := range q {
+				runRelay(domain, job)
+			}
+		})
+	}
+	s.outMu.Unlock()
+	select {
+	case q <- job:
+	default:
+		logger.Warn("federation", "outbox for %s is full, dropping a relay", domain)
+	}
+}
+
+func runRelay(domain string, job func()) {
+	defer func() {
+		if r := recover(); r != nil {
+			logger.Err("federation", fmt.Errorf("relay panic: %v", r), map[string]any{"peer": domain})
+		}
+	}()
+	job()
 }
 
 func (s *Service) touchPeer(ctx context.Context, domain string) {
@@ -650,6 +711,66 @@ func (s *Service) relayRelationship(action string, actor, target *auth.User) {
 	}
 	body := RelationshipEvent{Action: action, Actor: s.ProfileOf(actor), Target: s.FIDOf(target)}
 	s.send(target.HomeDomain, http.MethodPost, "/relationships", body)
+	if action == "accept" {
+		// A new friendship: their side gets our user's current status right away instead
+		// of "offline until the next change".
+		s.sendPresence(actor, target.HomeDomain)
+	}
+}
+
+// ---- reactions (messages.Federator) ---------------------------------------------------
+
+func (s *Service) relayReaction(ctx context.Context, path string, roomID int64, participants []int64, msgID, userID int64, emoji string) {
+	byDomain, _, err := s.remotePeers(ctx, participants)
+	if err != nil || len(byDomain) == 0 {
+		return
+	}
+	ref, err := s.roomRef(ctx, roomID)
+	if err != nil {
+		return
+	}
+	body := ReactionEvent{Room: ref, Message: s.messageRef(ctx, roomID, msgID), User: s.LocalFID(userID), Emoji: emoji}
+	for domain := range byDomain {
+		s.send(domain, http.MethodPost, path, body)
+	}
+}
+
+func (s *Service) AfterReactionAdded(ctx context.Context, roomID int64, participants []int64, msgID, userID int64, emoji string) {
+	s.relayReaction(ctx, "/rooms/reactions", roomID, participants, msgID, userID, emoji)
+}
+
+func (s *Service) AfterReactionRemoved(ctx context.Context, roomID int64, participants []int64, msgID, userID int64, emoji string) {
+	s.relayReaction(ctx, "/rooms/reactions/delete", roomID, participants, msgID, userID, emoji)
+}
+
+// ---- presence (stargate.PresenceFederator, users.ProfileFederator) --------------------
+
+func (s *Service) presenceEvent(u *auth.User) PresenceEvent {
+	return PresenceEvent{User: s.LocalFID(u.ID), Presence: auth.ToPublicPresence(u.Presence, true)}
+}
+
+// AfterPresenceChanged tells the home instance of each remote friend how the user now
+// appears to others - friends only, which is who the local gateway tells as well.
+func (s *Service) AfterPresenceChanged(ctx context.Context, u *auth.User) {
+	if u == nil || u.IsRemote() {
+		return
+	}
+	byDomain, _, err := s.remotePeers(ctx, u.Relationships)
+	if err != nil || len(byDomain) == 0 {
+		return
+	}
+	body := s.presenceEvent(u)
+	for domain := range byDomain {
+		s.send(domain, http.MethodPost, "/users/presence", body)
+	}
+}
+
+// sendPresence tells one instance how a local user appears right now.
+func (s *Service) sendPresence(u *auth.User, domain string) {
+	if u == nil || u.IsRemote() || !s.fcfg.IsAllowedPeer(domain) {
+		return
+	}
+	s.send(domain, http.MethodPost, "/users/presence", s.presenceEvent(u))
 }
 
 func (s *Service) AfterRelationshipRequested(_ context.Context, actor, target *auth.User) {

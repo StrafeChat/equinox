@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"time"
 
+	"github.com/StrafeChat/equinox/internal/modules/auth"
 	"github.com/StrafeChat/equinox/internal/modules/messages"
 )
 
@@ -102,9 +103,29 @@ type MessageDelete struct {
 	Message MessageRef `json:"message"`
 }
 
+// ReactionEvent: POST /rooms/reactions and POST /rooms/reactions/delete - a user on the
+// sending instance reacted to (or withdrew a reaction from) a message in a shared room.
+// A "custom:<id>" emoji is the origin's custom emoji id, which the receiving client can
+// only render if it knows that emoji - the same as a local reaction with an emoji from a
+// space the viewer is not in.
+type ReactionEvent struct {
+	Room    RoomRef    `json:"room"`
+	Message MessageRef `json:"message"`
+	User    string     `json:"user"` // FID, must belong to the requesting instance
+	Emoji   string     `json:"emoji"`
+}
+
 // ProfileUpdate: POST /users/update - a user on the sending instance changed their profile.
 type ProfileUpdate struct {
 	User Profile `json:"user"`
+}
+
+// PresenceEvent: POST /users/presence - how a user on the sending instance now appears
+// to others (invisible already reads as offline), sent to the home instances of their
+// remote friends.
+type PresenceEvent struct {
+	User     string              `json:"user"` // FID, must belong to the requesting instance
+	Presence auth.PublicPresence `json:"presence"`
 }
 
 // RelationshipEvent: POST /relationships - a user on the sending instance sent a friend

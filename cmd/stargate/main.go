@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -24,6 +25,34 @@ import (
 	"github.com/StrafeChat/equinox/internal/stargate"
 	"github.com/joho/godotenv"
 )
+
+// lazyPresenceFederator builds the federation client on first use and keeps retrying
+// while the API has not written the shared signing key yet (a fresh install starts both
+// processes at once), instead of leaving presence relay off until the next restart.
+type lazyPresenceFederator struct {
+	build func() (*federation.Service, error)
+	mu    sync.Mutex
+	fed   *federation.Service
+	retry time.Time
+}
+
+func (l *lazyPresenceFederator) AfterPresenceChanged(ctx context.Context, u *auth.User) {
+	l.mu.Lock()
+	fed := l.fed
+	if fed == nil && time.Now().After(l.retry) {
+		var err error
+		if fed, err = l.build(); err != nil {
+			l.retry = time.Now().Add(30 * time.Second)
+			logger.Warn("stargate", "presence federation not ready: %v", err)
+		} else {
+			l.fed = fed
+		}
+	}
+	l.mu.Unlock()
+	if fed != nil {
+		fed.AfterPresenceChanged(ctx, u)
+	}
+}
 
 // readyDataProvider fetches rooms, relationships, spaces, space rooms and the live voice
 // states for the READY payload.
@@ -321,6 +350,13 @@ func main() {
 	}
 
 	presenceNotifier := stargate.NewDefaultPresenceNotifier(userRepo, redis, cfg.Stargate.Region)
+	if cfg.Federation.Enabled {
+		// Connect/disconnect presence reaches remote friends' instances, signed with the
+		// API's identity: the gateway loads that key but never creates it.
+		presenceNotifier.SetFederator(&lazyPresenceFederator{build: func() (*federation.Service, error) {
+			return federation.NewWithExistingKey(cfg, scylla, redis)
+		}})
+	}
 	hub := stargate.NewHubWithConfig(stargate.HubConfig{
 		Redis:            redis,
 		Region:           cfg.Stargate.Region,

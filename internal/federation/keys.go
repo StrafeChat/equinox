@@ -28,6 +28,16 @@ type Signer struct {
 // when unset, from KeyFile - generating and writing a new seed there on first start so
 // the identity is stable across restarts (mount that path on a volume in Docker).
 func LoadSigner(cfg config.FederationConfig) (*Signer, error) {
+	return loadSigner(cfg, true)
+}
+
+// LoadExistingSigner is LoadSigner for a process that shares the API's key but must never
+// mint its own (the gateway): a missing key file is an error, not a new identity.
+func LoadExistingSigner(cfg config.FederationConfig) (*Signer, error) {
+	return loadSigner(cfg, false)
+}
+
+func loadSigner(cfg config.FederationConfig, create bool) (*Signer, error) {
 	seed := strings.TrimSpace(cfg.SigningKeySeed)
 	if seed == "" {
 		path := cfg.KeyFile
@@ -35,9 +45,12 @@ func LoadSigner(cfg config.FederationConfig) (*Signer, error) {
 			path = "./federation.key"
 		}
 		raw, err := os.ReadFile(path)
-		if err == nil {
+		switch {
+		case err == nil:
 			seed = strings.TrimSpace(string(raw))
-		} else if os.IsNotExist(err) {
+		case os.IsNotExist(err) && !create:
+			return nil, fmt.Errorf("federation: key file %s does not exist yet", path)
+		case os.IsNotExist(err):
 			seed, err = generateSeed()
 			if err != nil {
 				return nil, err
@@ -48,7 +61,7 @@ func LoadSigner(cfg config.FederationConfig) (*Signer, error) {
 			if err := os.WriteFile(path, []byte(seed+"\n"), 0o600); err != nil {
 				return nil, fmt.Errorf("federation: write key file %s: %w", path, err)
 			}
-		} else {
+		default:
 			return nil, fmt.Errorf("federation: read key file %s: %w", path, err)
 		}
 	}
