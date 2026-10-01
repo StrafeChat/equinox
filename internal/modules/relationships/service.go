@@ -30,15 +30,31 @@ var (
 	ErrRequestNotFound      = errors.New("request not found")
 )
 
+// Federator tells a remote user's home instance about relationship changes a local user
+// made towards them. Implemented by internal/federation; nil when this instance doesn't
+// federate. Hooks are best-effort and must not block the request - the local write has
+// already happened.
+type Federator interface {
+	AfterRelationshipRequested(ctx context.Context, actor, target *auth.User)
+	AfterRelationshipAccepted(ctx context.Context, actor, target *auth.User)
+	AfterRelationshipRemoved(ctx context.Context, actor, target *auth.User)
+}
+
 type Service struct {
-	repo  Repository
-	user  auth.UserRepository
-	redis *redis.Client
-	cfg   *config.Config
+	repo      Repository
+	user      auth.UserRepository
+	redis     *redis.Client
+	cfg       *config.Config
+	federator Federator
 }
 
 func NewService(repo Repository, user auth.UserRepository, redis *redis.Client, cfg *config.Config) *Service {
 	return &Service{repo: repo, user: user, redis: redis, cfg: cfg}
+}
+
+// SetFederator wires outbound federation for relationships.
+func (s *Service) SetFederator(f Federator) {
+	s.federator = f
 }
 
 func (s *Service) relListKey(userID int64) string {
@@ -70,21 +86,30 @@ func parseDiscriminator(s string) (int, error) {
 	return n, nil
 }
 
-// SendRequest sends a friend request from actor to target. Both username and discriminator are required.
-func (s *Service) SendRequest(ctx context.Context, actorID int64, in SendRequestInput) error {
-	discriminator, err := parseDiscriminator(in.Discriminator)
-	if err != nil {
-		return err
+// FindLocalUser looks a user up by username#discriminator on this instance.
+func (s *Service) FindLocalUser(ctx context.Context, username string, discriminator int) (*auth.User, error) {
+	return s.user.GetByUsernameDiscriminator(ctx, username, discriminator)
+}
+
+func isFriend(u *auth.User, otherID int64) bool {
+	for _, r := range u.Relationships {
+		if r == otherID {
+			return true
+		}
 	}
-	target, err := s.user.GetByUsernameDiscriminator(ctx, in.Username, discriminator)
-	if err != nil || target == nil {
+	return false
+}
+
+// SendRequestTo sends a friend request from actor to target. The target may be the shadow
+// of a user on another instance: their home instance is told and shows them the request.
+func (s *Service) SendRequestTo(ctx context.Context, actorID int64, target *auth.User) error {
+	if target == nil {
 		return ErrUserNotFound
 	}
-	targetID := target.ID
-
-	if targetID == actorID {
+	if target.ID == actorID {
 		return ErrSelfRequest
 	}
+	// A bot is added to a space, never to a friends list.
 	if target.Bot {
 		return ErrBotTarget
 	}
@@ -93,52 +118,33 @@ func (s *Service) SendRequest(ctx context.Context, actorID int64, in SendRequest
 	if err != nil || me == nil {
 		return ErrUserNotFound
 	}
-
 	if s.blockedBetween(me, target) {
 		return ErrBlocked
 	}
-
-	// Already friends?
-	for _, r := range me.Relationships {
-		if r == targetID {
-			return ErrAlreadyFriends
-		}
+	if isFriend(me, target.ID) {
+		return ErrAlreadyFriends
 	}
 
-	exists, err := s.repo.HasRequest(ctx, actorID, targetID)
+	exists, err := s.repo.HasRequest(ctx, actorID, target.ID)
 	if err != nil {
 		return err
 	}
 	if exists {
 		return ErrRequestExists
 	}
-
-	// Check inverse (they sent to us)
-	exists, _ = s.repo.HasRequest(ctx, targetID, actorID)
-	if exists {
-		// They already sent us a request - auto-accept
-		return s.AcceptRequest(ctx, actorID, targetID)
+	// They already asked us - that's a match, not a second request.
+	if exists, _ = s.repo.HasRequest(ctx, target.ID, actorID); exists {
+		return s.acceptRequest(ctx, me, target)
 	}
 
-	if err := s.repo.CreateRequest(ctx, actorID, targetID); err != nil {
+	if err := s.repo.CreateRequest(ctx, actorID, target.ID); err != nil {
 		return err
 	}
-
-	// Publish to recipient for real-time delivery
-	payload := map[string]interface{}{
-		"from_user_id": id.Format(actorID),
-		"to_user_id":   id.Format(targetID),
-		"created_at":   time.Now().UTC(),
-		"from": map[string]interface{}{
-			"id":            id.Format(me.ID),
-			"username":      me.Username,
-			"discriminator": me.Discriminator,
-			"display_name":  me.DisplayName,
-		},
+	s.publishRequest(ctx, me, target)
+	s.invalidateRelList(ctx, actorID, target.ID)
+	if s.federator != nil && target.IsRemote() {
+		s.federator.AfterRelationshipRequested(ctx, me, target)
 	}
-	stargate.PublishToUser(ctx, s.redis, targetID, "RELATIONSHIP_REQUEST", payload, s.cfg.Stargate.Region)
-	s.invalidateRelList(ctx, actorID, targetID)
-
 	return nil
 }
 
@@ -147,108 +153,63 @@ func (s *Service) SendRequestByID(ctx context.Context, actorID, targetID int64) 
 	if targetID == actorID {
 		return ErrSelfRequest
 	}
-
-	me, err := s.user.GetByID(ctx, actorID)
-	if err != nil || me == nil {
-		return ErrUserNotFound
-	}
-
 	target, err := s.user.GetByID(ctx, targetID)
 	if err != nil || target == nil {
 		return ErrUserNotFound
 	}
-	// A bot is added to a space, never to a friends list.
-	if target.Bot {
-		return ErrBotTarget
-	}
-
-	if s.blockedBetween(me, target) {
-		return ErrBlocked
-	}
-
-	for _, r := range me.Relationships {
-		if r == targetID {
-			return ErrAlreadyFriends
-		}
-	}
-
-	exists, err := s.repo.HasRequest(ctx, actorID, targetID)
-	if err != nil {
-		return err
-	}
-	if exists {
-		return ErrRequestExists
-	}
-
-	// They sent to us - accept
-	exists, _ = s.repo.HasRequest(ctx, targetID, actorID)
-	if exists {
-		return s.AcceptRequest(ctx, actorID, targetID)
-	}
-
-	// We're sending to them
-	if err := s.repo.CreateRequest(ctx, actorID, targetID); err != nil {
-		return err
-	}
-
-	payload := map[string]interface{}{
-		"from_user_id": id.Format(actorID),
-		"to_user_id":   id.Format(targetID),
-		"created_at":   time.Now().UTC(),
-		"from": map[string]interface{}{
-			"id":            id.Format(me.ID),
-			"username":      me.Username,
-			"discriminator": me.Discriminator,
-			"display_name":  me.DisplayName,
-		},
-	}
-	stargate.PublishToUser(ctx, s.redis, targetID, "RELATIONSHIP_REQUEST", payload, s.cfg.Stargate.Region)
-	s.invalidateRelList(ctx, actorID, targetID)
-
-	return nil
+	return s.SendRequestTo(ctx, actorID, target)
 }
 
-// AcceptRequest accepts a request from fromUserID.
+// AcceptRequest accepts the request fromUserID sent to actorID.
 func (s *Service) AcceptRequest(ctx context.Context, actorID, fromUserID int64) error {
-	exists, err := s.repo.HasRequest(ctx, fromUserID, actorID)
+	actor, err := s.user.GetByID(ctx, actorID)
+	if err != nil || actor == nil {
+		return ErrUserNotFound
+	}
+	from, err := s.user.GetByID(ctx, fromUserID)
+	if err != nil || from == nil {
+		return ErrUserNotFound
+	}
+	return s.acceptRequest(ctx, actor, from)
+}
+
+// acceptRequest turns from's pending request to actor into a friendship.
+func (s *Service) acceptRequest(ctx context.Context, actor, from *auth.User) error {
+	exists, err := s.repo.HasRequest(ctx, from.ID, actor.ID)
 	if err != nil {
 		return err
 	}
 	if !exists {
 		return ErrRequestNotFound
 	}
-
-	if err := s.repo.DeleteRequest(ctx, fromUserID, actorID); err != nil {
+	if err := s.befriend(ctx, actor, from); err != nil {
 		return err
 	}
-
-	if err := s.user.UpdateRelationships(ctx, actorID, []int64{fromUserID}, nil); err != nil {
-		return err
+	if s.federator != nil && from.IsRemote() {
+		s.federator.AfterRelationshipAccepted(ctx, actor, from)
 	}
-	if err := s.user.UpdateRelationships(ctx, fromUserID, []int64{actorID}, nil); err != nil {
-		return err
-	}
-
-	// Real-time: both users receive RELATIONSHIP_ADD
-	actor, _ := s.user.GetByID(ctx, actorID)
-	fromUser, _ := s.user.GetByID(ctx, fromUserID)
-	payload := map[string]interface{}{
-		"id":   id.Format(fromUserID),
-		"type": TypeFriend,
-		"user": partialUser(actor),
-	}
-	stargate.PublishToUser(ctx, s.redis, fromUserID, "RELATIONSHIP_ADD", payload, s.cfg.Stargate.Region)
-	payload2 := map[string]interface{}{
-		"id":   id.Format(actorID),
-		"type": TypeFriend,
-		"user": partialUser(fromUser),
-	}
-	stargate.PublishToUser(ctx, s.redis, actorID, "RELATIONSHIP_ADD", payload2, s.cfg.Stargate.Region)
-	s.invalidateRelList(ctx, actorID, fromUserID)
 	return nil
 }
 
-// RejectRequest rejects a request.
+// befriend deletes from's request to actor, records the friendship on both rows and tells
+// both local parties. Shared by a local accept and one relayed from another instance.
+func (s *Service) befriend(ctx context.Context, actor, from *auth.User) error {
+	if err := s.repo.DeleteRequest(ctx, from.ID, actor.ID); err != nil {
+		return err
+	}
+	if err := s.user.UpdateRelationships(ctx, actor.ID, []int64{from.ID}, nil); err != nil {
+		return err
+	}
+	if err := s.user.UpdateRelationships(ctx, from.ID, []int64{actor.ID}, nil); err != nil {
+		return err
+	}
+	s.publishAdd(ctx, from, actor, TypeFriend)
+	s.publishAdd(ctx, actor, from, TypeFriend)
+	s.invalidateRelList(ctx, actor.ID, from.ID)
+	return nil
+}
+
+// RejectRequest declines the request fromUserID sent to actorID.
 func (s *Service) RejectRequest(ctx context.Context, actorID, fromUserID int64) error {
 	exists, err := s.repo.HasRequest(ctx, fromUserID, actorID)
 	if err != nil {
@@ -260,14 +221,194 @@ func (s *Service) RejectRequest(ctx context.Context, actorID, fromUserID int64) 
 	if err := s.repo.DeleteRequest(ctx, fromUserID, actorID); err != nil {
 		return err
 	}
-	// Sender receives RELATIONSHIP_REMOVE (their outgoing request was rejected)
-	payload := map[string]interface{}{"id": id.Format(actorID)}
-	stargate.PublishToUser(ctx, s.redis, fromUserID, "RELATIONSHIP_REMOVE", payload, s.cfg.Stargate.Region)
+	// The sender's outgoing request is gone.
+	from, _ := s.user.GetByID(ctx, fromUserID)
+	s.publishRemoveTo(ctx, fromUserID, from, actorID)
 	s.invalidateRelList(ctx, actorID, fromUserID)
+	s.relayRemoved(ctx, actorID, from)
 	return nil
 }
 
-// partialUser builds a partial user object. Presence uses status/custom_status only (never online).
+// CancelRequest withdraws actorID's request to targetID.
+func (s *Service) CancelRequest(ctx context.Context, actorID, targetID int64) error {
+	exists, err := s.repo.HasRequest(ctx, actorID, targetID)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return ErrRequestNotFound
+	}
+	if err := s.repo.DeleteRequest(ctx, actorID, targetID); err != nil {
+		return err
+	}
+	// The recipient's incoming request is gone.
+	target, _ := s.user.GetByID(ctx, targetID)
+	s.publishRemoveTo(ctx, targetID, target, actorID)
+	s.invalidateRelList(ctx, actorID, targetID)
+	s.relayRemoved(ctx, actorID, target)
+	return nil
+}
+
+// RemoveFriend ends the friendship between actorID and friendID.
+func (s *Service) RemoveFriend(ctx context.Context, actorID, friendID int64) error {
+	u, err := s.user.GetByID(ctx, actorID)
+	if err != nil || u == nil {
+		return ErrUserNotFound
+	}
+	if !isFriend(u, friendID) {
+		return ErrRequestNotFound
+	}
+	friend, _ := s.user.GetByID(ctx, friendID)
+	if err := s.unfriend(ctx, u, friendID, friend); err != nil {
+		return err
+	}
+	s.relayRemoved(ctx, actorID, friend)
+	return nil
+}
+
+// unfriend drops the friendship from both rows and tells both local parties. friend may be
+// nil (row gone); the ids are what matter.
+func (s *Service) unfriend(ctx context.Context, actor *auth.User, friendID int64, friend *auth.User) error {
+	if err := s.user.UpdateRelationships(ctx, actor.ID, nil, []int64{friendID}); err != nil {
+		return err
+	}
+	if err := s.user.UpdateRelationships(ctx, friendID, nil, []int64{actor.ID}); err != nil {
+		return err
+	}
+	s.publishRemoveTo(ctx, actor.ID, actor, friendID)
+	s.publishRemoveTo(ctx, friendID, friend, actor.ID)
+	s.invalidateRelList(ctx, actor.ID, friendID)
+	return nil
+}
+
+// relayRemoved tells a remote party's home instance that actor withdrew a request,
+// declined theirs, unfriended or blocked them - one message, the receiver's own state says
+// which it was.
+func (s *Service) relayRemoved(ctx context.Context, actorID int64, other *auth.User) {
+	if s.federator == nil || other == nil || !other.IsRemote() {
+		return
+	}
+	actor, err := s.user.GetByID(ctx, actorID)
+	if err != nil || actor == nil {
+		return
+	}
+	s.federator.AfterRelationshipRemoved(ctx, actor, other)
+}
+
+// ---- gateway events ---------------------------------------------------------------------
+//
+// A shadow row has no sessions on this instance, so events for it are skipped; its home
+// instance delivers the equivalent to the real user.
+
+// publishRequest shows `to` the new incoming request from `from`.
+func (s *Service) publishRequest(ctx context.Context, from, to *auth.User) {
+	if to.IsRemote() {
+		return
+	}
+	payload := map[string]interface{}{
+		"from_user_id": id.Format(from.ID),
+		"to_user_id":   id.Format(to.ID),
+		"created_at":   time.Now().UTC(),
+		"from":         partialUser(from),
+	}
+	stargate.PublishToUser(ctx, s.redis, to.ID, "RELATIONSHIP_REQUEST", payload, s.cfg.Stargate.Region)
+}
+
+// publishAdd sends `to` a RELATIONSHIP_ADD about `about`.
+func (s *Service) publishAdd(ctx context.Context, to, about *auth.User, relType int) {
+	if to.IsRemote() {
+		return
+	}
+	payload := map[string]interface{}{
+		"id":   id.Format(about.ID),
+		"type": relType,
+		"user": partialUser(about),
+	}
+	stargate.PublishToUser(ctx, s.redis, to.ID, "RELATIONSHIP_ADD", payload, s.cfg.Stargate.Region)
+}
+
+// publishRemoveTo sends toID a RELATIONSHIP_REMOVE about aboutID. `to` is the row for toID
+// when the caller has it; nil means "unknown", which is delivered rather than dropped.
+func (s *Service) publishRemoveTo(ctx context.Context, toID int64, to *auth.User, aboutID int64) {
+	if to != nil && to.IsRemote() {
+		return
+	}
+	stargate.PublishToUser(ctx, s.redis, toID, "RELATIONSHIP_REMOVE", map[string]interface{}{"id": id.Format(aboutID)}, s.cfg.Stargate.Region)
+}
+
+// ---- inbound from other instances -------------------------------------------------------
+//
+// actor is the shadow row of a user on another instance and target one of ours. The peer's
+// own write triggered the call, so nothing here relays back - except the accept a crossed
+// request produces, which the peer has not seen yet.
+
+// ApplyRemoteRequest records a friend request a remote user sent one of our users.
+func (s *Service) ApplyRemoteRequest(ctx context.Context, actor, target *auth.User) error {
+	if target.Bot {
+		return ErrBotTarget
+	}
+	// A blocked sender gets nothing back, not even a refusal; a duplicate is a no-op.
+	if s.blockedBetween(target, actor) || isFriend(target, actor.ID) {
+		return nil
+	}
+	if exists, err := s.repo.HasRequest(ctx, actor.ID, target.ID); err != nil || exists {
+		return err
+	}
+	if exists, _ := s.repo.HasRequest(ctx, target.ID, actor.ID); exists {
+		// Ours had already asked them: their request is an acceptance. Their instance
+		// still holds an unanswered outgoing request, so it is told ours accepted.
+		if err := s.befriend(ctx, actor, target); err != nil {
+			return err
+		}
+		if s.federator != nil {
+			s.federator.AfterRelationshipAccepted(ctx, target, actor)
+		}
+		return nil
+	}
+	if err := s.repo.CreateRequest(ctx, actor.ID, target.ID); err != nil {
+		return err
+	}
+	s.publishRequest(ctx, actor, target)
+	s.invalidateRelList(ctx, actor.ID, target.ID)
+	return nil
+}
+
+// ApplyRemoteAccept records that a remote user accepted the request one of ours sent them.
+func (s *Service) ApplyRemoteAccept(ctx context.Context, actor, target *auth.User) error {
+	exists, err := s.repo.HasRequest(ctx, target.ID, actor.ID)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return ErrRequestNotFound
+	}
+	return s.befriend(ctx, actor, target)
+}
+
+// ApplyRemoteRemove records that a remote user withdrew their request to one of ours,
+// declined ours, or ended the friendship. Idempotent: whatever still stands is torn down.
+func (s *Service) ApplyRemoteRemove(ctx context.Context, actor, target *auth.User) error {
+	if isFriend(target, actor.ID) {
+		return s.unfriend(ctx, target, actor.ID, actor)
+	}
+	changed := false
+	for _, pair := range [][2]int64{{actor.ID, target.ID}, {target.ID, actor.ID}} {
+		if exists, _ := s.repo.HasRequest(ctx, pair[0], pair[1]); exists {
+			if err := s.repo.DeleteRequest(ctx, pair[0], pair[1]); err != nil {
+				return err
+			}
+			changed = true
+		}
+	}
+	if changed {
+		s.publishRemoveTo(ctx, target.ID, target, actor.ID)
+		s.invalidateRelList(ctx, actor.ID, target.ID)
+	}
+	return nil
+}
+
+// ---- blocks -----------------------------------------------------------------------------
+
 // blockedBetween reports whether either user has blocked the other.
 func (s *Service) blockedBetween(a, b *auth.User) bool {
 	if a == nil || b == nil {
@@ -288,28 +429,41 @@ func (s *Service) blockedBetween(a, b *auth.User) bool {
 
 // Block adds targetID to the actor's block set, first tearing down any friendship or pending
 // request between the two. Blocks are one-directional and the target is not notified; only
-// the blocker's own devices receive the new blocked relationship.
+// the blocker's own devices receive the new blocked relationship. A remote target's home
+// instance hears about the teardown (so their side stops showing the tie), never the block.
 func (s *Service) Block(ctx context.Context, actorID, targetID int64) error {
 	if actorID == targetID {
 		return ErrSelfRequest
+	}
+	actor, err := s.user.GetByID(ctx, actorID)
+	if err != nil || actor == nil {
+		return ErrUserNotFound
 	}
 	target, err := s.user.GetByID(ctx, targetID)
 	if err != nil || target == nil {
 		return ErrUserNotFound
 	}
-	_ = s.RemoveFriend(ctx, actorID, targetID) // no-op + no event if they weren't friends
-	_ = s.repo.DeleteRequest(ctx, actorID, targetID)
-	_ = s.repo.DeleteRequest(ctx, targetID, actorID)
+	hadTie := false
+	if isFriend(actor, targetID) {
+		if err := s.unfriend(ctx, actor, targetID, target); err != nil {
+			return err
+		}
+		hadTie = true
+	}
+	for _, pair := range [][2]int64{{actorID, targetID}, {targetID, actorID}} {
+		if exists, _ := s.repo.HasRequest(ctx, pair[0], pair[1]); exists {
+			_ = s.repo.DeleteRequest(ctx, pair[0], pair[1])
+			hadTie = true
+		}
+	}
 	if err := s.user.UpdateBlocks(ctx, actorID, []int64{targetID}, nil); err != nil {
 		return err
 	}
-	payload := map[string]interface{}{
-		"id":   id.Format(targetID),
-		"type": TypeBlocked,
-		"user": partialUser(target),
-	}
-	stargate.PublishToUser(ctx, s.redis, actorID, "RELATIONSHIP_ADD", payload, s.cfg.Stargate.Region)
+	s.publishAdd(ctx, actor, target, TypeBlocked)
 	s.invalidateRelList(ctx, actorID, targetID)
+	if hadTie {
+		s.relayRemoved(ctx, actorID, target)
+	}
 	return nil
 }
 
@@ -323,6 +477,7 @@ func (s *Service) Unblock(ctx context.Context, actorID, targetID int64) error {
 	return nil
 }
 
+// partialUser builds a partial user object. Presence uses status/custom_status only (never online).
 func partialUser(u *auth.User) map[string]interface{} {
 	if u == nil {
 		return nil
@@ -336,6 +491,9 @@ func partialUser(u *auth.User) map[string]interface{} {
 		"banner":        u.Banner,
 		"bio":           u.Bio,
 		"about_me":      u.AboutMe,
+	}
+	if u.HomeDomain != "" {
+		m["home_domain"] = u.HomeDomain
 	}
 	pub := auth.ToPublicPresence(u.Presence, true)
 	m["presence"] = pub
@@ -464,39 +622,13 @@ func (s *Service) Delete(ctx context.Context, actorID, targetID int64) error {
 	return s.CancelRequest(ctx, actorID, targetID)
 }
 
-// CancelRequest cancels an outgoing request.
-func (s *Service) CancelRequest(ctx context.Context, actorID, targetID int64) error {
-	exists, err := s.repo.HasRequest(ctx, actorID, targetID)
-	if err != nil {
-		return err
-	}
-	if !exists {
-		return ErrRequestNotFound
-	}
-	if err := s.repo.DeleteRequest(ctx, actorID, targetID); err != nil {
-		return err
-	}
-	// Recipient receives RELATIONSHIP_REMOVE (incoming request was cancelled)
-	payload := map[string]interface{}{"id": id.Format(actorID)}
-	stargate.PublishToUser(ctx, s.redis, targetID, "RELATIONSHIP_REMOVE", payload, s.cfg.Stargate.Region)
-	s.invalidateRelList(ctx, actorID, targetID)
-	return nil
-}
-
 // Patch updates relationship metadata (nickname).
 func (s *Service) Patch(ctx context.Context, actorID, targetID int64, nickname *string) error {
 	u, err := s.user.GetByID(ctx, actorID)
 	if err != nil || u == nil {
 		return ErrUserNotFound
 	}
-	var isFriend bool
-	for _, r := range u.Relationships {
-		if r == targetID {
-			isFriend = true
-			break
-		}
-	}
-	if !isFriend {
+	if !isFriend(u, targetID) {
 		return ErrRequestNotFound
 	}
 	if nickname == nil {
@@ -514,38 +646,6 @@ func (s *Service) Patch(ctx context.Context, actorID, targetID int64, nickname *
 	return nil
 }
 
-// RemoveFriend removes a friend.
-func (s *Service) RemoveFriend(ctx context.Context, actorID, friendID int64) error {
-	u, err := s.user.GetByID(ctx, actorID)
-	if err != nil || u == nil {
-		return ErrUserNotFound
-	}
-	found := false
-	for _, r := range u.Relationships {
-		if r == friendID {
-			found = true
-			break
-		}
-	}
-	if !found {
-		return ErrRequestNotFound // or ErrNotFriends
-	}
-
-	if err := s.user.UpdateRelationships(ctx, actorID, nil, []int64{friendID}); err != nil {
-		return err
-	}
-	if err := s.user.UpdateRelationships(ctx, friendID, nil, []int64{actorID}); err != nil {
-		return err
-	}
-
-	// Real-time: both users receive RELATIONSHIP_REMOVE
-	payload := map[string]interface{}{"id": id.Format(friendID)}
-	stargate.PublishToUser(ctx, s.redis, actorID, "RELATIONSHIP_REMOVE", payload, s.cfg.Stargate.Region)
-	stargate.PublishToUser(ctx, s.redis, friendID, "RELATIONSHIP_REMOVE", map[string]interface{}{"id": id.Format(actorID)}, s.cfg.Stargate.Region)
-	s.invalidateRelList(ctx, actorID, friendID)
-	return nil
-}
-
 // BulkDelete removes multiple relationships.
 func (s *Service) BulkDelete(ctx context.Context, actorID int64, relationshipType int) error {
 	if relationshipType != TypeIncomingRequest {
@@ -559,6 +659,10 @@ func (s *Service) BulkDelete(ctx context.Context, actorID int64, relationshipTyp
 	for _, req := range incoming {
 		if err := s.repo.DeleteRequest(ctx, req.FromUserID, req.ToUserID); err != nil {
 			lastErr = err
+			continue
+		}
+		if from, _ := s.user.GetByID(ctx, req.FromUserID); from != nil && from.IsRemote() {
+			s.relayRemoved(ctx, actorID, from)
 		}
 	}
 	if lastErr == nil {

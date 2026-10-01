@@ -107,6 +107,16 @@ type ProfileUpdate struct {
 	User Profile `json:"user"`
 }
 
+// RelationshipEvent: POST /relationships - a user on the sending instance sent a friend
+// request to, accepted one from, or dropped one of the receiver's users. "remove" covers
+// every teardown (withdrawn, declined, unfriended, blocked): the receiver's own state says
+// which it was, and a block itself is never announced.
+type RelationshipEvent struct {
+	Action string  `json:"action"` // request | accept | remove
+	Actor  Profile `json:"actor"`
+	Target string  `json:"target"` // FID of a user on the receiving instance
+}
+
 // KeysQuery / KeysClaim mirror the Matrix-shaped device endpoints, scoped to the
 // receiver's own users.
 type KeysQuery struct {

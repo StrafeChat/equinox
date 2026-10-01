@@ -24,6 +24,7 @@ func SetupFederationRoutes(d Deps) {
 	g.Get("/users/lookup", s2s, h.LookupUser)
 	g.Get("/users/:id", s2s, h.GetUser)
 	g.Post("/users/update", s2s, h.UserUpdated)
+	g.Post("/relationships", s2s, h.Relationship)
 	g.Post("/rooms", s2s, h.RoomCreate)
 	g.Put("/rooms/participants", s2s, h.RoomParticipants)
 	g.Patch("/rooms", s2s, h.RoomPatch)

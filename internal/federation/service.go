@@ -20,6 +20,7 @@ import (
 	"github.com/StrafeChat/equinox/internal/modules/auth"
 	"github.com/StrafeChat/equinox/internal/modules/devices"
 	"github.com/StrafeChat/equinox/internal/modules/messages"
+	"github.com/StrafeChat/equinox/internal/modules/relationships"
 	"github.com/StrafeChat/equinox/internal/modules/rooms"
 	"github.com/StrafeChat/equinox/internal/safego"
 )
@@ -40,6 +41,7 @@ type Service struct {
 	msgRepo   messages.Repository
 	msgSvc    *messages.Service
 	devSvc    *devices.Service
+	relSvc    *relationships.Service
 }
 
 // New builds the engine with its own repository/service instances (stateless wrappers
@@ -58,6 +60,7 @@ func New(cfg *config.Config, session gocqlx.Session, rdb *redis.Client) (*Servic
 	msgRepo := messages.NewRepository(session)
 	msgSvc := messages.NewService(msgRepo, roomRepo, users, rdb, cfg, nil)
 	devSvc := devices.NewService(devices.NewRepository(session), rdb, cfg)
+	relSvc := relationships.NewService(relationships.NewRepository(session), users, rdb, cfg)
 	discovery := NewDiscovery(cfg.Federation)
 	s := &Service{
 		cfg:       cfg,
@@ -73,9 +76,13 @@ func New(cfg *config.Config, session gocqlx.Session, rdb *redis.Client) (*Servic
 		msgRepo:   msgRepo,
 		msgSvc:    msgSvc,
 		devSvc:    devSvc,
+		relSvc:    relSvc,
 	}
 	roomSvc.SetFederationInfo(s)
 	devSvc.SetRouter(s)
+	// Inbound events apply through relSvc; it relays only for the accept a crossed
+	// request produces, which the peer has not seen.
+	relSvc.SetFederator(s)
 	logger.Info("federation", "enabled as %s (key %s)", cfg.Federation.Domain, signer.KeyID)
 	return s, nil
 }
@@ -597,7 +604,7 @@ func (s *Service) AfterMessageDeleted(ctx context.Context, roomID int64, partici
 }
 
 // AfterProfileUpdated tells every instance that holds a shadow of this user (any peer
-// sharing a room with them) about the new profile.
+// sharing a room with them, or the home of a remote friend) about the new profile.
 func (s *Service) AfterProfileUpdated(ctx context.Context, u *auth.User) {
 	if u == nil || u.IsRemote() {
 		return
@@ -620,6 +627,11 @@ func (s *Service) AfterProfileUpdated(ctx context.Context, u *auth.User) {
 			domains[d] = struct{}{}
 		}
 	}
+	if byDomain, _, err := s.remotePeers(ctx, u.Relationships); err == nil {
+		for d := range byDomain {
+			domains[d] = struct{}{}
+		}
+	}
 	if len(domains) == 0 {
 		return
 	}
@@ -627,6 +639,29 @@ func (s *Service) AfterProfileUpdated(ctx context.Context, u *auth.User) {
 	for domain := range domains {
 		s.send(domain, http.MethodPost, "/users/update", body)
 	}
+}
+
+// ---- relationships (relationships.Federator) ------------------------------------------
+
+// relayRelationship tells target's home instance what actor, one of our users, did.
+func (s *Service) relayRelationship(action string, actor, target *auth.User) {
+	if actor == nil || target == nil || actor.IsRemote() || !target.IsRemote() || !s.fcfg.IsAllowedPeer(target.HomeDomain) {
+		return
+	}
+	body := RelationshipEvent{Action: action, Actor: s.ProfileOf(actor), Target: s.FIDOf(target)}
+	s.send(target.HomeDomain, http.MethodPost, "/relationships", body)
+}
+
+func (s *Service) AfterRelationshipRequested(_ context.Context, actor, target *auth.User) {
+	s.relayRelationship("request", actor, target)
+}
+
+func (s *Service) AfterRelationshipAccepted(_ context.Context, actor, target *auth.User) {
+	s.relayRelationship("accept", actor, target)
+}
+
+func (s *Service) AfterRelationshipRemoved(_ context.Context, actor, target *auth.User) {
+	s.relayRelationship("remove", actor, target)
 }
 
 // ---- key routing (devices.KeyRouter) --------------------------------------------------

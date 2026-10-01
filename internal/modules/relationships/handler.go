@@ -1,9 +1,12 @@
 package relationships
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/gofiber/fiber/v3"
 
@@ -12,12 +15,65 @@ import (
 	"github.com/StrafeChat/equinox/internal/modules/auth"
 )
 
+// HandleResolver turns "name#0001@domain" into a local user row (a shadow for remote
+// users). Provided by internal/federation; without it only local handles resolve.
+type HandleResolver interface {
+	ResolveHandle(ctx context.Context, handle string) (*auth.User, error)
+}
+
+// ResolveError is a handle lookup failure carrying the status it should be reported with,
+// so a resolver can distinguish "no such user" from "their instance is unreachable"
+// without this package knowing the federation error values.
+type ResolveError struct {
+	Status  int
+	Message string
+}
+
+func (e *ResolveError) Error() string { return e.Message }
+
 type Handler struct {
-	svc *Service
+	svc      *Service
+	resolver HandleResolver
 }
 
 func NewHandler(svc *Service) *Handler {
 	return &Handler{svc: svc}
+}
+
+func (h *Handler) SetHandleResolver(r HandleResolver) {
+	h.resolver = r
+}
+
+// resolveHandle finds the user behind a handle. Handles with a domain need federation.
+func (h *Handler) resolveHandle(c fiber.Ctx, handle string) (*auth.User, int, string) {
+	handle = strings.TrimSpace(handle)
+	if h.resolver != nil {
+		u, err := h.resolver.ResolveHandle(c.Context(), handle)
+		if err != nil {
+			var re *ResolveError
+			if errors.As(err, &re) {
+				return nil, re.Status, re.Message
+			}
+			return nil, http.StatusNotFound, err.Error()
+		}
+		return u, 0, ""
+	}
+	if strings.Contains(handle, "@") {
+		return nil, http.StatusBadRequest, "this instance does not federate; use a local username#0001"
+	}
+	name, disc, ok := strings.Cut(strings.TrimPrefix(handle, "@"), "#")
+	d, err := parseDiscriminator(strings.TrimSpace(disc))
+	if !ok || err != nil || strings.TrimSpace(name) == "" {
+		return nil, http.StatusBadRequest, "expected username#0001"
+	}
+	u, err := h.svc.FindLocalUser(c.Context(), strings.TrimSpace(name), d)
+	if err != nil {
+		return nil, http.StatusInternalServerError, "internal error"
+	}
+	if u == nil {
+		return nil, http.StatusNotFound, "user not found"
+	}
+	return u, 0, ""
 }
 
 // Get returns all relationships.
@@ -37,7 +93,8 @@ func (h *Handler) Get(c fiber.Ctx) error {
 }
 
 // Post sends a friend request.
-// Body: { "username": "alice", "discriminator": "1234" } (both required; discriminator is string)
+// Body: { "handle": "alice#1234" } or { "handle": "alice#1234@other.instance" };
+// { "username": "alice", "discriminator": "1234" } is still accepted.
 func (h *Handler) Post(c fiber.Ctx) error {
 	user := auth.GetUser(c)
 	if user == nil {
@@ -48,29 +105,21 @@ func (h *Handler) Post(c fiber.Ctx) error {
 	if errs := ParseSendRequestBody(c.Body(), &in); errs != nil {
 		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": formatValidationErrors(errs)})
 	}
-
-	if err := h.svc.SendRequest(c.Context(), user.ID, in); err != nil {
-		switch err {
-		case ErrInvalidDiscriminator:
-			return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "invalid discriminator"})
-		case ErrUserNotFound:
-			return c.Status(http.StatusNotFound).JSON(fiber.Map{"error": "user not found"})
-		case ErrSelfRequest:
-			return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "cannot send request to yourself"})
-		case ErrBotTarget:
-			return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": ErrBotTarget.Error()})
-		case ErrAlreadyFriends:
-			return c.Status(http.StatusConflict).JSON(fiber.Map{"error": "already friends"})
-		case ErrRequestExists:
-			return c.Status(http.StatusConflict).JSON(fiber.Map{"error": "request already sent"})
-		case ErrBlocked:
-			return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": "you cannot add this user"})
-		default:
-			logger.Err("relationships", err, map[string]any{"actor_id": user.ID})
-			return c.Status(http.StatusInternalServerError).JSON(fiber.Map{"error": "internal error"})
+	handle := in.Handle
+	if handle == "" {
+		if in.Username == "" || in.Discriminator == "" {
+			return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "handle is required"})
 		}
+		handle = in.Username + "#" + strings.TrimPrefix(in.Discriminator, "#")
+	}
+	target, status, msg := h.resolveHandle(c, handle)
+	if target == nil {
+		return c.Status(status).JSON(fiber.Map{"error": msg})
 	}
 
+	if err := h.svc.SendRequestTo(c.Context(), user.ID, target); err != nil {
+		return sendRequestError(c, err, user.ID)
+	}
 	return c.SendStatus(http.StatusNoContent)
 }
 
@@ -87,26 +136,29 @@ func (h *Handler) PutByID(c fiber.Ctx) error {
 	}
 
 	if err := h.svc.SendRequestByID(c.Context(), user.ID, targetID); err != nil {
-		switch err {
-		case ErrUserNotFound:
-			return c.Status(http.StatusNotFound).JSON(fiber.Map{"error": "user not found"})
-		case ErrSelfRequest:
-			return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "cannot send request to yourself"})
-		case ErrBotTarget:
-			return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": ErrBotTarget.Error()})
-		case ErrAlreadyFriends:
-			return c.Status(http.StatusConflict).JSON(fiber.Map{"error": "already friends"})
-		case ErrRequestExists:
-			return c.Status(http.StatusConflict).JSON(fiber.Map{"error": "request already sent"})
-		case ErrBlocked:
-			return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": "you cannot add this user"})
-		default:
-			logger.Err("relationships", err, map[string]any{"actor_id": user.ID})
-			return c.Status(http.StatusInternalServerError).JSON(fiber.Map{"error": "internal error"})
-		}
+		return sendRequestError(c, err, user.ID)
 	}
-
 	return c.SendStatus(http.StatusNoContent)
+}
+
+func sendRequestError(c fiber.Ctx, err error, actorID int64) error {
+	switch err {
+	case ErrUserNotFound:
+		return c.Status(http.StatusNotFound).JSON(fiber.Map{"error": "user not found"})
+	case ErrSelfRequest:
+		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "cannot send request to yourself"})
+	case ErrBotTarget:
+		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": ErrBotTarget.Error()})
+	case ErrAlreadyFriends:
+		return c.Status(http.StatusConflict).JSON(fiber.Map{"error": "already friends"})
+	case ErrRequestExists:
+		return c.Status(http.StatusConflict).JSON(fiber.Map{"error": "request already sent"})
+	case ErrBlocked:
+		return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": "you cannot add this user"})
+	default:
+		logger.Err("relationships", err, map[string]any{"actor_id": actorID})
+		return c.Status(http.StatusInternalServerError).JSON(fiber.Map{"error": "internal error"})
+	}
 }
 
 // Delete removes a relationship.

@@ -1,8 +1,14 @@
 package routes
 
 import (
+	"context"
+	"errors"
+	"net/http"
+	"strings"
 	"time"
 
+	"github.com/StrafeChat/equinox/internal/federation"
+	"github.com/StrafeChat/equinox/internal/logger"
 	"github.com/StrafeChat/equinox/internal/middleware"
 	"github.com/StrafeChat/equinox/internal/modules/applications"
 	"github.com/StrafeChat/equinox/internal/modules/auth"
@@ -13,6 +19,41 @@ import (
 	"github.com/StrafeChat/equinox/internal/modules/users"
 	"github.com/gofiber/fiber/v3/middleware/limiter"
 )
+
+// relationshipResolver adapts federation's handle lookup to the relationships handler,
+// which wants an HTTP status per failure but must not import the federation package
+// (federation imports relationships for the inbound side).
+type relationshipResolver struct {
+	fed *federation.Service
+}
+
+func (r relationshipResolver) ResolveHandle(ctx context.Context, handle string) (*auth.User, error) {
+	u, err := r.fed.ResolveHandle(ctx, handle)
+	if err == nil {
+		return u, nil
+	}
+	status, msg := http.StatusInternalServerError, "internal error"
+	var peerReply *federation.StatusError
+	switch {
+	case errors.Is(err, federation.ErrInvalidHandle):
+		status, msg = http.StatusBadRequest, err.Error()
+	case errors.Is(err, federation.ErrRemoteUserNotFound):
+		status, msg = http.StatusNotFound, err.Error()
+		if !strings.Contains(handle, "@") {
+			msg = "user not found"
+		}
+	case errors.Is(err, federation.ErrPeerNotAllowed):
+		status, msg = http.StatusForbidden, err.Error()
+	case errors.Is(err, federation.ErrRemoteUnavailable):
+		status, msg = http.StatusBadGateway, federation.ErrRemoteUnavailable.Error()
+	case errors.As(err, &peerReply):
+		status, msg = http.StatusBadGateway, "the other instance refused the request"
+		logger.Err("relationships", err, map[string]any{"handle": handle})
+	default:
+		logger.Err("relationships", err, map[string]any{"handle": handle})
+	}
+	return nil, &relationships.ResolveError{Status: status, Message: msg}
+}
 
 func SetupUsersRoutes(d Deps) {
 	userRepo := auth.NewCachedUserRepository(auth.NewUserRepository(d.Scylla), d.Redis, d.Config)
@@ -27,6 +68,10 @@ func SetupUsersRoutes(d Deps) {
 	relRepo := relationships.NewRepository(d.Scylla)
 	relSvc := relationships.NewService(relRepo, userRepo, d.Redis, d.Config)
 	relHandler := relationships.NewHandler(relSvc)
+	if d.Federation != nil {
+		relSvc.SetFederator(d.Federation)
+		relHandler.SetHandleResolver(relationshipResolver{d.Federation})
+	}
 
 	roomsRepo := rooms.NewRepository(d.Scylla)
 	usersHandler := users.NewHandler(userRepo, roomsRepo, d.Redis, d.Config)

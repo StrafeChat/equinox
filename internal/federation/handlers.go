@@ -15,6 +15,7 @@ import (
 	"github.com/StrafeChat/equinox/internal/logger"
 	"github.com/StrafeChat/equinox/internal/modules/devices"
 	"github.com/StrafeChat/equinox/internal/modules/messages"
+	"github.com/StrafeChat/equinox/internal/modules/relationships"
 	"github.com/StrafeChat/equinox/internal/modules/rooms"
 	"github.com/StrafeChat/equinox/internal/stargate"
 )
@@ -530,6 +531,55 @@ func (h *Handler) ToDevice(c fiber.Ctx) error {
 		return fail(c, err, map[string]any{"peer": requester})
 	}
 	return c.SendStatus(http.StatusNoContent)
+}
+
+// Relationship POST /relationships - a friend request, acceptance or teardown from a user
+// on the requesting instance towards one of ours.
+func (h *Handler) Relationship(c fiber.Ctx) error {
+	var body RelationshipEvent
+	if err := json.Unmarshal(c.Body(), &body); err != nil {
+		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "invalid JSON"})
+	}
+	requester := RequesterDomain(c)
+	if _, domain, err := ParseFID(body.Actor.FID); err != nil || domain != requester {
+		return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": "actor must belong to the requesting instance"})
+	}
+	ctx := c.Context()
+	actor, err := h.svc.EnsureShadow(ctx, requester, body.Actor)
+	if err != nil {
+		return fail(c, err, map[string]any{"peer": requester})
+	}
+	targetID, err := h.svc.ResolveLocalID(ctx, body.Target)
+	if err != nil {
+		return fail(c, err, nil)
+	}
+	target, err := h.svc.users.GetByID(ctx, targetID)
+	if err != nil {
+		return fail(c, err, nil)
+	}
+	// A peer may only act towards our own users - never between two foreign ones.
+	if target == nil || target.IsRemote() {
+		return c.Status(http.StatusNotFound).JSON(fiber.Map{"error": "user not found"})
+	}
+	switch body.Action {
+	case "request":
+		err = h.svc.relSvc.ApplyRemoteRequest(ctx, actor, target)
+	case "accept":
+		err = h.svc.relSvc.ApplyRemoteAccept(ctx, actor, target)
+	case "remove":
+		err = h.svc.relSvc.ApplyRemoteRemove(ctx, actor, target)
+	default:
+		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "unknown action"})
+	}
+	switch {
+	case err == nil:
+		return c.SendStatus(http.StatusNoContent)
+	case errors.Is(err, relationships.ErrRequestNotFound):
+		return c.Status(http.StatusNotFound).JSON(fiber.Map{"error": err.Error()})
+	case errors.Is(err, relationships.ErrBotTarget):
+		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	}
+	return fail(c, err, map[string]any{"peer": requester, "action": body.Action})
 }
 
 // Peers GET /federation/peers (client-authenticated, not S2S): instances we've talked to.
