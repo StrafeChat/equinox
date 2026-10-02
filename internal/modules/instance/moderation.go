@@ -607,6 +607,12 @@ func (s *Service) audit(ctx context.Context, actorID int64, action, targetType s
 	}
 }
 
+// RecordAudit writes an instance audit entry for an administrator's action taken in
+// another module (the Discover review queue).
+func (s *Service) RecordAudit(ctx context.Context, actorID int64, action, targetType string, targetID int64, reason string) {
+	s.audit(ctx, actorID, action, targetType, targetID, reason)
+}
+
 func (s *Service) ListAudit(ctx context.Context, actorID int64) ([]AuditEntry, error) {
 	if err := s.requireAdmin(ctx, actorID); err != nil {
 		return nil, err

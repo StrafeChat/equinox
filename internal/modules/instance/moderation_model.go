@@ -8,8 +8,9 @@ import (
 // Report targets and reasons. Reasons are a closed set so the queue can be filtered and
 // counted; "other" plus free text covers the rest.
 const (
-	TargetUser  = "user"
-	TargetSpace = "space"
+	TargetUser        = "user"
+	TargetSpace       = "space"
+	TargetApplication = "application"
 
 	ReportOpen      = "open"
 	ReportResolved  = "resolved"
