@@ -27,6 +27,11 @@ func SetupOAuthRoutes(d Deps) {
 	roomRepo := rooms.NewRepository(d.Scylla)
 	spaceSvc := spaces.NewService(spaces.NewRepository(d.Scylla), roomRepo, userRepo, d.Redis, d.Config)
 	spaceSvc.SetSystemMessenger(spaces.SystemMessenger(newSystemMessenger(d, roomRepo, messages.NewRepository(d.Scylla))))
+	if d.Federation != nil {
+		// A bot installed into a space hosted here must reach the mirrors, and a bot of
+		// this instance installed into a space hosted elsewhere goes through its origin.
+		spaceSvc.SetFederator(d.Federation)
+	}
 	svc.SetInstaller(spaceSvc)
 
 	h := oauth.NewHandler(svc)

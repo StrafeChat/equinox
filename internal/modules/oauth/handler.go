@@ -27,6 +27,19 @@ func NewHandler(svc *Service) *Handler { return &Handler{svc: svc} }
 // module (a bot install the user may not perform) come back as access_denied with the
 // space's own wording, so the consent screen can say why.
 func oauthError(c fiber.Ctx, err error) error {
+	// A refusal from the spaces module - including one passed through from the instance
+	// hosting the space (an install into a mirrored space is decided there) - keeps its
+	// status and wording.
+	if status, msg, ok := spaces.HTTPError(err); ok {
+		code := "invalid_request"
+		switch {
+		case status == http.StatusForbidden:
+			code = "access_denied"
+		case status >= 500:
+			code = "server_error"
+		}
+		return c.Status(status).JSON(fiber.Map{"error": code, "error_description": msg})
+	}
 	switch {
 	case errors.Is(err, ErrInvalidClient):
 		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "invalid_client"})
@@ -106,13 +119,18 @@ func (h *Handler) Info(c fiber.Ctx) error {
 		out["permissions"] = view.Permissions
 		targets := make([]fiber.Map, 0, len(view.Targets))
 		for _, t := range view.Targets {
-			targets = append(targets, fiber.Map{
+			row := fiber.Map{
 				"id":                    id.Format(t.Space.ID),
 				"name":                  t.Space.Name,
 				"name_acronym":          t.Space.NameAcronym,
 				"icon":                  t.Space.Icon,
 				"grantable_permissions": t.Grantable,
-			})
+			}
+			if t.Space.Federation != nil {
+				// A space hosted on another instance: the bot is added through its origin.
+				row["hosted_on"] = t.Space.Federation.OriginDomain
+			}
+			targets = append(targets, row)
 		}
 		out["spaces"] = targets
 	}

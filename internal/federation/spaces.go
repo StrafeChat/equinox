@@ -555,8 +555,10 @@ func (s *Service) roleFromWire(ctx context.Context, w SpaceRoleWire) (*spaces.Sp
 		Color: w.Color, Hoist: w.Hoist, Mentionable: w.Mentionable, CreatedAt: w.CreatedAt, UpdatedAt: w.UpdatedAt,
 	}
 	if w.Bot != "" {
-		if uid, err := s.ResolveLocalID(ctx, w.Bot); err == nil {
-			r.BotID = uid
+		// The role may arrive before the member-add that introduces its bot (an install
+		// creates the role first), so fetch the bot from its home if nobody here knows it.
+		if u, err := s.shadowByFID(ctx, w.Bot); err == nil && u != nil {
+			r.BotID = u.ID
 		}
 	}
 	return r, nil

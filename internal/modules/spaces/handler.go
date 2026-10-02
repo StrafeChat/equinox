@@ -72,7 +72,7 @@ func HTTPError(err error) (status int, message string, ok bool) {
 		errors.Is(err, ErrInvalidNotifLevel), errors.Is(err, ErrInvalidSystemFlags), errors.Is(err, ErrInvalidWidgetRoom),
 		errors.Is(err, ErrInvalidInvite), errors.Is(err, ErrInvalidUserLimit), errors.Is(err, ErrInvalidBitrate),
 		errors.Is(err, ErrAlreadyOwner), errors.Is(err, ErrSpaceNameMismatch), errors.Is(err, ErrInvalidBot),
-		errors.Is(err, ErrManagedRole):
+		errors.Is(err, ErrManagedRole), errors.Is(err, ErrNotLocalUser):
 		return http.StatusBadRequest, err.Error(), true
 	}
 	return 0, "", false

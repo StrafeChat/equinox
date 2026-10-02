@@ -593,6 +593,39 @@ func (s *Service) resolveProfile(ctx context.Context, p Profile, requester strin
 
 // ---- outbound relays ------------------------------------------------------------------
 
+// shadowByFID is the local row for a federated id: the user themselves when local, their
+// shadow when one exists, else the profile is fetched from their home instance and a
+// shadow created - so a reference to a user nobody here has met yet still resolves.
+func (s *Service) shadowByFID(ctx context.Context, fid string) (*auth.User, error) {
+	originID, domain, err := ParseFID(fid)
+	if err != nil {
+		return nil, err
+	}
+	if s.IsLocalServer(domain) {
+		u, err := s.users.GetByID(ctx, originID)
+		if err != nil {
+			return nil, err
+		}
+		if u == nil || u.IsRemote() {
+			return nil, ErrRemoteUserNotFound
+		}
+		return u, nil
+	}
+	if u, err := s.users.GetByRemote(ctx, domain, originID); err != nil {
+		return nil, err
+	} else if u != nil {
+		return u, nil
+	}
+	if !s.fcfg.IsAllowedPeer(domain) {
+		return nil, ErrPeerNotAllowed
+	}
+	var fetched Profile
+	if _, err := s.client.Do(ctx, domain, http.MethodGet, "/users/"+id.Format(originID), nil, &fetched); err != nil {
+		return nil, err
+	}
+	return s.EnsureShadow(ctx, domain, fetched)
+}
+
 // remotePeers groups a room's participants by home instance (local users excluded).
 func (s *Service) remotePeers(ctx context.Context, participantIDs []int64) (map[string][]*auth.User, []*auth.User, error) {
 	if len(participantIDs) == 0 {

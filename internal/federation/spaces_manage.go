@@ -504,6 +504,26 @@ type manageEmoji struct {
 	Emoji string `json:"emoji"`
 }
 
+// bot.install: a bot of the asking instance, added as the member who consented there.
+type manageBotInstall struct {
+	Bot         Profile `json:"bot"`
+	Permissions int64   `json:"permissions"`
+}
+
+type manageGranted struct {
+	Granted int64 `json:"granted"`
+}
+
+// member.add: the spaces.join scope - the actor (a bot of the asking instance, typically)
+// adds a user of that instance who consented.
+type manageMemberAdd struct {
+	User Profile `json:"user"`
+}
+
+type manageAdded struct {
+	Added bool `json:"added"`
+}
+
 type manageBan struct {
 	User      Profile   `json:"user"`
 	Reason    string    `json:"reason,omitempty"`
@@ -714,6 +734,46 @@ func (s *Service) manageAt(ctx context.Context, sp *spaces.Space, actor *auth.Us
 		default:
 			return nil, svc.UnbanMember(ctx, actor.ID, spaceID, target)
 		}
+	case "bot.install", "member.add":
+		// The subject must be the asking instance's own user, like the actor: no instance
+		// installs another's bot or speaks for another's users.
+		var subject Profile
+		var perms int64
+		if op == "bot.install" {
+			var p manageBotInstall
+			if err := decodeParams(params, &p); err != nil {
+				return nil, err
+			}
+			subject, perms = p.Bot, p.Permissions
+			if !subject.Bot {
+				return nil, spaces.ErrInvalidBot
+			}
+		} else {
+			var p manageMemberAdd
+			if err := decodeParams(params, &p); err != nil {
+				return nil, err
+			}
+			subject = p.User
+		}
+		if _, domain, err := ParseFID(subject.FID); err != nil || domain != actor.HomeDomain {
+			return nil, errForeignUser
+		}
+		u, err := s.EnsureShadow(ctx, actor.HomeDomain, subject)
+		if err != nil {
+			return nil, err
+		}
+		if op == "bot.install" {
+			granted, err := svc.InstallBot(ctx, actor.ID, spaceID, u.ID, perms)
+			if err != nil {
+				return nil, err
+			}
+			return manageGranted{Granted: granted}, nil
+		}
+		added, err := svc.AddMemberViaOAuth(ctx, actor.ID, spaceID, u.ID)
+		if err != nil {
+			return nil, err
+		}
+		return manageAdded{Added: added}, nil
 	case "bans.list":
 		bans, users, err := svc.ListBans(ctx, actor.ID, spaceID)
 		if err != nil {
@@ -1419,6 +1479,22 @@ func (s *Service) RemoteDeleteEmoji(ctx context.Context, origin string, spaceID 
 }
 
 // ---- sync ---------------------------------------------------------------------------------
+
+func (s *Service) RemoteInstallBot(ctx context.Context, origin string, spaceID int64, user, bot *auth.User, permissions int64) (int64, error) {
+	var out manageGranted
+	if err := s.manage(ctx, origin, spaceID, user, "bot.install", manageBotInstall{Bot: s.ProfileOf(bot), Permissions: permissions}, &out); err != nil {
+		return 0, err
+	}
+	return out.Granted, nil
+}
+
+func (s *Service) RemoteAddMember(ctx context.Context, origin string, spaceID int64, actor, user *auth.User) (bool, error) {
+	var out manageAdded
+	if err := s.manage(ctx, origin, spaceID, actor, "member.add", manageMemberAdd{User: s.ProfileOf(user)}, &out); err != nil {
+		return false, err
+	}
+	return out.Added, nil
+}
 
 // SpaceSyncRequest: POST /spaces/sync - a mirror asks for a fresh snapshot.
 type SpaceSyncRequest struct {

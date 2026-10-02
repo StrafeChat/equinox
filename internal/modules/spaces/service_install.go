@@ -18,7 +18,10 @@ import (
 // a space its bot is in. Both end in the same member-add path an invite join uses, so the
 // join notice, gateway events and unread bookkeeping are identical.
 
-var ErrInvalidBot = errors.New("that account is not a bot")
+var (
+	ErrInvalidBot   = errors.New("that account is not a bot")
+	ErrNotLocalUser = errors.New("that user does not belong to this instance")
+)
 
 // InstallTarget is a space a user may add a bot to, with the permission bits they may hand
 // it (everything for the owner and Administrators, otherwise exactly what they hold).
@@ -36,11 +39,9 @@ type SpaceSummary struct {
 }
 
 // canInstallBots is Discord's rule for adding a bot: the owner, an Administrator, or
-// someone with Manage Space.
+// someone with Manage Space. On a mirror this reads the mirrored roles, which is what the
+// consent screen's picker needs; the install itself is decided by the origin.
 func (s *Service) canInstallBots(ctx context.Context, actorID, spaceID int64) (*Space, int64, error) {
-	if err := s.assertLocal(ctx, spaceID); err != nil {
-		return nil, 0, err
-	}
 	sp, err := s.repo.GetByID(ctx, spaceID)
 	if err != nil {
 		return nil, 0, err
@@ -78,7 +79,12 @@ func (s *Service) BotInstallTargets(ctx context.Context, userID int64) ([]Instal
 			out = append(out, InstallTarget{Space: sm.Space, Grantable: permissions.AllSpace})
 		case permissions.Has(sm.Permissions, permissions.PermManageSpace):
 			out = append(out, InstallTarget{Space: sm.Space, Grantable: sm.Permissions})
+		default:
+			continue
 		}
+		// A space hosted elsewhere is a target too (the bot is added through its origin);
+		// the picker says where it lives.
+		s.attachFederation(ctx, sm.Space)
 	}
 	return out, nil
 }
@@ -119,16 +125,28 @@ func (s *Service) ListSpaceSummaries(ctx context.Context, userID int64) ([]Space
 // were actually granted. Already a member: nothing changes and 0 is returned, matching a
 // re-authorisation of an installed bot.
 func (s *Service) InstallBot(ctx context.Context, actorID, spaceID, botUserID, perms int64) (int64, error) {
-	sp, grantable, err := s.canInstallBots(ctx, actorID, spaceID)
-	if err != nil {
-		return 0, err
-	}
 	bot, err := s.userRepo.GetByID(ctx, botUserID)
 	if err != nil {
 		return 0, err
 	}
 	if bot == nil || !bot.Bot {
 		return 0, ErrInvalidBot
+	}
+	if origin, actor, err := s.remoteSpace(ctx, actorID, spaceID); err != nil {
+		return 0, err
+	} else if origin != "" {
+		// A space hosted elsewhere: its origin adds the bot as this member, with every
+		// check a local install gets, and what it relays back builds the member and the
+		// managed role here. Only a bot of this instance can be offered - the consent
+		// screen is its home's, like the member's.
+		if bot.IsRemote() {
+			return 0, ErrInvalidBot
+		}
+		return s.fed.RemoteInstallBot(ctx, origin, spaceID, actor, bot, perms)
+	}
+	sp, grantable, err := s.canInstallBots(ctx, actorID, spaceID)
+	if err != nil {
+		return 0, err
 	}
 	granted := perms & grantable & permissions.AllSpace
 	if ok, err := s.repo.IsMember(ctx, spaceID, botUserID); err != nil {
@@ -347,8 +365,19 @@ func (s *Service) cleanupBotRoles(ctx context.Context, spaceID, userID int64) {
 // Invite adds userID - who authorised it - to the space. Returns false when the user was
 // already a member.
 func (s *Service) AddMemberViaOAuth(ctx context.Context, actorID, spaceID, userID int64) (bool, error) {
-	if err := s.assertLocal(ctx, spaceID); err != nil {
+	if origin, actor, err := s.remoteSpace(ctx, actorID, spaceID); err != nil {
 		return false, err
+	} else if origin != "" {
+		// The origin adds the user (one of this instance's, who consented here) as the
+		// actor, with the same permission check a local add gets.
+		u, err := s.userRepo.GetByID(ctx, userID)
+		if err != nil {
+			return false, err
+		}
+		if u == nil || u.IsRemote() {
+			return false, ErrNotLocalUser
+		}
+		return s.fed.RemoteAddMember(ctx, origin, spaceID, actor, u)
 	}
 	sp, err := s.repo.GetByID(ctx, spaceID)
 	if err != nil {

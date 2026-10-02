@@ -97,6 +97,10 @@ type Federator interface {
 	RemoteCreateEmoji(ctx context.Context, origin string, spaceID int64, user *auth.User, emojiID int64, name, url string, animated bool) (*SpaceEmoji, error)
 	RemoteRenameEmoji(ctx context.Context, origin string, spaceID int64, user *auth.User, emojiID int64, name string) (*SpaceEmoji, error)
 	RemoteDeleteEmoji(ctx context.Context, origin string, spaceID int64, user *auth.User, emojiID int64) (*SpaceEmoji, error)
+	// RemoteInstallBot adds a bot of this instance to a space hosted elsewhere, as the
+	// member who consented; RemoteAddMember is the spaces.join scope for such a space.
+	RemoteInstallBot(ctx context.Context, origin string, spaceID int64, user, bot *auth.User, permissions int64) (granted int64, err error)
+	RemoteAddMember(ctx context.Context, origin string, spaceID int64, actor, user *auth.User) (added bool, err error)
 	// ResyncRemote reconciles a mirror against a fresh snapshot from its origin.
 	ResyncRemote(ctx context.Context, origin string, spaceID int64) error
 }
