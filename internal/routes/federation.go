@@ -63,6 +63,8 @@ func SetupFederationRoutes(d Deps) {
 	// Pushed by the origin to every instance mirroring the space.
 	g.Post("/spaces/update", s2s, h.SpaceUpdate)
 	g.Post("/spaces/members", s2s, h.SpaceMembers)
+	g.Post("/spaces/members/list", s2s, h.SpaceMembersList)
+	g.Post("/spaces/peers", s2s, h.SpacePeers)
 	g.Post("/spaces/roles", s2s, h.SpaceRoles)
 	g.Post("/spaces/rooms", s2s, h.SpaceRooms)
 	g.Post("/spaces/emoji", s2s, h.SpaceEmoji)

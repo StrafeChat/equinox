@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -19,6 +20,7 @@ import (
 	"github.com/StrafeChat/equinox/internal/modules/messages"
 	"github.com/StrafeChat/equinox/internal/modules/rooms"
 	"github.com/StrafeChat/equinox/internal/modules/spaces"
+	"github.com/StrafeChat/equinox/internal/stargate"
 )
 
 // Spaces across instances - the engine side of spaces/federation.go. The origin of a
@@ -119,21 +121,48 @@ type SpaceMemberWire struct {
 }
 
 // SpaceSnapshot is everything a mirror is built from: the join reply (and a resync).
+// Members is the first page; MembersNext, when set, is the cursor to fetch the rest with
+// /spaces/members/list. Peers are the other instances in the space (the origin itself
+// excluded), so a mirror's users reach them directly with presence and profile changes.
 type SpaceSnapshot struct {
 	Space       SpaceRef          `json:"space"`
 	Info        SpaceInfo         `json:"info"`
 	Roles       []SpaceRoleWire   `json:"roles"`
 	Rooms       []SpaceRoomWire   `json:"rooms"`
 	Members     []SpaceMemberWire `json:"members"`
+	MembersNext string            `json:"members_next,omitempty"`
 	Emoji       []SpaceEmojiWire  `json:"emoji,omitempty"`
 	MemberCount int               `json:"member_count"`
+	Peers       []string          `json:"peers,omitempty"`
 }
 
 // SpaceJoinRequest: POST /spaces/join - a user on the requesting instance redeems an
-// invite for a space hosted here.
+// invite for a space hosted here. Presence is how they appear right now, so the member
+// every mirror is told about starts with their real status.
 type SpaceJoinRequest struct {
-	Code string  `json:"code"`
-	User Profile `json:"user"`
+	Code     string               `json:"code"`
+	User     Profile              `json:"user"`
+	Presence *auth.PublicPresence `json:"presence,omitempty"`
+}
+
+// SpaceMembersQuery: POST /spaces/members/list - the page of a hosted space's members
+// after a cursor (a snapshot's members_next, or an earlier page's next).
+type SpaceMembersQuery struct {
+	Space SpaceRef `json:"space"`
+	After string   `json:"after,omitempty"`
+}
+
+type SpaceMembersReply struct {
+	Members []SpaceMemberWire `json:"members"`
+	Next    string            `json:"next,omitempty"`
+}
+
+// SpacePeerEvent: POST /spaces/peers - an instance started or stopped mirroring the
+// space (origin → mirrors).
+type SpacePeerEvent struct {
+	Space  SpaceRef `json:"space"`
+	Action string   `json:"action"` // add | remove
+	Domain string   `json:"domain"`
 }
 
 // SpaceInvitePreviewReply: GET /spaces/invites/:code.
@@ -257,10 +286,12 @@ type SpaceDeleteEvent struct {
 
 // Caps on what a peer may hand us about a space.
 const (
-	maxSnapshotMembers = 5000
-	maxSnapshotRooms   = 500
-	maxSnapshotRoles   = 250
-	maxHistoryPage     = 100
+	maxMirrorMembers = 100000 // members a mirror holds at most (fetched in pages)
+	maxMemberPage    = 1000   // members per page, served to and accepted from a peer
+	maxSnapshotRooms = 500
+	maxSnapshotRoles = 250
+	maxSpacePeers    = 1000
+	maxHistoryPage   = 100
 )
 
 var (
@@ -389,17 +420,20 @@ func (s *Service) snapshot(ctx context.Context, sp *spaces.Space) (*SpaceSnapsho
 		}
 		out.Rooms = append(out.Rooms, s.roomWire(ctx, r, snap.RoomOverridesFor(r.ID)))
 	}
-	members, err := s.spaceSvc.Members(ctx, sp.ID)
+	// Members come in pages (the mirror fetches the rest through /spaces/members/list), so
+	// a big space neither makes one huge reply nor gets cut off at an arbitrary count.
+	count, err := s.spaceSvc.CountMembers(ctx, sp.ID)
 	if err != nil {
 		return nil, err
 	}
-	out.MemberCount = len(members)
-	for i := range members {
-		if len(out.Members) >= maxSnapshotMembers {
-			break
-		}
-		out.Members = append(out.Members, s.memberWire(&members[i].Member, members[i].User))
+	out.MemberCount = count
+	if out.Members, out.MembersNext, err = s.membersPage(ctx, sp.ID, 0); err != nil {
+		return nil, err
 	}
+	for d := range s.spacePeers(ctx, sp.ID) {
+		out.Peers = append(out.Peers, d)
+	}
+	sort.Strings(out.Peers)
 	emoji, err := s.spaceSvc.Emojis(ctx, sp.ID)
 	if err != nil {
 		return nil, err
@@ -596,38 +630,45 @@ func (s *Service) mirrorMember(ctx context.Context, origin string, w SpaceMember
 }
 
 // applyRelayedPresence writes the status a peer reported for one of its (or a third
-// instance's) users onto their shadow row, when it differs from what is stored. Local
-// users are never touched: their own gateway is the authority on their presence.
-func (s *Service) applyRelayedPresence(ctx context.Context, u *auth.User, p auth.PublicPresence) {
+// instance's) users onto their shadow row, when it differs from what is stored, and tells
+// local clients. Local users are never touched: their own gateway is the authority on
+// their presence. Reports whether anything changed.
+func (s *Service) applyRelayedPresence(ctx context.Context, u *auth.User, p auth.PublicPresence) bool {
 	if u == nil || !u.IsRemote() {
-		return
+		return false
 	}
 	switch p.Status {
 	case "online", "idle", "dnd", "offline":
 	default:
-		return
+		return false
 	}
 	if utf8.RuneCountInString(p.CustomStatus) > maxRelayedCustomStatus {
-		return
+		return false
 	}
 	current := auth.ToPublicPresence(u.Presence, true)
 	if current.Status == p.Status && current.CustomStatus == p.CustomStatus {
-		return
+		return false
 	}
 	online := p.Status != "offline"
 	status := p.Status
 	custom := strings.TrimSpace(p.CustomStatus)
-	if _, err := s.users.UpdateProfile(ctx, u.ID, &auth.ProfileUpdate{
+	updated, err := s.users.UpdateProfile(ctx, u.ID, &auth.ProfileUpdate{
 		Presence: &auth.PresenceUpdate{Online: &online, Status: &status, CustomStatus: &custom},
-	}); err != nil {
+	})
+	if err != nil {
 		logger.Err("federation", err, map[string]any{"user_id": u.ID})
+		return false
 	}
+	if updated != nil && s.redis != nil {
+		stargate.PublishPresenceUpdate(ctx, s.redis, s.cfg.Stargate.Region, updated)
+	}
+	return true
 }
 
 // mirrorSpec builds a whole mirror from a snapshot (allocating local room ids), for a
 // new mirror (spaceID 0) or an existing one being reconciled.
 func (s *Service) mirrorSpec(ctx context.Context, origin string, snap *SpaceSnapshot, spaceID int64) (*spaces.MirrorSpec, error) {
-	if len(snap.Rooms) > maxSnapshotRooms || len(snap.Roles) > maxSnapshotRoles || len(snap.Members) > maxSnapshotMembers {
+	if len(snap.Rooms) > maxSnapshotRooms || len(snap.Roles) > maxSnapshotRoles || len(snap.Members) > maxMirrorMembers {
 		return nil, ErrPayloadTooLarge
 	}
 	if spaceID == 0 {
@@ -673,6 +714,7 @@ func (s *Service) mirrorSpec(ctx context.Context, origin string, snap *SpaceSnap
 		}
 		spec.Rooms = append(spec.Rooms, mr)
 	}
+	spec.MembersComplete = snap.MembersNext == ""
 	s.applySpaceInfo(ctx, spec.Space, origin, snap.Info)
 	return spec, nil
 }
@@ -732,9 +774,7 @@ func (s *Service) AfterSpaceMemberAdded(ctx context.Context, spaceID int64, m *s
 	}
 	if u.IsRemote() && s.fcfg.IsAllowedPeer(u.HomeDomain) {
 		s.ensureHosted(ctx, spaceID)
-		if err := s.repo.AddSpacePeer(ctx, spaceID, u.HomeDomain); err != nil {
-			logger.Err("federation", err, map[string]any{"space_id": spaceID, "peer": u.HomeDomain})
-		}
+		s.addSpacePeer(ctx, spaceID, u.HomeDomain)
 	}
 	peers := s.spacePeers(ctx, spaceID)
 	if len(peers) == 0 {
@@ -778,7 +818,7 @@ func (s *Service) AfterSpaceMemberRemoved(ctx context.Context, spaceID, userID i
 			return
 		}
 	}
-	_ = s.repo.RemoveSpacePeer(ctx, spaceID, u.HomeDomain)
+	s.removeSpacePeer(ctx, spaceID, u.HomeDomain)
 }
 
 func (s *Service) AfterSpaceRoleChanged(ctx context.Context, spaceID int64, role *spaces.SpaceRole, deleted bool) {
@@ -869,7 +909,9 @@ func (s *Service) PreviewRemoteInvite(ctx context.Context, domain, code string) 
 
 func (s *Service) JoinRemoteSpace(ctx context.Context, domain, code string, user *auth.User) (*spaces.Space, error) {
 	var snap SpaceSnapshot
-	if _, err := s.client.Do(ctx, domain, http.MethodPost, "/spaces/join", SpaceJoinRequest{Code: code, User: s.ProfileOf(user)}, &snap); err != nil {
+	presence := auth.ToPublicPresence(user.Presence, true)
+	req := SpaceJoinRequest{Code: code, User: s.ProfileOf(user), Presence: &presence}
+	if _, err := s.client.Do(ctx, domain, http.MethodPost, "/spaces/join", req, &snap); err != nil {
 		return nil, spaceOriginError(err, domain, "/spaces/join")
 	}
 	originSpaceID, err := id.Parse(snap.Space.OriginSpaceID)
@@ -898,10 +940,10 @@ func (s *Service) JoinRemoteSpace(ctx context.Context, domain, code string, user
 		if err := s.spaceSvc.AddMirrorMember(ctx, m.SpaceID, *me); err != nil {
 			return nil, err
 		}
-		// The origin (and through it every mirror) starts with this member's real status.
-		s.sendPresence(user, domain)
+		s.storeMirrorPeers(ctx, m.SpaceID, domain, snap.Peers)
 		return s.spaceSvc.GetSpace(ctx, m.SpaceID)
 	}
+	s.completeSnapshot(ctx, domain, &snap)
 	spec, err := s.mirrorSpec(ctx, domain, &snap, 0)
 	if err != nil {
 		return nil, err
@@ -912,8 +954,8 @@ func (s *Service) JoinRemoteSpace(ctx context.Context, domain, code string, user
 	if err := s.repo.PutSpaceMapping(ctx, &SpaceMapping{SpaceID: spec.Space.ID, OriginDomain: domain, OriginSpaceID: originSpaceID}); err != nil {
 		return nil, err
 	}
+	s.storeMirrorPeers(ctx, spec.Space.ID, domain, snap.Peers)
 	s.spaceSvc.AnnounceMirrorMember(ctx, spec.Space.ID, user.ID)
-	s.sendPresence(user, domain)
 	s.touchPeer(ctx, domain)
 	return spec.Space, nil
 }
@@ -1314,6 +1356,10 @@ func (h *Handler) SpaceJoin(c fiber.Ctx) error {
 	if err != nil {
 		return fail(c, err, map[string]any{"peer": requester})
 	}
+	if body.Presence != nil {
+		// Their status before the member is announced, so every mirror starts right.
+		h.svc.applyRelayedPresence(ctx, user, *body.Presence)
+	}
 	sp, err := h.svc.spaceSvc.JoinByInvite(ctx, user.ID, body.Code)
 	if err != nil {
 		return spaceFail(c, err, map[string]any{"peer": requester, "code": body.Code})
@@ -1321,7 +1367,7 @@ func (h *Handler) SpaceJoin(c fiber.Ctx) error {
 	// The requester is a peer of this space from now on, whether or not the hook that
 	// normally records it ran (an already-member rejoin skips it).
 	h.svc.ensureHosted(ctx, sp.ID)
-	_ = h.svc.repo.AddSpacePeer(ctx, sp.ID, requester)
+	h.svc.addSpacePeer(ctx, sp.ID, requester)
 	snap, err := h.svc.snapshot(ctx, sp)
 	if err != nil {
 		return fail(c, err, map[string]any{"space_id": sp.ID})

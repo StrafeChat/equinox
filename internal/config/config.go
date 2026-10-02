@@ -71,6 +71,9 @@ type FederationConfig struct {
 	StaticPeers map[string]string
 	// AllowInsecure permits plain http:// peer URLs (development only).
 	AllowInsecure bool
+	// MemberPage is how many members of a hosted space go in one page when another
+	// instance builds or resyncs its mirror (1-1000; default 1000). A tuning knob.
+	MemberPage int
 }
 
 // IsAllowedPeer applies the allow/block lists.
@@ -298,6 +301,7 @@ func Load() (*Config, error) {
 			Blocklist:      cleanDomains(getEnvArray("FEDERATION_BLOCKLIST", nil)),
 			StaticPeers:    parseStaticPeers(getEnvString("FEDERATION_STATIC_PEERS", "")),
 			AllowInsecure:  getEnvBool("FEDERATION_ALLOW_INSECURE", false),
+			MemberPage:     getEnvInt("FEDERATION_MEMBER_PAGE", 1000),
 		},
 		Flags: FeatureFlags{
 			Captcha:        getEnvBool("CAPTCHA", false),

@@ -864,6 +864,9 @@ func (h *Handler) Peers(c fiber.Ctx) error {
 	}
 	out := make([]fiber.Map, 0, len(list))
 	for _, p := range list {
+		// pending: relays queued for the peer; with last_error set they are waiting for
+		// it to come back (see outbox.go).
+		pending, _ := h.svc.repo.CountOutbox(c.Context(), p.Domain)
 		out = append(out, fiber.Map{
 			"domain":         p.Domain,
 			"federation_url": p.FederationURL,
@@ -872,6 +875,9 @@ func (h *Handler) Peers(c fiber.Ctx) error {
 			"last_seen":      p.LastSeen,
 			"blocked":        p.Blocked,
 			"allowed":        h.svc.fcfg.IsAllowedPeer(p.Domain),
+			"last_error":     p.LastError,
+			"last_failure":   p.LastFailure,
+			"pending":        pending,
 		})
 	}
 	return c.JSON(out)

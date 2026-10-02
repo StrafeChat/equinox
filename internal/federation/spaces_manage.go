@@ -252,6 +252,16 @@ func (s *Service) applyRelays(ctx context.Context, origin string, events []Relay
 
 func (s *Service) applyRelay(ctx context.Context, origin string, ev RelayEvent) error {
 	switch ev.Path {
+	case "/spaces/peers":
+		var b SpacePeerEvent
+		if err := json.Unmarshal(ev.Body, &b); err != nil {
+			return err
+		}
+		m, err := s.mirrorOf(ctx, origin, b.Space)
+		if err != nil {
+			return err
+		}
+		return s.applySpacePeers(ctx, m, b)
 	case "/spaces/update":
 		var b SpaceUpdateEvent
 		if err := json.Unmarshal(ev.Body, &b); err != nil {
@@ -1449,6 +1459,7 @@ func (s *Service) ResyncMirror(ctx context.Context, m *SpaceMapping) error {
 	if snap.Space.OriginDomain != origin || snap.Space.OriginSpaceID != ref.OriginSpaceID {
 		return errSpaceNotMirror
 	}
+	s.completeSnapshot(ctx, origin, &snap)
 	spec, err := s.mirrorSpec(ctx, origin, &snap, m.SpaceID)
 	if err != nil {
 		return err
@@ -1457,6 +1468,7 @@ func (s *Service) ResyncMirror(ctx context.Context, m *SpaceMapping) error {
 	if err != nil {
 		return err
 	}
+	s.storeMirrorPeers(ctx, m.SpaceID, origin, snap.Peers)
 	if len(removed) > 0 {
 		if ms, err := s.repo.GetRoomMappings(ctx, removed); err == nil {
 			for _, rm := range ms {
@@ -1475,8 +1487,10 @@ const (
 	maintenanceInterval     = 30 * time.Minute
 )
 
-// StartMaintenance runs ResyncMirror for every mirrored space on a timer until ctx ends.
+// StartMaintenance makes this process the one that delivers queued relays (outbox.go) and
+// runs ResyncMirror for every mirrored space on a timer until ctx ends.
 func (s *Service) StartMaintenance(ctx context.Context) {
+	s.startOutbox(ctx)
 	safego.Go("federation", func() {
 		timer := time.NewTimer(maintenanceInitialDelay)
 		defer timer.Stop()

@@ -53,14 +53,21 @@ type Service struct {
 	// relayed calls are acknowledged and ignored.
 	voice *voice.Service
 
-	// One outbound queue per peer, drained by one goroutine each, so relays to a peer
-	// arrive in the order they were made (see send).
+	// Relays to a peer go out in the order they were made, one at a time: ephemeral ones
+	// (typing, presence, calls) through an in-memory queue per peer, everything else
+	// through a durable per-peer worker over federation_outbox (see outbox.go).
 	outMu     sync.Mutex
 	outQueues map[string]chan func()
+	outboxes  map[string]*peerOutbox
+	failing   map[string]bool // peers the outbox currently cannot reach
+	outboxOn  bool            // this process drains the outbox (the API; see startOutbox)
+	outboxCtx context.Context
+	// deliver hands one relay to a peer: the signed client in production, a stub in tests.
+	deliver func(ctx context.Context, domain, method, path string, body any) error
 }
 
-// outboxDepth bounds each peer's queue; beyond it relays are dropped and logged rather
-// than growing memory without limit while a peer is down.
+// outboxDepth bounds each peer's in-memory queue of ephemeral relays; beyond it they are
+// dropped and logged rather than growing memory without limit while a peer is down.
 const outboxDepth = 4096
 
 // New builds the engine with its own repository/service instances (stateless wrappers
@@ -117,7 +124,11 @@ func newService(cfg *config.Config, session gocqlx.Session, rdb *redis.Client, s
 		relSvc:    relSvc,
 		spaceSvc:  spaceSvc,
 		outQueues: map[string]chan func(){},
+		outboxes:  map[string]*peerOutbox{},
+		failing:   map[string]bool{},
+		outboxCtx: context.Background(),
 	}
+	s.deliver = s.deliverWith
 	roomSvc.SetFederationInfo(s)
 	devSvc.SetRouter(s)
 	// Inbound events apply through relSvc; it relays only for the accept a crossed
@@ -281,7 +292,8 @@ func (s *Service) fanOut(ctx context.Context, domains map[string]struct{}, metho
 	}
 }
 
-// spacePeers is the set of instances mirroring a space this instance hosts.
+// spacePeers is the set of instances mirroring a space: on the origin every mirror, on a
+// mirror the other mirrors as the origin reported them (its own self excluded).
 func (s *Service) spacePeers(ctx context.Context, spaceID int64) map[string]struct{} {
 	list, err := s.repo.ListSpacePeers(ctx, spaceID)
 	if err != nil {
@@ -290,7 +302,26 @@ func (s *Service) spacePeers(ctx context.Context, spaceID int64) map[string]stru
 	}
 	out := make(map[string]struct{}, len(list))
 	for _, d := range list {
-		out[d] = struct{}{}
+		if !s.IsLocalServer(d) {
+			out[d] = struct{}{}
+		}
+	}
+	return out
+}
+
+// spaceDomains is every other instance in a space: its origin (when that is not this
+// instance) and its mirrors.
+func (s *Service) spaceDomains(ctx context.Context, spaceID int64) map[string]struct{} {
+	m, err := s.repo.GetSpaceMapping(ctx, spaceID)
+	if err != nil || m == nil {
+		return nil // a space nobody else has joined: nothing federates yet
+	}
+	out := s.spacePeers(ctx, spaceID)
+	if out == nil {
+		out = map[string]struct{}{}
+	}
+	if !s.IsLocalServer(m.OriginDomain) {
+		out[m.OriginDomain] = struct{}{}
 	}
 	return out
 }
@@ -324,19 +355,13 @@ func (s *Service) relayTargets(ctx context.Context, roomID int64, participants [
 }
 
 // spaceDomainsForUser is every instance that shares a space with the user: the mirrors
-// of spaces hosted here that they are in, and the origins of spaces they mirror.
+// of spaces hosted here that they are in, and the origin and other mirrors of spaces
+// they mirror (the origin tells each mirror who else is in the space, so a user's home
+// instance reaches all of them directly - nobody relays another instance's presence).
 func (s *Service) spaceDomainsForUser(ctx context.Context, u *auth.User) map[string]struct{} {
 	out := map[string]struct{}{}
 	for _, spaceID := range u.Spaces {
-		m, err := s.repo.GetSpaceMapping(ctx, spaceID)
-		if err != nil || m == nil {
-			continue
-		}
-		if !s.IsLocalServer(m.OriginDomain) {
-			out[m.OriginDomain] = struct{}{}
-			continue
-		}
-		for d := range s.spacePeers(ctx, spaceID) {
+		for d := range s.spaceDomains(ctx, spaceID) {
 			out[d] = struct{}{}
 		}
 	}
@@ -614,23 +639,8 @@ func (s *Service) messageRef(ctx context.Context, roomID, msgID int64) MessageRe
 	return MessageRef{OriginDomain: s.fcfg.Domain, OriginMessageID: id.Format(msgID)}
 }
 
-// send relays one request in the background. Federation is fire-and-forget from the
-// sender's point of view: the local write already succeeded, and a peer being slow or
-// down must never fail or delay the user's own request. Relays to one peer go out in
-// order, one at a time: a message sent right after its room was created must not
-// overtake the room announce, or the peer drops it as "room not found".
-func (s *Service) send(domain, method, path string, body any) {
-	s.enqueue(domain, func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		if _, err := s.client.Do(ctx, domain, method, path, body, nil); err != nil {
-			logger.Err("federation", err, map[string]any{"peer": domain, "method": method, "path": path})
-			return
-		}
-		s.touchPeer(ctx, domain)
-	})
-}
-
+// enqueue runs job on the peer's in-memory worker (ephemeral relays; see send in
+// outbox.go). Jobs to one peer run in order, one at a time.
 func (s *Service) enqueue(domain string, job func()) {
 	s.outMu.Lock()
 	q, ok := s.outQueues[domain]
@@ -664,6 +674,9 @@ func runRelay(domain string, job func()) {
 }
 
 func (s *Service) touchPeer(ctx context.Context, domain string) {
+	if s.discovery == nil || s.repo == nil {
+		return
+	}
 	info, err := s.discovery.Lookup(ctx, domain, false)
 	if err != nil {
 		return

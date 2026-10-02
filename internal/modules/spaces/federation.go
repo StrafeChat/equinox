@@ -402,6 +402,42 @@ func (s *Service) Members(ctx context.Context, spaceID int64) ([]MemberWithUser,
 	return out, nil
 }
 
+// MembersPage is Members one page at a time: up to limit members whose user id is above
+// after, in id order. next is the cursor for the page after this one, 0 when this was the
+// last (a page that comes back full may still be the last; the next read is then empty).
+func (s *Service) MembersPage(ctx context.Context, spaceID, after int64, limit int) (members []MemberWithUser, next int64, err error) {
+	rows, err := s.repo.ListMembersPage(ctx, spaceID, after, limit)
+	if err != nil {
+		return nil, 0, err
+	}
+	if len(rows) == 0 {
+		return nil, 0, nil
+	}
+	if len(rows) == limit {
+		next = rows[len(rows)-1].UserID
+	}
+	userIDs := make([]int64, 0, len(rows))
+	for _, m := range rows {
+		userIDs = append(userIDs, m.UserID)
+	}
+	users, err := s.userRepo.GetByIDs(ctx, userIDs)
+	if err != nil {
+		return nil, 0, err
+	}
+	members = make([]MemberWithUser, 0, len(rows))
+	for i, m := range rows {
+		if i < len(users) && users[i] != nil {
+			members = append(members, MemberWithUser{Member: m, User: users[i]})
+		}
+	}
+	return members, next, nil
+}
+
+// CountMembers counts a space's members, no caller check.
+func (s *Service) CountMembers(ctx context.Context, spaceID int64) (int, error) {
+	return s.repo.CountMembers(ctx, spaceID)
+}
+
 // Emojis lists a space's custom emoji, no caller check (for the origin's snapshot).
 func (s *Service) Emojis(ctx context.Context, spaceID int64) ([]SpaceEmoji, error) {
 	return s.repo.ListEmojis(ctx, spaceID)
@@ -463,6 +499,9 @@ type MirrorSpec struct {
 	Rooms   []MirrorRoom
 	Members []MirrorMember
 	Emoji   []MirrorEmoji
+	// MembersComplete: Members is the whole list. When a page could not be fetched it is
+	// a prefix, and reconciling must not take the missing members for gone ones.
+	MembersComplete bool
 }
 
 func (e MirrorEmoji) row(spaceID int64) *SpaceEmoji {
@@ -571,10 +610,12 @@ func (s *Service) ReconcileMirror(ctx context.Context, spec *MirrorSpec) (remove
 			}
 		}
 	}
-	for _, m := range haveMembers {
-		if _, ok := wantMembers[m.UserID]; !ok {
-			if err := s.RemoveMirrorMember(ctx, spaceID, m.UserID); err != nil {
-				return nil, err
+	if spec.MembersComplete {
+		for _, m := range haveMembers {
+			if _, ok := wantMembers[m.UserID]; !ok {
+				if err := s.RemoveMirrorMember(ctx, spaceID, m.UserID); err != nil {
+					return nil, err
+				}
 			}
 		}
 	}

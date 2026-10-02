@@ -88,6 +88,8 @@ type Repository interface {
 	AddSpaceToUserSet(ctx context.Context, userID int64, spaceID int64) error
 	IsMember(ctx context.Context, spaceID, userID int64) (bool, error)
 	ListMembers(ctx context.Context, spaceID int64) ([]SpaceMember, error)
+	ListMembersPage(ctx context.Context, spaceID, after int64, limit int) ([]SpaceMember, error)
+	CountMembers(ctx context.Context, spaceID int64) (int, error)
 	CreateInvite(ctx context.Context, inv *SpaceInvite) error
 	GetInviteByCode(ctx context.Context, code string) (*SpaceInvite, error)
 	ListInvites(ctx context.Context, spaceID int64) ([]SpaceInvite, error)
@@ -287,6 +289,31 @@ func (r *repo) ListMembers(ctx context.Context, spaceID int64) ([]SpaceMember, e
 		return nil, err
 	}
 	return out, nil
+}
+
+// ListMembersPage returns up to limit members whose user id is above after, in user id
+// order - the clustering order, so a page is one range read.
+func (r *repo) ListMembersPage(ctx context.Context, spaceID, after int64, limit int) ([]SpaceMember, error) {
+	const stmt = "SELECT space_id, user_id, role_ids, nickname, joined_at FROM space_members WHERE space_id = ? AND user_id > ? LIMIT ?"
+	q := r.session.Query(stmt, nil).WithContext(ctx).Bind(spaceID, after, limit)
+	var out []SpaceMember
+	if err := q.SelectRelease(&out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// CountMembers counts a space's members without loading them.
+func (r *repo) CountMembers(ctx context.Context, spaceID int64) (int, error) {
+	q := r.session.Query("SELECT COUNT(*) FROM space_members WHERE space_id = ?", nil).WithContext(ctx).Bind(spaceID)
+	defer q.Release()
+	iter := q.Iter()
+	var n int64
+	iter.Scan(&n)
+	if err := iter.Close(); err != nil {
+		return 0, err
+	}
+	return int(n), nil
 }
 
 func (r *repo) CreateInvite(ctx context.Context, inv *SpaceInvite) error {

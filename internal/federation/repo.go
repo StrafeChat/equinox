@@ -71,6 +71,20 @@ type Peer struct {
 	FirstSeen     time.Time `db:"first_seen"`
 	LastSeen      time.Time `db:"last_seen"`
 	Blocked       bool      `db:"blocked"`
+	// LastError/LastFailure: set while the outbox cannot deliver to the peer, cleared by
+	// the next relay it takes.
+	LastError   string     `db:"last_error"`
+	LastFailure *time.Time `db:"last_failure"`
+}
+
+// OutboxEntry is one relay waiting to be delivered to a peer (see outbox.go).
+type OutboxEntry struct {
+	Domain    string    `db:"domain"`
+	Seq       int64     `db:"seq"`
+	Method    string    `db:"method"`
+	Path      string    `db:"path"`
+	Body      string    `db:"body"`
+	CreatedAt time.Time `db:"created_at"`
 }
 
 var (
@@ -99,7 +113,7 @@ var (
 	})
 	peersTable = table.New(table.Metadata{
 		Name:    "federation_peers",
-		Columns: []string{"domain", "key_id", "public_key", "federation_url", "api_url", "first_seen", "last_seen", "blocked"},
+		Columns: []string{"domain", "key_id", "public_key", "federation_url", "api_url", "first_seen", "last_seen", "blocked", "last_error", "last_failure"},
 		PartKey: []string{"domain"},
 	})
 	spacesTable = table.New(table.Metadata{
@@ -150,6 +164,15 @@ type Repository interface {
 	GetPeer(ctx context.Context, domain string) (*Peer, error)
 	UpsertPeer(ctx context.Context, p *Peer) error
 	ListPeers(ctx context.Context) ([]Peer, error)
+	MarkPeerFailure(ctx context.Context, domain, message string, at time.Time) error
+	ClearPeerFailure(ctx context.Context, domain string) error
+
+	// Outbox: relays waiting for delivery, per peer, oldest first.
+	PutOutbox(ctx context.Context, e *OutboxEntry, ttl time.Duration) error
+	ListOutbox(ctx context.Context, domain string, limit int) ([]OutboxEntry, error)
+	DeleteOutbox(ctx context.Context, domain string, seq int64) error
+	ListOutboxDomains(ctx context.Context) ([]string, error)
+	CountOutbox(ctx context.Context, domain string) (int, error)
 }
 
 type repo struct {
@@ -401,4 +424,63 @@ func (r *repo) ListPeers(ctx context.Context) ([]Peer, error) {
 		return nil, err
 	}
 	return out, nil
+}
+
+func (r *repo) MarkPeerFailure(ctx context.Context, domain, message string, at time.Time) error {
+	const stmt = "UPDATE federation_peers SET last_error = ?, last_failure = ? WHERE domain = ?"
+	return r.session.Query(stmt, nil).WithContext(ctx).Bind(message, at, domain).ExecRelease()
+}
+
+func (r *repo) ClearPeerFailure(ctx context.Context, domain string) error {
+	const stmt = "UPDATE federation_peers SET last_error = '', last_failure = null WHERE domain = ?"
+	return r.session.Query(stmt, nil).WithContext(ctx).Bind(domain).ExecRelease()
+}
+
+// ---- outbox ---------------------------------------------------------------------------
+
+const outboxColumns = "domain, seq, method, path, body, created_at"
+
+func (r *repo) PutOutbox(ctx context.Context, e *OutboxEntry, ttl time.Duration) error {
+	const stmt = "INSERT INTO federation_outbox (" + outboxColumns + ") VALUES (?, ?, ?, ?, ?, ?) USING TTL ?"
+	return r.session.Query(stmt, nil).WithContext(ctx).
+		Bind(e.Domain, e.Seq, e.Method, e.Path, e.Body, e.CreatedAt, int(ttl/time.Second)).ExecRelease()
+}
+
+func (r *repo) ListOutbox(ctx context.Context, domain string, limit int) ([]OutboxEntry, error) {
+	const stmt = "SELECT " + outboxColumns + " FROM federation_outbox WHERE domain = ? LIMIT ?"
+	q := r.session.Query(stmt, nil).WithContext(ctx).Bind(domain, limit)
+	var out []OutboxEntry
+	if err := q.SelectRelease(&out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (r *repo) DeleteOutbox(ctx context.Context, domain string, seq int64) error {
+	const stmt = "DELETE FROM federation_outbox WHERE domain = ? AND seq = ?"
+	return r.session.Query(stmt, nil).WithContext(ctx).Bind(domain, seq).ExecRelease()
+}
+
+func (r *repo) ListOutboxDomains(ctx context.Context) ([]string, error) {
+	q := r.session.Query("SELECT DISTINCT domain FROM federation_outbox", nil).WithContext(ctx)
+	defer q.Release()
+	iter := q.Iter()
+	var out []string
+	var d string
+	for iter.Scan(&d) {
+		out = append(out, d)
+	}
+	return out, iter.Close()
+}
+
+func (r *repo) CountOutbox(ctx context.Context, domain string) (int, error) {
+	q := r.session.Query("SELECT COUNT(*) FROM federation_outbox WHERE domain = ?", nil).WithContext(ctx).Bind(domain)
+	defer q.Release()
+	iter := q.Iter()
+	var n int64
+	iter.Scan(&n)
+	if err := iter.Close(); err != nil {
+		return 0, err
+	}
+	return int(n), nil
 }
