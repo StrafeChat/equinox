@@ -2,6 +2,7 @@ package instance
 
 import (
 	"context"
+	"errors"
 	"regexp"
 	"strconv"
 	"strings"
@@ -22,6 +23,9 @@ import (
 // The spaces service implements it; it is an interface here only so tests can fake it.
 type SpaceRemover interface {
 	TakeDownSpace(ctx context.Context, actorID, spaceID int64) error
+	// SetOfficial marks a space official (or not) and returns the updated space; the
+	// instance does the admin check before calling it.
+	SetOfficial(ctx context.Context, spaceID int64, official bool) (*spaces.Space, error)
 }
 
 // ModerationDeps is everything moderation reaches into beyond the instance's own tables.
@@ -163,6 +167,27 @@ func (s *Service) SetUserBadges(ctx context.Context, actorID, userID int64, flag
 		return auth.PublicFlags(updated), nil
 	}
 	return flags, nil
+}
+
+// SetSpaceOfficial marks a space as official - part of this instance - or clears it. Admin
+// only. Returns the updated space so the caller can report the new state.
+func (s *Service) SetSpaceOfficial(ctx context.Context, actorID, spaceID int64, official bool) (*spaces.Space, error) {
+	if err := s.requireAdmin(ctx, actorID); err != nil {
+		return nil, err
+	}
+	sp, err := s.mod.Remover.SetOfficial(ctx, spaceID, official)
+	if err != nil {
+		if errors.Is(err, spaces.ErrSpaceNotFound) {
+			return nil, ErrSpaceNotFound
+		}
+		return nil, err
+	}
+	reason := "unset"
+	if official {
+		reason = "set"
+	}
+	s.audit(ctx, actorID, AuditSpaceOfficial, TargetSpace, spaceID, reason)
+	return sp, nil
 }
 
 func (s *Service) UnbanUser(ctx context.Context, actorID, userID int64) error {

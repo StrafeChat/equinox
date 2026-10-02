@@ -269,6 +269,7 @@ func spaceToReadyMap(s *spaces.Space, snap *spaces.Snapshot) map[string]interfac
 		"banner":                        s.Banner,
 		"owner_id":                      id.Format(s.OwnerID),
 		"verification_level":            s.VerificationLevel,
+		"official":                      s.Official,
 		"default_message_notifications": s.DefaultMessageNotif,
 		"explicit_content_filter":       s.ExplicitContentFilter,
 		"features":                      s.Features,

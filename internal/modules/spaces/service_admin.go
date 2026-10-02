@@ -198,3 +198,31 @@ func (s *Service) deleteSpaceCascade(ctx context.Context, actorID int64, sp *Spa
 	logger.Info("spaces", "space %d (%q) deleted by %d, %d members removed", spaceID, sp.Name, actorID, len(members))
 	return nil
 }
+
+// SetOfficial marks a space as official (an instance-blessed space) or clears the mark.
+// Only the instance module calls this - it does the admin check - so there is no owner
+// gate here. Writes the flag and announces the change to members via SPACE_UPDATE so the
+// badge appears live, and returns the updated space.
+func (s *Service) SetOfficial(ctx context.Context, spaceID int64, official bool) (*Space, error) {
+	sp, err := s.repo.GetByID(ctx, spaceID)
+	if err != nil {
+		return nil, err
+	}
+	if sp == nil {
+		return nil, ErrSpaceNotFound
+	}
+	if sp.Official == official {
+		return sp, nil
+	}
+	if err := s.repo.UpdateSpaceFields(ctx, spaceID, map[string]interface{}{
+		"official":   official,
+		"updated_at": time.Now().UTC(),
+	}); err != nil {
+		return nil, err
+	}
+	sp.Official = official
+	if s.redis != nil {
+		stargate.PublishToSpace(ctx, s.redis, spaceID, "SPACE_UPDATE", spaceToEventPayload(sp), s.stargateRegion())
+	}
+	return sp, nil
+}

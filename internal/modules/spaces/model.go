@@ -7,14 +7,18 @@ const EveryoneRoleName = "@everyone"
 
 // Space is a Discord-style server.
 type Space struct {
-	ID                    int64    `db:"id" json:"id"`
-	Name                  string   `db:"name" json:"name"`
-	NameAcronym           string   `db:"name_acronym" json:"name_acronym"`
-	Description           string   `db:"description" json:"description"`
-	Icon                  string   `db:"icon" json:"icon"`
-	Banner                string   `db:"banner" json:"banner"`
-	OwnerID               int64    `db:"owner_id" json:"owner_id"`
-	VerificationLevel     int      `db:"verification_level" json:"verification_level"`
+	ID                int64  `db:"id" json:"id"`
+	Name              string `db:"name" json:"name"`
+	NameAcronym       string `db:"name_acronym" json:"name_acronym"`
+	Description       string `db:"description" json:"description"`
+	Icon              string `db:"icon" json:"icon"`
+	Banner            string `db:"banner" json:"banner"`
+	OwnerID           int64  `db:"owner_id" json:"owner_id"`
+	VerificationLevel int    `db:"verification_level" json:"verification_level"`
+	// Official marks a space an instance admin has blessed as part of this instance. It is
+	// instance-local (never set on a mirror of a remote space) and only the instance module
+	// writes it, from the admin dashboard.
+	Official              bool     `db:"official" json:"official"`
 	DefaultMessageNotif   int      `db:"default_message_notifications" json:"default_message_notifications"`
 	ExplicitContentFilter int      `db:"explicit_content_filter" json:"explicit_content_filter"`
 	Features              []string `db:"features" json:"features"`

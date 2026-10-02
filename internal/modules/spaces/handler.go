@@ -249,6 +249,7 @@ func spaceToJSON(s *Space) fiber.Map {
 		"banner":                        s.Banner,
 		"owner_id":                      id.Format(s.OwnerID),
 		"verification_level":            s.VerificationLevel,
+		"official":                      s.Official,
 		"default_message_notifications": s.DefaultMessageNotif,
 		"explicit_content_filter":       s.ExplicitContentFilter,
 		"features":                      s.Features,

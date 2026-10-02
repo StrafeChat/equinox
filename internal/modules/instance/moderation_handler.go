@@ -67,6 +67,7 @@ func spaceSummaryJSON(sp *spaces.Space) fiber.Map {
 		"name":       sp.Name,
 		"icon":       sp.Icon,
 		"owner_id":   id.Format(sp.OwnerID),
+		"official":   sp.Official,
 		"created_at": sp.CreatedAt,
 	}
 }
@@ -199,6 +200,30 @@ func (h *Handler) SetBadges(c fiber.Ctx) error {
 		return moderationError(c, err)
 	}
 	return c.JSON(fiber.Map{"public_flags": flags})
+}
+
+// SetSpaceOfficial PATCH /instance/spaces/:id/official - mark a space as part of this
+// instance (or not). Admin only.
+func (h *Handler) SetSpaceOfficial(c fiber.Ctx) error {
+	user := auth.GetUser(c)
+	if user == nil {
+		return c.Status(http.StatusUnauthorized).JSON(fiber.Map{"error": "unauthorized"})
+	}
+	sid, ok := parseIDParam(c, "id")
+	if !ok {
+		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "invalid space id"})
+	}
+	var in struct {
+		Official bool `json:"official"`
+	}
+	if !decodeBody(c, &in) {
+		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "invalid JSON"})
+	}
+	sp, err := h.svc.SetSpaceOfficial(c.Context(), user.ID, sid, in.Official)
+	if err != nil {
+		return moderationError(c, err)
+	}
+	return c.JSON(fiber.Map{"official": sp.Official})
 }
 
 // UnbanUser DELETE /instance/users/:id/ban

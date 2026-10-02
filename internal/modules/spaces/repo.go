@@ -15,7 +15,7 @@ var spacesTable = table.New(table.Metadata{
 	Name: "spaces",
 	Columns: []string{
 		"id", "name", "name_acronym", "description", "icon", "banner", "owner_id",
-		"verification_level", "default_message_notifications", "explicit_content_filter",
+		"verification_level", "default_message_notifications", "explicit_content_filter", "official",
 		"features", "afk_room_id", "afk_timeout", "system_room_id", "system_room_flags",
 		"rules_room_id", "max_presences", "max_members", "vanity_url_code",
 		"preferred_locale", "public_updates_room_id", "max_video_room_users",

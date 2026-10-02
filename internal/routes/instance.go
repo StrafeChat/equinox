@@ -85,6 +85,7 @@ func SetupInstanceRoutes(d Deps) {
 	r.Get("/bans", h.ListBans)
 
 	r.Get("/spaces/:id", h.GetSpace)
+	r.Patch("/spaces/:id/official", h.SetSpaceOfficial)
 	r.Delete("/spaces/:id", h.TakeDownSpace)
 
 	r.Get("/reports", h.ListReports)

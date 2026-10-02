@@ -25,6 +25,7 @@ const (
 	AuditUserBan       = "user_ban"
 	AuditUserUnban     = "user_unban"
 	AuditSpaceTakedown = "space_takedown"
+	AuditSpaceOfficial = "space_official"
 	AuditReportResolve = "report_resolve"
 	AuditReportDismiss = "report_dismiss"
 	AuditInviteCreate  = "invite_create"
