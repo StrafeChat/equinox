@@ -15,6 +15,7 @@ import (
 	"github.com/StrafeChat/equinox/internal/config"
 	"github.com/StrafeChat/equinox/internal/id"
 	"github.com/StrafeChat/equinox/internal/modules/auth"
+	"github.com/StrafeChat/equinox/internal/modules/permissions"
 	"github.com/StrafeChat/equinox/internal/safego"
 	"github.com/StrafeChat/equinox/internal/stargate"
 )
@@ -22,6 +23,11 @@ import (
 // SpaceMemberChecker allows rooms to grant access when the user is a space member (for space channels).
 type SpaceMemberChecker interface {
 	IsMember(ctx context.Context, spaceID, userID int64) (bool, error)
+	// EffectiveChannelPermissions resolves the user's permission bits in one space room,
+	// honouring role and per-room overrides. Access to an individual space room is gated on
+	// PermViewRoom through this, not on space membership alone - otherwise every member
+	// would reach a private channel they have no permission to see.
+	EffectiveChannelPermissions(ctx context.Context, userID, spaceID, roomID int64) (int64, error)
 }
 
 var (
@@ -936,10 +942,16 @@ func (s *Service) Typing(ctx context.Context, userID, roomID int64) error {
 // of the owning space. Takes already-loaded room + participants so callers
 // that need that data anyway (GetRoom, Ack, Typing) don't fetch it twice.
 func (s *Service) canAccessLoaded(ctx context.Context, userID int64, room *Room, participantIDs []int64) bool {
-	if room.SpaceID != nil && s.spaceChecker != nil {
-		if ok, _ := s.spaceChecker.IsMember(ctx, *room.SpaceID, userID); ok {
-			return true
+	if room.SpaceID != nil {
+		// A space room is reachable only if the user can actually view it. Space
+		// membership is not enough: a private channel denies PermViewRoom to the roles
+		// that must not see it, and this is the one gate the realtime gateway shares with
+		// REST message access, so the two cannot drift. Fail closed on any error.
+		if s.spaceChecker == nil {
+			return false
 		}
+		perms, err := s.spaceChecker.EffectiveChannelPermissions(ctx, userID, *room.SpaceID, room.ID)
+		return err == nil && permissions.Has(perms, permissions.PermViewRoom)
 	}
 	for _, pid := range participantIDs {
 		if pid == userID {

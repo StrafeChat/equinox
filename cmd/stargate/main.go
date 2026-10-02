@@ -197,7 +197,11 @@ func (p *readyDataProvider) GetReadyData(ctx context.Context, userID int64) (*st
 				if space == nil {
 					continue
 				}
-				roomListForSpace, snap, err := p.spaceSvc.SpaceRoomsWithOverrides(ctx, space.ID)
+				// Only the rooms this user may actually view: a channel they lack
+				// PermViewRoom for is neither advertised in space_rooms (so it never shows
+				// in their client) nor added to channelIDs (so a bot is never auto-
+				// subscribed to it). The realtime authorizer enforces the same gate.
+				roomListForSpace, snap, err := p.spaceSvc.VisibleSpaceRooms(ctx, userID, space.ID)
 				if err != nil {
 					continue
 				}

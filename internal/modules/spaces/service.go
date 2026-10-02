@@ -440,6 +440,42 @@ func (s *Service) SpaceRoomsWithOverrides(ctx context.Context, spaceID int64) ([
 	return list, snap, nil
 }
 
+// VisibleSpaceRooms is SpaceRoomsWithOverrides filtered to the rooms the user may view
+// (PermViewRoom), resolving every room from the one snapshot and a single member lookup
+// rather than a permission call per room. READY uses it so a client is never told about -
+// and so a bot is never auto-subscribed to - a channel it cannot see; the snapshot is
+// still returned whole so the overrides of the visible rooms can be attached. A non-member
+// (or a lookup error) yields no rooms, never the full list.
+func (s *Service) VisibleSpaceRooms(ctx context.Context, userID, spaceID int64) ([]*rooms.Room, *Snapshot, error) {
+	list, snap, err := s.SpaceRoomsWithOverrides(ctx, spaceID)
+	if err != nil {
+		return nil, nil, err
+	}
+	if snap.OwnerID == userID {
+		return list, snap, nil
+	}
+	mem, err := s.repo.GetMember(ctx, spaceID, userID)
+	if err != nil {
+		return nil, snap, err
+	}
+	if mem == nil {
+		return nil, snap, nil
+	}
+	base := snap.basePermissions(mem.RoleIDs)
+	if permissions.Has(base, permissions.PermAdministrator) {
+		return list, snap, nil
+	}
+	visible := make([]*rooms.Room, 0, len(list))
+	for _, r := range list {
+		ov := snap.RoomOverridesFor(r.ID)
+		perms := resolveEffectiveRoomPermissions(base, snap.EveryoneRoleID, mem.RoleIDs, userID, ov.Roles, ov.Users)
+		if permissions.Has(perms, permissions.PermViewRoom) {
+			visible = append(visible, r)
+		}
+	}
+	return visible, snap, nil
+}
+
 // GetSpaces batch-loads spaces (nil entries for ids that do not exist).
 func (s *Service) GetSpaces(ctx context.Context, ids []int64) ([]*Space, error) {
 	list, err := s.repo.GetByIDs(ctx, ids)
