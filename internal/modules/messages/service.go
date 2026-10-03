@@ -725,6 +725,20 @@ func (s *Service) Delete(ctx context.Context, userID, roomID, msgID int64) error
 	if err := s.repo.SoftDelete(ctx, roomID, msgID); err != nil {
 		return err
 	}
+	// Deleting the room's newest message leaves last_message_id pointing at a row that no
+	// longer exists. The per-user read cursor can never advance to it (there's nothing left to
+	// read up to), so the room shows a permanent unread that only clears while you're actually
+	// inside it. Advance last_message_id to the newest surviving message - or clear it if that
+	// was the last message. Best-effort: a failure here must not fail the delete itself.
+	if room.LastMessageID != nil && *room.LastMessageID == msgID {
+		if prev, perr := s.repo.List(ctx, roomID, &msgID, 1); perr == nil {
+			if len(prev) > 0 {
+				_ = s.rooms.UpdateLastMessageID(ctx, roomID, participants, prev[0].ID)
+			} else {
+				_ = s.rooms.ClearLastMessageID(ctx, roomID, participants)
+			}
+		}
+	}
 	s.cleanupAttachments(ctx, roomID, msg.Attachments())
 	if s.redis != nil && s.cfg != nil {
 		region := s.cfg.Stargate.Region

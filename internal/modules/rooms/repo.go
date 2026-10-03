@@ -87,6 +87,9 @@ type Repository interface {
 	GetRoomRow(ctx context.Context, userID, roomID int64) (*RoomRow, error)
 	ListByUser(ctx context.Context, userID int64) ([]RoomRow, error)
 	UpdateLastMessageID(ctx context.Context, roomID int64, participants []int64, msgID int64) error
+	// ClearLastMessageID nulls last_message_id on the room and every participant's rooms_by_user
+	// row - used when the room's newest (and only) message is deleted, leaving it empty.
+	ClearLastMessageID(ctx context.Context, roomID int64, participants []int64) error
 	UpdateReadState(ctx context.Context, userID, roomID, lastReadMessageID int64) error
 	// IncrementMentionCounts bumps room_mention_counts by 1 for each user (e.g. everyone a new message mentions).
 	IncrementMentionCounts(ctx context.Context, roomID int64, userIDs []int64) error
@@ -308,6 +311,35 @@ func (r *repo) UpdateLastMessageID(ctx context.Context, roomID int64, participan
 		b := r.session.Batch(gocql.UnloggedBatch).WithContext(ctx)
 		for _, uid := range participants[i:end] {
 			b.Query(stmtUser, msgID, uid, roomID)
+		}
+		if err := r.session.ExecuteBatch(b); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (r *repo) ClearLastMessageID(ctx context.Context, roomID int64, participants []int64) error {
+	now := time.Now().UTC()
+	stmtRoom, namesRoom := roomsTable.Update("last_message_id", "updated_at")
+	q := r.session.Query(stmtRoom, namesRoom).WithContext(ctx)
+	defer q.Release()
+	if err := q.Bind(nil, now, roomID).ExecRelease(); err != nil {
+		return err
+	}
+	if len(participants) == 0 {
+		return nil
+	}
+	const chunkSize = 50
+	stmtUser, _ := roomsByUserTable.Update("last_message_id")
+	for i := 0; i < len(participants); i += chunkSize {
+		end := i + chunkSize
+		if end > len(participants) {
+			end = len(participants)
+		}
+		b := r.session.Batch(gocql.UnloggedBatch).WithContext(ctx)
+		for _, uid := range participants[i:end] {
+			b.Query(stmtUser, nil, uid, roomID)
 		}
 		if err := r.session.ExecuteBatch(b); err != nil {
 			return err
