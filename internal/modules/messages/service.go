@@ -653,6 +653,67 @@ func (s *Service) ListWithReactions(ctx context.Context, userID, roomID int64, b
 	return msgs, reactions, nil
 }
 
+// reactionsFor loads each message's reaction summary as userID sees it; a failure is
+// non-fatal (history is still useful without counts), so it returns nil rather than erroring.
+func (s *Service) reactionsFor(ctx context.Context, roomID int64, msgs []Message, userID int64) map[int64][]ReactionSummary {
+	ids := make([]int64, len(msgs))
+	for i := range msgs {
+		ids[i] = msgs[i].ID
+	}
+	reactions, err := s.ReactionsForMessages(ctx, roomID, ids, userID)
+	if err != nil {
+		logger.Err("messages", err, map[string]any{"room_id": roomID})
+		return nil
+	}
+	return reactions
+}
+
+// ListAfterWithReactions is a page of history immediately AFTER afterID, oldest-first - for
+// resuming downward infinite scroll out of a jumped-to window. Served from the local store (a
+// mirrored room's relayed copy), so there's no origin round-trip on every scroll step.
+func (s *Service) ListAfterWithReactions(ctx context.Context, userID, roomID, afterID int64, limit int) ([]Message, map[int64][]ReactionSummary, error) {
+	if _, _, err := s.authorize(ctx, userID, roomID, permissions.PermViewRoom, permissions.PermReadMessageHistory); err != nil {
+		return nil, nil, err
+	}
+	msgs, err := s.repo.ListAfter(ctx, roomID, afterID, limit)
+	if err != nil {
+		return nil, nil, err
+	}
+	return msgs, s.reactionsFor(ctx, roomID, msgs, userID), nil
+}
+
+// ListAroundWithReactions returns a window of history centred on aroundID - about half the limit
+// older, the message itself, then half newer, oldest-first - so the client can jump to a message
+// that isn't loaded (a reply target, a search hit) and read outward in both directions. Served
+// from the local store like ListAfterWithReactions. A deleted/absent target just yields the
+// messages that surround where it was.
+func (s *Service) ListAroundWithReactions(ctx context.Context, userID, roomID, aroundID int64, limit int) ([]Message, map[int64][]ReactionSummary, error) {
+	if _, _, err := s.authorize(ctx, userID, roomID, permissions.PermViewRoom, permissions.PermReadMessageHistory); err != nil {
+		return nil, nil, err
+	}
+	if limit <= 0 || limit > 100 {
+		limit = 50
+	}
+	half := limit / 2
+	older, err := s.repo.List(ctx, roomID, &aroundID, half) // newest-first, closest to target first
+	if err != nil {
+		return nil, nil, err
+	}
+	newer, err := s.repo.ListAfter(ctx, roomID, aroundID, half) // oldest-first
+	if err != nil {
+		return nil, nil, err
+	}
+	combined := make([]Message, 0, len(older)+len(newer)+1)
+	for i := len(older) - 1; i >= 0; i-- { // reverse the older half into ascending order
+		combined = append(combined, older[i])
+	}
+	if target, terr := s.repo.GetByID(ctx, roomID, aroundID); terr == nil && target != nil && (target.DeletedAt == nil || target.DeletedAt.IsZero()) {
+		combined = append(combined, *target)
+	}
+	combined = append(combined, newer...)
+	return combined, s.reactionsFor(ctx, roomID, combined, userID), nil
+}
+
 func (s *Service) Edit(ctx context.Context, userID, roomID, msgID int64, in *EditMessageInput) (*Message, error) {
 	if err := validateContent(in.Plaintext, in.Ciphertext); err != nil {
 		return nil, err

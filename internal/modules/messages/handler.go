@@ -200,7 +200,11 @@ func originError(c fiber.Ctx, err error) (error, bool) {
 	return nil, false
 }
 
-// List handles GET /rooms/:id/messages?before=id&limit=50
+// List handles GET /rooms/:id/messages. Cursor is one of (Discord-style, mutually exclusive):
+//
+//	?before=<id>  older than id (default history paging)
+//	?after=<id>   newer than id, oldest-first (resume downward scroll from a jumped-to window)
+//	?around=<id>  a window centred on id (jump to a reply target / search hit not yet loaded)
 func (h *Handler) List(c fiber.Ctx) error {
 	user := auth.GetUser(c)
 	if user == nil {
@@ -210,13 +214,28 @@ func (h *Handler) List(c fiber.Ctx) error {
 	if err != nil {
 		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "invalid room id"})
 	}
-	var beforeID *int64
-	if b := c.Query("before"); b != "" {
-		bid, err := id.Parse(b)
-		if err != nil {
-			return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "invalid before"})
+	parseCursor := func(name string) (*int64, error) {
+		v := c.Query(name)
+		if v == "" {
+			return nil, nil
 		}
-		beforeID = &bid
+		cid, perr := id.Parse(v)
+		if perr != nil {
+			return nil, perr
+		}
+		return &cid, nil
+	}
+	beforeID, err := parseCursor("before")
+	if err != nil {
+		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "invalid before"})
+	}
+	afterID, err := parseCursor("after")
+	if err != nil {
+		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "invalid after"})
+	}
+	aroundID, err := parseCursor("around")
+	if err != nil {
+		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "invalid around"})
 	}
 	limit := 50
 	if l := c.Query("limit"); l != "" {
@@ -224,7 +243,16 @@ func (h *Handler) List(c fiber.Ctx) error {
 			limit = n
 		}
 	}
-	msgs, reactionsByMsg, err := h.svc.ListWithReactions(c.Context(), user.ID, roomID, beforeID, limit)
+	var msgs []Message
+	var reactionsByMsg map[int64][]ReactionSummary
+	switch {
+	case aroundID != nil:
+		msgs, reactionsByMsg, err = h.svc.ListAroundWithReactions(c.Context(), user.ID, roomID, *aroundID, limit)
+	case afterID != nil:
+		msgs, reactionsByMsg, err = h.svc.ListAfterWithReactions(c.Context(), user.ID, roomID, *afterID, limit)
+	default:
+		msgs, reactionsByMsg, err = h.svc.ListWithReactions(c.Context(), user.ID, roomID, beforeID, limit)
+	}
 	if err != nil {
 		if res, ok := originError(c, err); ok {
 			return res

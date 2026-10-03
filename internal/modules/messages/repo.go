@@ -31,6 +31,8 @@ type Repository interface {
 	Insert(ctx context.Context, m *Message) error
 	GetByID(ctx context.Context, roomID, msgID int64) (*Message, error)
 	List(ctx context.Context, roomID int64, beforeID *int64, limit int) ([]Message, error)
+	// ListAfter returns up to limit non-deleted messages immediately after afterID, oldest-first.
+	ListAfter(ctx context.Context, roomID, afterID int64, limit int) ([]Message, error)
 	Update(ctx context.Context, roomID, msgID int64, ciphertext, plaintext string) (*Message, error)
 	SoftDelete(ctx context.Context, roomID, msgID int64) error
 
@@ -106,6 +108,35 @@ func (r *repo) List(ctx context.Context, roomID int64, beforeID *int64, limit in
 	}
 	// Small overfetch cushion: soft-deleted rows have no secondary index, so they're
 	// still filtered client-side, but the range predicate keeps the scan window tight.
+	q = q.PageSize(limit + 20)
+	defer q.Release()
+	iter := q.Iter()
+	defer iter.Close()
+	var out []Message
+	var row Message
+	for iter.StructScan(&row) {
+		if row.DeletedAt != nil && !row.DeletedAt.IsZero() {
+			continue
+		}
+		out = append(out, row)
+		if len(out) >= limit {
+			break
+		}
+	}
+	return out, iter.Close()
+}
+
+// ListAfter returns up to limit non-deleted messages immediately AFTER afterID, oldest-first
+// (ascending id). Clustering is id DESC, so this reverses it with ORDER BY id ASC to get the
+// rows *closest* to the cursor rather than the newest in the room - that's what "load newer"
+// while reading from a jumped-to window needs. Same soft-delete overfetch as List.
+func (r *repo) ListAfter(ctx context.Context, roomID, afterID int64, limit int) ([]Message, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 50
+	}
+	cols := strings.Join(messagesTable.Metadata().Columns, ", ")
+	stmt := "SELECT " + cols + " FROM messages WHERE room_id = ? AND id > ? ORDER BY id ASC"
+	q := r.session.Query(stmt, nil).WithContext(ctx).Bind(roomID, afterID)
 	q = q.PageSize(limit + 20)
 	defer q.Release()
 	iter := q.Iter()
