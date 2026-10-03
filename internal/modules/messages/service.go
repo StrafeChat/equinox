@@ -268,7 +268,7 @@ func (s *Service) CreateFederated(ctx context.Context, roomID int64, participant
 		_ = s.rooms.IncrementMentionCounts(ctx, roomID, notify)
 	}
 	if s.redis != nil && s.cfg != nil {
-		stargate.PublishToSpace(ctx, s.redis, roomID, "MESSAGE_CREATE", messageEventPayload(m), s.region())
+		stargate.PublishToSpace(ctx, s.redis, roomID, "MESSAGE_CREATE", s.messageEventPayloadEnriched(ctx, m), s.region())
 	}
 	return nil
 }
@@ -289,7 +289,7 @@ func (s *Service) EditFederated(ctx context.Context, roomID, msgID int64, cipher
 		return nil, ErrMessageNotFound
 	}
 	if s.redis != nil && s.cfg != nil {
-		stargate.PublishToSpace(ctx, s.redis, roomID, "MESSAGE_UPDATE", messageEventPayload(updated), s.region())
+		stargate.PublishToSpace(ctx, s.redis, roomID, "MESSAGE_UPDATE", s.messageEventPayloadEnriched(ctx, updated), s.region())
 	}
 	return updated, nil
 }
@@ -583,7 +583,7 @@ func (s *Service) create(ctx context.Context, userID, roomID int64, in *CreateMe
 		}
 	}
 	if s.redis != nil && s.cfg != nil {
-		stargate.PublishToSpace(ctx, s.redis, roomID, "MESSAGE_CREATE", messageEventPayload(m), s.cfg.Stargate.Region)
+		stargate.PublishToSpace(ctx, s.redis, roomID, "MESSAGE_CREATE", s.messageEventPayloadEnriched(ctx, m), s.cfg.Stargate.Region)
 	}
 	if s.federator != nil {
 		s.federator.AfterMessageCreated(ctx, roomID, participants, m)
@@ -693,7 +693,7 @@ func (s *Service) Edit(ctx context.Context, userID, roomID, msgID int64, in *Edi
 		return nil, err
 	}
 	if s.redis != nil && s.cfg != nil && updated != nil {
-		stargate.PublishToSpace(ctx, s.redis, roomID, "MESSAGE_UPDATE", messageEventPayload(updated), s.cfg.Stargate.Region)
+		stargate.PublishToSpace(ctx, s.redis, roomID, "MESSAGE_UPDATE", s.messageEventPayloadEnriched(ctx, updated), s.cfg.Stargate.Region)
 	}
 	if s.federator != nil && updated != nil {
 		s.federator.AfterMessageEdited(ctx, roomID, participants, updated)

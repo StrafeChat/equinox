@@ -71,7 +71,7 @@ func (h *Handler) Create(c fiber.Ctx) error {
 		logger.Err("messages", err, map[string]any{"room_id": roomID})
 		return c.Status(http.StatusInternalServerError).JSON(fiber.Map{"error": "internal error"})
 	}
-	return c.Status(http.StatusCreated).JSON(messageToJSON(msg, nil))
+	return c.Status(http.StatusCreated).JSON(h.svc.MessageJSON(c.Context(), msg, nil))
 }
 
 // UploadAttachment handles POST /rooms/:id/attachments (multipart: "file", plus optional
@@ -184,7 +184,7 @@ func (h *Handler) Get(c fiber.Ctx) error {
 	if msg == nil {
 		return c.Status(http.StatusNotFound).JSON(fiber.Map{"error": "message not found"})
 	}
-	return c.JSON(messageToJSON(msg, reactions))
+	return c.JSON(h.svc.MessageJSON(c.Context(), msg, reactions))
 }
 
 // originError answers a write or read that a space's hosting instance refused or could
@@ -238,11 +238,7 @@ func (h *Handler) List(c fiber.Ctx) error {
 		logger.Err("messages", err, map[string]any{"room_id": roomID})
 		return c.Status(http.StatusInternalServerError).JSON(fiber.Map{"error": "internal error"})
 	}
-	out := make([]fiber.Map, len(msgs))
-	for i := range msgs {
-		out[i] = messageToJSON(&msgs[i], reactionsByMsg[msgs[i].ID])
-	}
-	return c.JSON(out)
+	return c.JSON(h.svc.MessagesJSON(c.Context(), msgs, reactionsByMsg))
 }
 
 // Edit handles PATCH /rooms/:id/messages/:msg_id
@@ -289,7 +285,7 @@ func (h *Handler) Edit(c fiber.Ctx) error {
 		logger.Err("messages", err, nil)
 		return c.Status(http.StatusInternalServerError).JSON(fiber.Map{"error": "internal error"})
 	}
-	return c.JSON(messageToJSON(msg, nil))
+	return c.JSON(h.svc.MessageJSON(c.Context(), msg, nil))
 }
 
 // Delete handles DELETE /rooms/:id/messages/:msg_id

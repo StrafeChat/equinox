@@ -80,11 +80,7 @@ func (h *Handler) Search(c fiber.Ctx) error {
 	if !res.Searchable {
 		return c.JSON(fiber.Map{"searchable": false, "messages": []fiber.Map{}})
 	}
-	out := make([]fiber.Map, len(res.Messages))
-	for i := range res.Messages {
-		out[i] = messageToJSON(&res.Messages[i], nil)
-	}
-	body := fiber.Map{"searchable": true, "messages": out}
+	body := fiber.Map{"searchable": true, "messages": h.svc.MessagesJSON(c.Context(), res.Messages, nil)}
 	if res.NextBeforeID != nil {
 		body["next_before_id"] = id.Format(*res.NextBeforeID)
 	}
@@ -119,12 +115,8 @@ func (h *Handler) SearchSpace(c fiber.Ctx) error {
 	if err != nil {
 		return searchError(c, err, map[string]any{"space_id": spaceID})
 	}
-	out := make([]fiber.Map, len(res.Messages))
-	for i := range res.Messages {
-		out[i] = messageToJSON(&res.Messages[i], nil)
-	}
 	body := fiber.Map{
-		"messages":        out,
+		"messages":        h.svc.MessagesJSON(c.Context(), res.Messages, nil),
 		"rooms_searched":  res.RoomsSearched,
 		"encrypted_rooms": res.EncryptedRooms,
 	}
