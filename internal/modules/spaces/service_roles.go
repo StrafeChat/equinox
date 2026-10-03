@@ -716,7 +716,7 @@ func (s *Service) UpdateRoom(ctx context.Context, actorID, spaceID, roomID int64
 		return err
 	}
 	if in == nil || (in.Name == nil && in.Topic == nil && in.SlowmodeSeconds == nil && in.E2EEEnabled == nil &&
-		in.UserLimit == nil && in.Bitrate == nil) {
+		in.UserLimit == nil && in.Bitrate == nil && in.PermissionsSynced == nil) {
 		return ErrNothingToPatch
 	}
 	room, err := s.roomRepo.GetByID(ctx, roomID)
@@ -786,17 +786,30 @@ func (s *Service) UpdateRoom(ctx context.Context, actorID, spaceID, roomID int64
 		}
 	}
 
+	// Category permission sync: follow the parent section's overrides, or stop following them.
+	if in.PermissionsSynced != nil {
+		var parent int64
+		if room.ParentID != nil {
+			parent = *room.ParentID
+		}
+		rs := &roomForSync{ID: room.ID, Type: room.Type, ParentID: parent, Synced: room.PermissionsSynced != nil && *room.PermissionsSynced}
+		if _, err := s.applyPermissionsSync(ctx, spaceID, rs, *in.PermissionsSynced); err != nil {
+			return err
+		}
+	}
+
 	updated, _ := s.roomRepo.GetByID(ctx, roomID)
 	if updated != nil {
 		s.publishSpaceEvent(ctx, spaceID, "SPACE_ROOM_UPDATE", map[string]interface{}{
-			"room_id":          id.Format(updated.ID),
-			"name":             updated.Name,
-			"topic":            updated.Topic,
-			"slowmode_seconds": updated.SlowmodeSeconds,
-			"e2ee_enabled":     updated.E2EEEnabled != nil && *updated.E2EEEnabled,
-			"user_limit":       updated.UserLimit,
-			"bitrate":          updated.Bitrate,
-			"updated_at":       updated.UpdatedAt,
+			"room_id":            id.Format(updated.ID),
+			"name":               updated.Name,
+			"topic":              updated.Topic,
+			"slowmode_seconds":   updated.SlowmodeSeconds,
+			"e2ee_enabled":       updated.E2EEEnabled != nil && *updated.E2EEEnabled,
+			"user_limit":         updated.UserLimit,
+			"bitrate":            updated.Bitrate,
+			"permissions_synced": updated.PermissionsSynced != nil && *updated.PermissionsSynced,
+			"updated_at":         updated.UpdatedAt,
 		})
 		changes := map[string]change{}
 		diff(changes, "name", room.Name, updated.Name)
@@ -854,6 +867,38 @@ func (s *Service) DeleteRoom(ctx context.Context, actorID, spaceID, roomID int64
 	}
 	if err := s.assertRoomInSpace(ctx, spaceID, roomID); err != nil {
 		return err
+	}
+	// Deleting a section orphans its channels - they move to the top level and keep the perms
+	// they had (synced ones get the section's overrides copied down first), the way Discord
+	// leaves a category's channels in place when the category is removed.
+	if target, _ := s.roomRepo.GetByID(ctx, roomID); target != nil && target.Type == rooms.TypeRoomSection {
+		all, err := s.listRooms(ctx, spaceID)
+		if err != nil {
+			return err
+		}
+		for _, child := range all {
+			if child.ParentID == nil || *child.ParentID != roomID {
+				continue
+			}
+			if child.PermissionsSynced != nil && *child.PermissionsSynced {
+				if err := s.copyOverridesFromParent(ctx, spaceID, child.ID, roomID); err != nil {
+					return err
+				}
+				if err := s.roomRepo.UpdateRoomPermissionsSynced(ctx, child.ID, false); err != nil {
+					return err
+				}
+			}
+			if err := s.roomRepo.UpdateSpaceRoomParentAndPosition(ctx, spaceID, child.ID, nil, child.Position); err != nil {
+				return err
+			}
+			s.publishSpaceEvent(ctx, spaceID, "SPACE_ROOM_UPDATE", map[string]interface{}{
+				"room_id":            id.Format(child.ID),
+				"space_id":           id.Format(spaceID),
+				"parent_id":          nil,
+				"position":           child.Position,
+				"permissions_synced": false,
+			})
+		}
 	}
 	if err := s.roomRepo.DeleteSpaceRoom(ctx, spaceID, roomID); err != nil {
 		return err
@@ -934,6 +979,12 @@ func (s *Service) CreateRoom(ctx context.Context, actorID, spaceID int64, in *Cr
 		}
 		room.UserLimit, room.Bitrate = userLimit, bitrate
 	}
+	// A channel created inside a section follows the section's permissions by default, the way
+	// a new Discord channel inherits its category. Sections themselves are never synced.
+	if in.ParentID != nil && (in.Type == rooms.TypeSpaceText || in.Type == rooms.TypeSpaceVoice) {
+		synced := true
+		room.PermissionsSynced = &synced
+	}
 	if err := s.roomRepo.CreateSpaceRoom(ctx, room); err != nil {
 		return nil, err
 	}
@@ -976,6 +1027,7 @@ func RoomMap(r *rooms.Room) map[string]interface{} {
 	} else {
 		m["parent_id"] = nil
 	}
+	m["permissions_synced"] = r.PermissionsSynced != nil && *r.PermissionsSynced
 	if r.LastMessageID != nil {
 		m["last_message_id"] = id.Format(*r.LastMessageID)
 	}
@@ -1246,6 +1298,19 @@ func (s *Service) MoveSpaceChannel(ctx context.Context, actorID, spaceID, channe
 		}
 	}
 
+	// Moving to a different section (or out to the top level) ends the channel's sync to its
+	// old category - it keeps the perms it had, now as its own, matching Discord.
+	if ch.PermissionsSynced != nil && *ch.PermissionsSynced {
+		if oldParent != nil {
+			if err := s.copyOverridesFromParent(ctx, spaceID, channelRoomID, *oldParent); err != nil {
+				return err
+			}
+		}
+		if err := s.roomRepo.UpdateRoomPermissionsSynced(ctx, channelRoomID, false); err != nil {
+			return err
+		}
+	}
+
 	published := make(map[int64]struct{})
 	publishOne := func(rid int64) {
 		if _, ok := published[rid]; ok {
@@ -1257,10 +1322,11 @@ func (s *Service) MoveSpaceChannel(ctx context.Context, actorID, spaceID, channe
 			return
 		}
 		payload := map[string]interface{}{
-			"room_id":    id.Format(rid),
-			"position":   room.Position,
-			"space_id":   id.Format(spaceID),
-			"updated_at": room.UpdatedAt,
+			"room_id":            id.Format(rid),
+			"position":           room.Position,
+			"space_id":           id.Format(spaceID),
+			"permissions_synced": room.PermissionsSynced != nil && *room.PermissionsSynced,
+			"updated_at":         room.UpdatedAt,
 		}
 		if room.ParentID != nil {
 			payload["parent_id"] = id.Format(*room.ParentID)

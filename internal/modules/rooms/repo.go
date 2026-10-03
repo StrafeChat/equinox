@@ -13,7 +13,7 @@ import (
 
 var roomsTable = table.New(table.Metadata{
 	Name:    "rooms",
-	Columns: []string{"id", "type", "space_id", "parent_id", "name", "topic", "slowmode_seconds", "position", "creator_id", "e2ee_enabled", "last_message_id", "user_limit", "bitrate", "created_at", "updated_at"},
+	Columns: []string{"id", "type", "space_id", "parent_id", "name", "topic", "slowmode_seconds", "position", "creator_id", "e2ee_enabled", "last_message_id", "user_limit", "bitrate", "permissions_synced", "created_at", "updated_at"},
 	PartKey: []string{"id"},
 })
 
@@ -23,7 +23,8 @@ var roomsTable = table.New(table.Metadata{
 var insertRoomStmt, _ = qb.Insert("rooms").
 	Columns(
 		"id", "type", "space_id", "parent_id", "name", "topic", "slowmode_seconds", "position",
-		"creator_id", "e2ee_enabled", "last_message_id", "user_limit", "bitrate", "created_at", "updated_at",
+		"creator_id", "e2ee_enabled", "last_message_id", "user_limit", "bitrate", "permissions_synced",
+		"created_at", "updated_at",
 	).ToCql()
 
 var participantsTable = table.New(table.Metadata{
@@ -105,6 +106,7 @@ type Repository interface {
 	GetMentionCounts(ctx context.Context, userID int64) (map[int64]int, error)
 	UpdateRoomName(ctx context.Context, roomID int64, name string) error
 	UpdateRoomE2EEEnabled(ctx context.Context, roomID int64, enabled bool) error
+	UpdateRoomPermissionsSynced(ctx context.Context, roomID int64, synced bool) error
 	UpdateSpaceRoom(ctx context.Context, roomID int64, name, topic string, slowmodeSeconds int) error
 	UpdateVoiceSettings(ctx context.Context, roomID int64, userLimit, bitrate int) error
 	DeleteSpaceRoom(ctx context.Context, spaceID, roomID int64) error
@@ -138,7 +140,7 @@ func (r *repo) Create(ctx context.Context, room *Room, participantIDs []int64) e
 	room.UpdatedAt = now
 
 	b := r.session.Batch(gocql.LoggedBatch).WithContext(ctx)
-	b.Query(insertRoomStmt, room.ID, room.Type, room.SpaceID, room.ParentID, room.Name, room.Topic, room.SlowmodeSeconds, room.Position, room.CreatorID, room.E2EEEnabled, room.LastMessageID, room.UserLimit, room.Bitrate, room.CreatedAt, room.UpdatedAt)
+	b.Query(insertRoomStmt, room.ID, room.Type, room.SpaceID, room.ParentID, room.Name, room.Topic, room.SlowmodeSeconds, room.Position, room.CreatorID, room.E2EEEnabled, room.LastMessageID, room.UserLimit, room.Bitrate, room.PermissionsSynced, room.CreatedAt, room.UpdatedAt)
 
 	stmt, _ := participantsTable.Insert()
 	for _, uid := range participantIDs {
@@ -442,6 +444,14 @@ func (r *repo) UpdateRoomE2EEEnabled(ctx context.Context, roomID int64, enabled 
 	return q.Bind(enabled, now, roomID).ExecRelease()
 }
 
+func (r *repo) UpdateRoomPermissionsSynced(ctx context.Context, roomID int64, synced bool) error {
+	now := time.Now().UTC()
+	stmt, names := roomsTable.Update("permissions_synced", "updated_at")
+	q := r.session.Query(stmt, names).WithContext(ctx)
+	defer q.Release()
+	return q.Bind(synced, now, roomID).ExecRelease()
+}
+
 func (r *repo) ListBySpace(ctx context.Context, spaceID int64) ([]RoomBySpaceRow, error) {
 	stmt, names := roomsBySpaceTable.Select()
 	q := r.session.Query(stmt, names).WithContext(ctx)
@@ -465,7 +475,7 @@ func (r *repo) CreateSpaceRoom(ctx context.Context, room *Room) error {
 	room.CreatedAt = now
 	room.UpdatedAt = now
 	b := r.session.Batch(gocql.LoggedBatch).WithContext(ctx)
-	b.Query(insertRoomStmt, room.ID, room.Type, room.SpaceID, room.ParentID, room.Name, room.Topic, room.SlowmodeSeconds, room.Position, room.CreatorID, room.E2EEEnabled, room.LastMessageID, room.UserLimit, room.Bitrate, room.CreatedAt, room.UpdatedAt)
+	b.Query(insertRoomStmt, room.ID, room.Type, room.SpaceID, room.ParentID, room.Name, room.Topic, room.SlowmodeSeconds, room.Position, room.CreatorID, room.E2EEEnabled, room.LastMessageID, room.UserLimit, room.Bitrate, room.PermissionsSynced, room.CreatedAt, room.UpdatedAt)
 	stmt, _ := roomsBySpaceTable.Insert()
 	b.Query(stmt, *room.SpaceID, room.ID, room.Position, now)
 	return r.session.ExecuteBatch(b)

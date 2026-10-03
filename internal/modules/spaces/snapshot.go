@@ -20,6 +20,14 @@ type RoomOverrides struct {
 	Users []SpaceRoomUserOverride `json:"users"`
 }
 
+// RoomMeta is the little bit of a room the permission resolver needs beyond its overrides:
+// its parent section and whether it is synced to that section (follows the section's overrides
+// instead of its own - Discord's category sync).
+type RoomMeta struct {
+	ParentID int64 `json:"parent_id"`
+	Synced   bool  `json:"synced"`
+}
+
 // Snapshot is everything needed to resolve any member's permissions anywhere in a space
 // without touching the database again: the owner, the @everyone role, every role and every
 // room's overrides. It is what a Discord client holds per guild after GUILD_CREATE, and
@@ -34,6 +42,7 @@ type Snapshot struct {
 	EveryoneRoleID int64                   `json:"everyone_role_id"`
 	Roles          []SpaceRole             `json:"roles"`
 	Overrides      map[int64]RoomOverrides `json:"overrides"`
+	Meta           map[int64]RoomMeta      `json:"meta"`
 	BuiltAt        time.Time               `json:"built_at"`
 }
 
@@ -42,10 +51,23 @@ const (
 	snapshotBuildConcurrency = 8
 )
 
-// RoomOverridesFor returns a room's overrides (zero value when it has none).
+// RoomOverridesFor returns a room's own overrides (zero value when it has none).
 func (snap *Snapshot) RoomOverridesFor(roomID int64) RoomOverrides {
 	if snap == nil {
 		return RoomOverrides{}
+	}
+	return snap.Overrides[roomID]
+}
+
+// EffectiveRoomOverrides returns the overrides that actually apply to a room: its parent
+// section's when the room is synced to it (Discord category sync), otherwise its own. This is
+// the single place inheritance is resolved, so every permission check and the wire form agree.
+func (snap *Snapshot) EffectiveRoomOverrides(roomID int64) RoomOverrides {
+	if snap == nil {
+		return RoomOverrides{}
+	}
+	if m, ok := snap.Meta[roomID]; ok && m.Synced && m.ParentID != 0 {
+		return snap.Overrides[m.ParentID]
 	}
 	return snap.Overrides[roomID]
 }
@@ -79,7 +101,11 @@ func (s *Service) snapshotKey(spaceID int64) string {
 			prefix += ":"
 		}
 	}
-	return prefix + "space:snapshot:" + id.Format(spaceID)
+	// The version segment guards against a cache poisoned by a differently-shaped snapshot -
+	// e.g. during a deploy when the API and the gateway (which share this cache) briefly run
+	// different versions. Bump it whenever the Snapshot struct's stored shape changes.
+	// v2 added RoomMeta (parent + sync) for category permission inheritance.
+	return prefix + "space:snapshot:v2:" + id.Format(spaceID)
 }
 
 // Snapshot returns the space's full permission snapshot, from Redis when cached.
@@ -159,11 +185,46 @@ func (s *Service) buildSnapshot(ctx context.Context, spaceID int64, only []int64
 			roomIDs = append(roomIDs, row.RoomID)
 		}
 	}
+	// Room meta (parent + synced) for the rooms in scope. A synced room resolves against its
+	// section, so in the single-room (cache-off) path its parent's overrides must be loaded too.
+	meta := make(map[int64]RoomMeta, len(roomIDs))
+	if len(roomIDs) > 0 {
+		rs, err := s.roomRepo.GetByIDs(ctx, roomIDs)
+		if err != nil {
+			return nil, err
+		}
+		for _, r := range rs {
+			if r == nil {
+				continue
+			}
+			var parent int64
+			if r.ParentID != nil {
+				parent = *r.ParentID
+			}
+			meta[r.ID] = RoomMeta{ParentID: parent, Synced: r.PermissionsSynced != nil && *r.PermissionsSynced}
+		}
+	}
+	overrideIDs := roomIDs
+	if !all {
+		seen := make(map[int64]struct{}, len(roomIDs))
+		for _, rid := range roomIDs {
+			seen[rid] = struct{}{}
+		}
+		for _, m := range meta {
+			if m.Synced && m.ParentID != 0 {
+				if _, ok := seen[m.ParentID]; !ok {
+					seen[m.ParentID] = struct{}{}
+					overrideIDs = append(overrideIDs, m.ParentID)
+				}
+			}
+		}
+	}
 	snap := &Snapshot{
 		OwnerID:        sp.OwnerID,
 		EveryoneRoleID: everyoneID,
 		Roles:          roles,
-		Overrides:      make(map[int64]RoomOverrides, len(roomIDs)),
+		Overrides:      make(map[int64]RoomOverrides, len(overrideIDs)),
+		Meta:           meta,
 		BuiltAt:        time.Now().UTC(),
 	}
 	var (
@@ -172,7 +233,7 @@ func (s *Service) buildSnapshot(ctx context.Context, spaceID int64, only []int64
 		firstErr error
 		sem      = make(chan struct{}, snapshotBuildConcurrency)
 	)
-	for _, roomID := range roomIDs {
+	for _, roomID := range overrideIDs {
 		roomID := roomID
 		wg.Add(1)
 		sem <- struct{}{}

@@ -29,7 +29,7 @@ func (s *Service) EffectiveChannelPermissions(ctx context.Context, userID, space
 	if permissions.Has(base, permissions.PermAdministrator) {
 		return permissions.AllRoom, nil
 	}
-	ov := snap.RoomOverridesFor(roomID)
+	ov := snap.EffectiveRoomOverrides(roomID)
 	return resolveEffectiveRoomPermissions(base, snap.EveryoneRoleID, mem.RoleIDs, userID, ov.Roles, ov.Users), nil
 }
 

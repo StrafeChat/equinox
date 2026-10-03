@@ -36,17 +36,21 @@ func ValidNotifyMode(v int) bool {
 // For space rooms (TypeSpaceText, TypeSpaceVoice), E2EE is off by default (scale; a future space-scale
 // E2EE protocol, e.g. MLS or sender-keys-style for thousands of members, could be added later).
 type Room struct {
-	ID              int64     `db:"id" json:"id"`
-	Type            int       `db:"type" json:"type"`
-	SpaceID         *int64    `db:"space_id" json:"space_id,omitempty"`
-	ParentID        *int64    `db:"parent_id" json:"parent_id,omitempty"`
-	Name            string    `db:"name" json:"name,omitempty"`
-	Topic           string    `db:"topic" json:"topic,omitempty"`
-	SlowmodeSeconds int       `db:"slowmode_seconds" json:"slowmode_seconds,omitempty"`
-	Position        int       `db:"position" json:"position"`
-	CreatorID       int64     `db:"creator_id" json:"creator_id,omitempty"`
-	E2EEEnabled     *bool     `db:"e2ee_enabled" json:"e2ee_enabled,omitempty"`
-	LastMessageID   *int64    `db:"last_message_id" json:"last_message_id,omitempty"`
+	ID              int64  `db:"id" json:"id"`
+	Type            int    `db:"type" json:"type"`
+	SpaceID         *int64 `db:"space_id" json:"space_id,omitempty"`
+	ParentID        *int64 `db:"parent_id" json:"parent_id,omitempty"`
+	Name            string `db:"name" json:"name,omitempty"`
+	Topic           string `db:"topic" json:"topic,omitempty"`
+	SlowmodeSeconds int    `db:"slowmode_seconds" json:"slowmode_seconds,omitempty"`
+	Position        int    `db:"position" json:"position"`
+	CreatorID       int64  `db:"creator_id" json:"creator_id,omitempty"`
+	E2EEEnabled     *bool  `db:"e2ee_enabled" json:"e2ee_enabled,omitempty"`
+	// PermissionsSynced: a space text/voice channel follows its parent section's permission
+	// overrides (Discord category sync) instead of its own. Resolved at read time, so editing
+	// the section updates every synced channel without copying. Nil/false = not synced.
+	PermissionsSynced *bool  `db:"permissions_synced" json:"permissions_synced,omitempty"`
+	LastMessageID   *int64 `db:"last_message_id" json:"last_message_id,omitempty"`
 	// Voice rooms only. UserLimit caps how many people can be connected at once (0 =
 	// unlimited; members with Move Members bypass it, as on Discord). Bitrate is the
 	// audio bitrate clients publish at, in bits per second (0 = DefaultVoiceBitrate).

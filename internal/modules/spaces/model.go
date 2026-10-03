@@ -285,6 +285,10 @@ type UpdateRoomInput struct {
 	// and the audio bitrate in bits per second (8000-384000; 0 = the default 64 kbps).
 	UserLimit *int `json:"user_limit,omitempty"`
 	Bitrate   *int `json:"bitrate,omitempty"`
+	// PermissionsSynced syncs a text/voice channel to its parent section's permission
+	// overrides (Discord category sync), or unsyncs it. Syncing clears the channel's own
+	// overrides; unsyncing copies the section's current overrides down so nothing changes.
+	PermissionsSynced *bool `json:"permissions_synced,omitempty"`
 }
 
 // CreateRoomInput is the service-layer input (parent as int64). HTTP JSON is decoded in the handler (string snowflake parent_id).

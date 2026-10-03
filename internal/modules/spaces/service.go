@@ -467,7 +467,9 @@ func (s *Service) VisibleSpaceRooms(ctx context.Context, userID, spaceID int64) 
 	}
 	visible := make([]*rooms.Room, 0, len(list))
 	for _, r := range list {
-		ov := snap.RoomOverridesFor(r.ID)
+		// Effective overrides, so a channel synced to a private category inherits its denied
+		// View and is omitted too - not just the category itself.
+		ov := snap.EffectiveRoomOverrides(r.ID)
 		perms := resolveEffectiveRoomPermissions(base, snap.EveryoneRoleID, mem.RoleIDs, userID, ov.Roles, ov.Users)
 		if permissions.Has(perms, permissions.PermViewRoom) {
 			visible = append(visible, r)
