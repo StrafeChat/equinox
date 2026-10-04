@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 
 	"github.com/gofiber/fiber/v3"
 
@@ -23,8 +24,10 @@ func moderationError(c fiber.Ctx, err error) error {
 		return c.Status(http.StatusConflict).JSON(fiber.Map{"error": err.Error()})
 	case ErrInvalidBan, ErrInvalidReport, ErrInvalidAction, ErrInvalidQuery, ErrInvalidBadges:
 		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
-	case ErrRecoveryUnavailable:
+	case ErrRecoveryUnavailable, ErrFederationDisabled:
 		return c.Status(http.StatusServiceUnavailable).JSON(fiber.Map{"error": err.Error()})
+	case ErrInvalidPolicyKind, ErrInvalidPeerDomain:
+		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	default:
 		return errorFor(c, err)
 	}
@@ -486,4 +489,68 @@ func (h *Handler) ListAudit(c fiber.Ctx) error {
 		out = append(out, fiber.Map{"entry": e, "actor": userSummaryJSON(byID[e.ActorID])})
 	}
 	return c.JSON(out)
+}
+
+// --------------------------------------------------------------- federation policy ----
+
+func (h *Handler) ListFederationPolicy(c fiber.Ctx) error {
+	user := auth.GetUser(c)
+	if user == nil {
+		return c.Status(http.StatusUnauthorized).JSON(fiber.Map{"error": "unauthorized"})
+	}
+	v, err := h.svc.ListFederationPolicy(c.Context(), user.ID)
+	if err != nil {
+		return moderationError(c, err)
+	}
+	allow := make([]fiber.Map, 0)
+	block := make([]fiber.Map, 0)
+	for _, e := range v.Entries {
+		row := fiber.Map{"domain": e.Domain, "created_at": e.CreatedAt, "added_by": id.Format(e.AddedBy)}
+		if e.Kind == PolicyKindBlock {
+			block = append(block, row)
+		} else {
+			allow = append(allow, row)
+		}
+	}
+	return c.JSON(fiber.Map{
+		"enabled": v.Enabled,
+		"domain":  v.Domain,
+		// Editable, admin-managed entries.
+		"allow": allow,
+		"block": block,
+		// Read-only entries from FEDERATION_ALLOWLIST / FEDERATION_BLOCKLIST (env), shown so the
+		// admin understands the full effective policy; a non-empty allowlist means allowlist mode.
+		"env_allow": v.EnvAllow,
+		"env_block": v.EnvBlock,
+	})
+}
+
+func (h *Handler) SetFederationPolicy(c fiber.Ctx) error {
+	user := auth.GetUser(c)
+	if user == nil {
+		return c.Status(http.StatusUnauthorized).JSON(fiber.Map{"error": "unauthorized"})
+	}
+	var in PeerPolicyInput
+	if !decodeBody(c, &in) {
+		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "invalid JSON"})
+	}
+	if err := h.svc.SetFederationPolicy(c.Context(), user.ID, in.Domain, in.Kind); err != nil {
+		return moderationError(c, err)
+	}
+	return c.SendStatus(http.StatusNoContent)
+}
+
+func (h *Handler) RemoveFederationPolicy(c fiber.Ctx) error {
+	user := auth.GetUser(c)
+	if user == nil {
+		return c.Status(http.StatusUnauthorized).JSON(fiber.Map{"error": "unauthorized"})
+	}
+	domain, derr := url.PathUnescape(c.Params("domain"))
+	if derr != nil {
+		domain = c.Params("domain")
+	}
+	if err := h.svc.RemoveFederationPolicy(c.Context(), user.ID, domain); err != nil {
+		return moderationError(c, err)
+	}
+	return c.SendStatus(http.StatusNoContent)
 }

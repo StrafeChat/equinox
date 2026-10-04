@@ -153,3 +153,45 @@ func validReason(r string) bool {
 	}
 	return false
 }
+
+// ----------------------------------------------------------------- federation policy ----
+
+const (
+	PolicyKindAllow = "allow"
+	PolicyKindBlock = "block"
+
+	// Audit action + target for an allow/block-list change.
+	AuditFederationPolicy = "federation_policy"
+	TargetFederation      = "federation"
+)
+
+var (
+	ErrFederationDisabled = errors.New("federation is not enabled on this instance")
+	ErrInvalidPolicyKind  = errors.New("policy must be allow or block")
+	ErrInvalidPeerDomain  = errors.New("that is not a valid instance domain")
+)
+
+// PeerPolicyEntry is one admin-managed allow/block rule for a peer instance domain, stored in
+// federation_peer_policy and merged into IsAllowedPeer via the config runtime lists.
+type PeerPolicyEntry struct {
+	Domain    string    `db:"domain" json:"domain"`
+	Kind      string    `db:"kind" json:"kind"`
+	AddedBy   int64     `db:"added_by" json:"-"`
+	CreatedAt time.Time `db:"created_at" json:"created_at"`
+}
+
+// FederationPolicyView is the dashboard payload: the editable runtime entries plus the
+// read-only static env lists (FEDERATION_ALLOWLIST/BLOCKLIST) and this instance's own domain.
+type FederationPolicyView struct {
+	Enabled  bool
+	Domain   string
+	Entries  []PeerPolicyEntry
+	EnvAllow []string
+	EnvBlock []string
+}
+
+// PeerPolicyInput is the body of POST /instance/federation/policy.
+type PeerPolicyInput struct {
+	Domain string `json:"domain"`
+	Kind   string `json:"kind"`
+}

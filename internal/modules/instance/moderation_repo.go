@@ -79,6 +79,11 @@ type ModerationRepository interface {
 	AppendAudit(ctx context.Context, e *AuditEntry) error
 	ListAudit(ctx context.Context, limit int) ([]AuditEntry, error)
 
+	// Federation peer policy: the admin-managed allow/block list (one small partition).
+	ListPeerPolicy(ctx context.Context) ([]PeerPolicyEntry, error)
+	SetPeerPolicy(ctx context.Context, e *PeerPolicyEntry) error
+	RemovePeerPolicy(ctx context.Context, domain string) error
+
 	// CountUsers and CountSpaces are full-table COUNT(*) scans; GetStats caches the
 	// results in Redis so the scan runs at most once a minute.
 	CountUsers(ctx context.Context) (int64, error)
@@ -234,6 +239,35 @@ func (r *repo) ListAudit(ctx context.Context, limit int) ([]AuditEntry, error) {
 
 func (r *repo) CountUsers(ctx context.Context) (int64, error)  { return r.count(ctx, "users") }
 func (r *repo) CountSpaces(ctx context.Context) (int64, error) { return r.count(ctx, "spaces") }
+
+// -------------------------------------------------------------- federation policy ----
+
+func (r *repo) ListPeerPolicy(ctx context.Context) ([]PeerPolicyEntry, error) {
+	q := r.session.Query(
+		"SELECT domain, kind, added_by, created_at FROM federation_peer_policy WHERE bucket = ?",
+		[]string{"bucket"},
+	).WithContext(ctx)
+	defer q.Release()
+	var out []PeerPolicyEntry
+	if err := q.Bind(listBucket).SelectRelease(&out); err != nil && err != gocql.ErrNotFound {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (r *repo) SetPeerPolicy(ctx context.Context, e *PeerPolicyEntry) error {
+	return r.session.Query(
+		"INSERT INTO federation_peer_policy (bucket, domain, kind, added_by, created_at) VALUES (?, ?, ?, ?, ?)",
+		[]string{"bucket", "domain", "kind", "added_by", "created_at"},
+	).WithContext(ctx).Bind(listBucket, e.Domain, e.Kind, e.AddedBy, e.CreatedAt).ExecRelease()
+}
+
+func (r *repo) RemovePeerPolicy(ctx context.Context, domain string) error {
+	return r.session.Query(
+		"DELETE FROM federation_peer_policy WHERE bucket = ? AND domain = ?",
+		[]string{"bucket", "domain"},
+	).WithContext(ctx).Bind(listBucket, domain).ExecRelease()
+}
 
 // count is a COUNT(*) over a whole table - a full scan, aggregated server-side into one
 // row. Only ever called behind the Redis cache in GetStats.

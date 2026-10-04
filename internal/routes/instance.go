@@ -54,6 +54,10 @@ func SetupInstanceRoutes(d Deps) {
 		logger.Err("instance", err, map[string]any{"stage": "seal_bootstrap"})
 	}
 
+	// Load the admin-managed federation allow/block list into the shared runtime lists (what
+	// IsAllowedPeer consults) and keep it in sync across nodes.
+	svc.StartFederationPolicy(context.Background())
+
 	// The check endpoint is unauthenticated by necessity - it runs on the registration
 	// page - so it is the one that needs a budget. Ten codes a minute per address is
 	// generous for a person typing one and useless for guessing a 10-character code.
@@ -96,4 +100,9 @@ func SetupInstanceRoutes(d Deps) {
 	r.Post("/reports/:id/resolve", h.ResolveReport)
 
 	r.Get("/audit", h.ListAudit)
+
+	// Federation allow/block list (admin-managed; merged with the env lists by IsAllowedPeer).
+	r.Get("/federation/policy", h.ListFederationPolicy)
+	r.Post("/federation/policy", h.SetFederationPolicy)
+	r.Delete("/federation/policy/:domain", h.RemoveFederationPolicy)
 }

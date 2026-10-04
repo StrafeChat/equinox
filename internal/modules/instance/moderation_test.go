@@ -12,10 +12,11 @@ import (
 // fakeModRepo is the moderation store in memory, with the same "move between status
 // partitions" shape as the Scylla one so the queue logic is what gets tested.
 type fakeModRepo struct {
-	mu      sync.Mutex
-	bans    map[int64]*Ban
-	reports map[int64]*Report
-	audit   []AuditEntry
+	mu         sync.Mutex
+	bans       map[int64]*Ban
+	reports    map[int64]*Report
+	audit      []AuditEntry
+	peerPolicy []PeerPolicyEntry
 }
 
 func newFakeModRepo() *fakeModRepo {
@@ -112,6 +113,30 @@ func (f *fakeModRepo) ListAudit(_ context.Context, _ int) ([]AuditEntry, error) 
 
 func (f *fakeModRepo) CountUsers(context.Context) (int64, error)  { return 0, nil }
 func (f *fakeModRepo) CountSpaces(context.Context) (int64, error) { return 0, nil }
+
+func (f *fakeModRepo) ListPeerPolicy(context.Context) ([]PeerPolicyEntry, error) {
+	return append([]PeerPolicyEntry(nil), f.peerPolicy...), nil
+}
+func (f *fakeModRepo) SetPeerPolicy(_ context.Context, e *PeerPolicyEntry) error {
+	for i := range f.peerPolicy {
+		if f.peerPolicy[i].Domain == e.Domain {
+			f.peerPolicy[i] = *e
+			return nil
+		}
+	}
+	f.peerPolicy = append(f.peerPolicy, *e)
+	return nil
+}
+func (f *fakeModRepo) RemovePeerPolicy(_ context.Context, domain string) error {
+	out := f.peerPolicy[:0]
+	for _, e := range f.peerPolicy {
+		if e.Domain != domain {
+			out = append(out, e)
+		}
+	}
+	f.peerPolicy = out
+	return nil
+}
 
 // fakeUsers implements the slice of auth.UserRepository moderation touches.
 type fakeUsers struct{ users map[int64]*auth.User }

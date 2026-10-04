@@ -10,6 +10,7 @@ import (
 
 	"github.com/redis/go-redis/v9"
 
+	"github.com/StrafeChat/equinox/internal/config"
 	"github.com/StrafeChat/equinox/internal/id"
 	"github.com/StrafeChat/equinox/internal/logger"
 	"github.com/StrafeChat/equinox/internal/mail"
@@ -796,4 +797,148 @@ func badgeAuditReason(flags int) string {
 		return "none"
 	}
 	return strings.Join(out, ", ")
+}
+
+// --------------------------------------------------------------- federation policy ----
+
+var peerDomainRe = regexp.MustCompile(`^[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?$`)
+
+// normalizePeerDomain lowercases, strips any scheme/path the admin may have pasted, and
+// validates the bare host. Returns "" if it is not a plausible domain.
+func normalizePeerDomain(d string) string {
+	d = strings.ToLower(strings.TrimSpace(d))
+	d = strings.TrimPrefix(d, "https://")
+	d = strings.TrimPrefix(d, "http://")
+	if i := strings.IndexByte(d, '/'); i >= 0 {
+		d = d[:i]
+	}
+	if !peerDomainRe.MatchString(d) {
+		return ""
+	}
+	return d
+}
+
+// ListFederationPolicy returns the editable runtime allow/block entries plus the read-only
+// static env lists and this instance's own domain, for the admin dashboard.
+func (s *Service) ListFederationPolicy(ctx context.Context, actorID int64) (*FederationPolicyView, error) {
+	if err := s.requireAdmin(ctx, actorID); err != nil {
+		return nil, err
+	}
+	if s.mod == nil {
+		return nil, ErrFederationDisabled
+	}
+	entries, err := s.mod.Repo.ListPeerPolicy(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &FederationPolicyView{
+		Enabled:  s.cfg.Federation.Enabled,
+		Domain:   s.cfg.Federation.Domain,
+		Entries:  entries,
+		EnvAllow: s.cfg.Federation.Allowlist,
+		EnvBlock: s.cfg.Federation.Blocklist,
+	}, nil
+}
+
+// SetFederationPolicy adds (or overwrites) an allow/block rule for a peer domain.
+func (s *Service) SetFederationPolicy(ctx context.Context, actorID int64, domain, kind string) error {
+	if err := s.requireAdmin(ctx, actorID); err != nil {
+		return err
+	}
+	if !s.cfg.Federation.Enabled || s.mod == nil {
+		return ErrFederationDisabled
+	}
+	kind = strings.ToLower(strings.TrimSpace(kind))
+	if kind != PolicyKindAllow && kind != PolicyKindBlock {
+		return ErrInvalidPolicyKind
+	}
+	domain = normalizePeerDomain(domain)
+	if domain == "" || domain == s.cfg.Federation.Domain {
+		return ErrInvalidPeerDomain
+	}
+	e := &PeerPolicyEntry{Domain: domain, Kind: kind, AddedBy: actorID, CreatedAt: time.Now().UTC()}
+	if err := s.mod.Repo.SetPeerPolicy(ctx, e); err != nil {
+		return err
+	}
+	s.audit(ctx, actorID, AuditFederationPolicy, TargetFederation, 0, kind+" "+domain)
+	s.reloadFederationPolicy(ctx)
+	return nil
+}
+
+// RemoveFederationPolicy drops a peer domain's rule (back to the default for that domain).
+func (s *Service) RemoveFederationPolicy(ctx context.Context, actorID int64, domain string) error {
+	if err := s.requireAdmin(ctx, actorID); err != nil {
+		return err
+	}
+	if !s.cfg.Federation.Enabled || s.mod == nil {
+		return ErrFederationDisabled
+	}
+	domain = normalizePeerDomain(domain)
+	if domain == "" {
+		return ErrInvalidPeerDomain
+	}
+	if err := s.mod.Repo.RemovePeerPolicy(ctx, domain); err != nil {
+		return err
+	}
+	s.audit(ctx, actorID, AuditFederationPolicy, TargetFederation, 0, "remove "+domain)
+	s.reloadFederationPolicy(ctx)
+	return nil
+}
+
+// LoadFederationPolicy reads the policy table into the shared config runtime lists, which is
+// what IsAllowedPeer consults. Safe to call repeatedly.
+func (s *Service) LoadFederationPolicy(ctx context.Context) error {
+	if s.mod == nil || s.cfg.Federation.Runtime == nil {
+		return nil
+	}
+	entries, err := s.mod.Repo.ListPeerPolicy(ctx)
+	if err != nil {
+		return err
+	}
+	var allow, block []string
+	for _, e := range entries {
+		switch e.Kind {
+		case PolicyKindAllow:
+			allow = append(allow, e.Domain)
+		case PolicyKindBlock:
+			block = append(block, e.Domain)
+		}
+	}
+	s.cfg.Federation.Runtime.Set(allow, block)
+	return nil
+}
+
+// reloadFederationPolicy refreshes this node's runtime lists and signals the other nodes.
+func (s *Service) reloadFederationPolicy(ctx context.Context) {
+	if err := s.LoadFederationPolicy(ctx); err != nil {
+		logger.Err("instance", err, map[string]any{"stage": "fed_policy_reload"})
+	}
+	if s.mod != nil && s.mod.Redis != nil {
+		if err := s.mod.Redis.Publish(ctx, config.FederationPolicyReloadChannel, "1").Err(); err != nil {
+			logger.Err("instance", err, map[string]any{"stage": "fed_policy_publish"})
+		}
+	}
+}
+
+// StartFederationPolicy loads the policy at boot and subscribes to cross-node reload signals.
+// No-op when federation is off or Redis is absent (then the boot load is the only sync).
+func (s *Service) StartFederationPolicy(ctx context.Context) {
+	if !s.cfg.Federation.Enabled || s.mod == nil {
+		return
+	}
+	if err := s.LoadFederationPolicy(ctx); err != nil {
+		logger.Err("instance", err, map[string]any{"stage": "fed_policy_load"})
+	}
+	if s.mod.Redis == nil {
+		return
+	}
+	go func() {
+		sub := s.mod.Redis.Subscribe(context.Background(), config.FederationPolicyReloadChannel)
+		defer sub.Close()
+		for range sub.Channel() {
+			if err := s.LoadFederationPolicy(context.Background()); err != nil {
+				logger.Err("instance", err, map[string]any{"stage": "fed_policy_reload_sub"})
+			}
+		}
+	}()
 }

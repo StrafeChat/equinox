@@ -7,6 +7,7 @@ import (
 	neturl "net/url"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/StrafeChat/equinox/internal/logger"
 )
@@ -66,6 +67,11 @@ type FederationConfig struct {
 	Allowlist []string
 	// Blocklist domains are refused both ways.
 	Blocklist []string
+	// Runtime holds the admin-managed allow/block lists (edited live from the dashboard and
+	// persisted in federation_peer_policy), merged with the static env lists by IsAllowedPeer.
+	// A shared pointer so every copy of this config value sees the same live lists; the
+	// instance module loads it at boot and updates it on change. nil = env lists only.
+	Runtime *RuntimePeerLists
 	// StaticPeers overrides discovery: domain -> base URL where /.well-known/strafe lives.
 	// For local development between instances that have no real DNS/TLS.
 	StaticPeers map[string]string
@@ -76,25 +82,64 @@ type FederationConfig struct {
 	MemberPage int
 }
 
-// IsAllowedPeer applies the allow/block lists.
-func (f FederationConfig) IsAllowedPeer(domain string) bool {
-	if !f.Enabled || domain == "" || domain == f.Domain {
-		return false
-	}
-	for _, b := range f.Blocklist {
-		if b == domain {
-			return false
-		}
-	}
-	if len(f.Allowlist) == 0 {
-		return true
-	}
-	for _, a := range f.Allowlist {
-		if a == domain {
+// FederationPolicyReloadChannel is the Redis pub/sub channel the admin dashboard publishes on
+// after changing the runtime allow/block list, so every API node reloads it from the database.
+const FederationPolicyReloadChannel = "equinox:fed:policy:reload"
+
+// RuntimePeerLists is the admin-managed allow/block list, swapped atomically under a lock.
+// Entries are lowercased exact domains. Reads hand back the live slices (never mutated in
+// place - Set replaces them), so IsAllowedPeer can iterate without copying.
+type RuntimePeerLists struct {
+	mu    sync.RWMutex
+	allow []string
+	block []string
+}
+
+// NewRuntimePeerLists returns an empty list set (env-only until the instance module loads it).
+func NewRuntimePeerLists() *RuntimePeerLists { return &RuntimePeerLists{} }
+
+// Set replaces the runtime allow/block lists (domains are lowercased and blanks dropped).
+func (r *RuntimePeerLists) Set(allow, block []string) {
+	a, b := cleanDomains(allow), cleanDomains(block)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.allow, r.block = a, b
+}
+
+// Lists returns the current runtime allow and block lists.
+func (r *RuntimePeerLists) Lists() (allow, block []string) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.allow, r.block
+}
+
+func containsDomain(list []string, domain string) bool {
+	for _, d := range list {
+		if d == domain {
 			return true
 		}
 	}
 	return false
+}
+
+// IsAllowedPeer applies the allow/block lists - the static env lists unioned with the runtime
+// (admin-managed) lists. Blocklist wins; a non-empty allowlist (from either source) switches
+// this instance into allowlist-only mode.
+func (f FederationConfig) IsAllowedPeer(domain string) bool {
+	if !f.Enabled || domain == "" || domain == f.Domain {
+		return false
+	}
+	var rtAllow, rtBlock []string
+	if f.Runtime != nil {
+		rtAllow, rtBlock = f.Runtime.Lists()
+	}
+	if containsDomain(f.Blocklist, domain) || containsDomain(rtBlock, domain) {
+		return false
+	}
+	if len(f.Allowlist) == 0 && len(rtAllow) == 0 {
+		return true
+	}
+	return containsDomain(f.Allowlist, domain) || containsDomain(rtAllow, domain)
 }
 
 // NebulaConfig is optional. When BaseURL and UploadSecret are set, POST /users/@me/avatar and /banner upload to Nebula.
@@ -299,6 +344,7 @@ func Load() (*Config, error) {
 			KeyFile:        getEnvString("FEDERATION_KEY_FILE", "./federation.key"),
 			Allowlist:      cleanDomains(getEnvArray("FEDERATION_ALLOWLIST", nil)),
 			Blocklist:      cleanDomains(getEnvArray("FEDERATION_BLOCKLIST", nil)),
+			Runtime:        NewRuntimePeerLists(),
 			StaticPeers:    parseStaticPeers(getEnvString("FEDERATION_STATIC_PEERS", "")),
 			AllowInsecure:  getEnvBool("FEDERATION_ALLOW_INSECURE", false),
 			MemberPage:     getEnvInt("FEDERATION_MEMBER_PAGE", 1000),
