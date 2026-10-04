@@ -14,15 +14,14 @@ import (
 // Profile is a user as one instance describes them to another. Carrying the profile
 // with every reference means a receiver can create the shadow row without a round trip.
 type Profile struct {
-	FID           string `json:"fid"`
-	Username      string `json:"username"`
-	Discriminator int    `json:"discriminator"`
-	DisplayName   string `json:"display_name"`
-	Avatar        string `json:"avatar,omitempty"`
-	Banner        string `json:"banner,omitempty"`
-	Bio           string `json:"bio,omitempty"`
-	AboutMe       string `json:"about_me,omitempty"`
-	Bot           bool   `json:"bot,omitempty"`
+	FID         string `json:"fid"`
+	Username    string `json:"username"`
+	DisplayName string `json:"display_name"`
+	Avatar      string `json:"avatar,omitempty"`
+	Banner      string `json:"banner,omitempty"`
+	Bio         string `json:"bio,omitempty"`
+	AboutMe     string `json:"about_me,omitempty"`
+	Bot         bool   `json:"bot,omitempty"`
 }
 
 type RoomRef struct {

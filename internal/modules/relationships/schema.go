@@ -9,19 +9,17 @@ import (
 	"github.com/Oudwins/zog/parsers/zjson"
 )
 
-// SendRequestInput - POST body: a handle ("name#0001", or "name#0001@other.instance" across
-// federation), or the older username + discriminator pair, which the handler folds into one.
-// Presence is checked in the handler so the error can name what is actually missing.
+// SendRequestInput - POST body: a handle ("name", or "name@other.instance" across
+// federation); "username" is accepted as an alias of "handle". Presence is checked in the
+// handler so the error can name what is actually missing.
 var sendRequestSchema = z.Struct(z.Shape{
-	"Handle":        z.String().Trim().Max(96, z.Message("handle is too long")).Optional(),
-	"Username":      z.String().Trim().Max(32, z.Message("username must be at most 32 characters")).Optional(),
-	"Discriminator": z.String().Trim().Max(5, z.Message("invalid discriminator")).Optional(),
+	"Handle":   z.String().Trim().Max(96, z.Message("handle is too long")).Optional(),
+	"Username": z.String().Trim().Max(96, z.Message("handle is too long")).Optional(),
 })
 
 type SendRequestInput struct {
-	Handle        string `json:"handle"`
-	Username      string `json:"username"`
-	Discriminator string `json:"discriminator"`
+	Handle   string `json:"handle"`
+	Username string `json:"username"`
 }
 
 // CreateRelationshipInput - PUT body for create relationship by ID.

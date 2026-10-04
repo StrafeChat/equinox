@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
 
@@ -44,15 +43,14 @@ func (h *Handler) resolveHandle(c fiber.Ctx, handle string) (*auth.User, int, st
 		}
 		return u, 0, ""
 	}
-	if strings.Contains(handle, "@") {
-		return nil, http.StatusBadRequest, "this instance does not federate; use a local username#0001"
+	name := strings.TrimSpace(strings.TrimPrefix(handle, "@"))
+	if strings.Contains(name, "@") {
+		return nil, http.StatusBadRequest, "this instance does not federate; use a local username"
 	}
-	name, disc, ok := strings.Cut(strings.TrimPrefix(handle, "@"), "#")
-	d, err := strconv.Atoi(strings.TrimSpace(disc))
-	if !ok || err != nil || strings.TrimSpace(name) == "" {
-		return nil, http.StatusBadRequest, "expected username#0001"
+	if name == "" {
+		return nil, http.StatusBadRequest, "expected a username"
 	}
-	u, err := h.svc.FindLocalUser(c.Context(), strings.TrimSpace(name), d)
+	u, err := h.svc.FindLocalUser(c.Context(), name)
 	if err != nil {
 		return nil, http.StatusInternalServerError, "internal error"
 	}

@@ -2,7 +2,6 @@ package users
 
 import (
 	"context"
-	"fmt"
 	"net/http"
 	"strings"
 
@@ -61,23 +60,22 @@ func (h *Handler) Me(c fiber.Ctx) error {
 	}
 
 	return c.JSON(fiber.Map{
-		"id":             id.Format(user.ID),
-		"email":          email,
-		"verified_email": verified,
-		"username":       user.Username,
-		"discriminator":  fmt.Sprintf("%04d", user.Discriminator),
-		"display_name":   user.DisplayName,
-		"bio":            user.Bio,
-		"about_me":       user.AboutMe,
-		"avatar":         user.Avatar,
-		"banner":         user.Banner,
-		"accent_color":   user.AccentColor,
-		"pronouns":       user.Pronouns,
+		"id":              id.Format(user.ID),
+		"email":           email,
+		"verified_email":  verified,
+		"username":        user.Username,
+		"display_name":    user.DisplayName,
+		"bio":             user.Bio,
+		"about_me":        user.AboutMe,
+		"avatar":          user.Avatar,
+		"banner":          user.Banner,
+		"accent_color":    user.AccentColor,
+		"pronouns":        user.Pronouns,
 		"birthday_opt_in": user.BirthdayOptIn,
-		"birthday":       auth.BirthdayMMDD(user),
-		"public_flags":   auth.PublicFlags(user),
-		"bot":            user.Bot,
-		"presence":       auth.ToPublicPresence(user.Presence, false),
+		"birthday":        auth.BirthdayMMDD(user),
+		"public_flags":    auth.PublicFlags(user),
+		"bot":             user.Bot,
+		"presence":        auth.ToPublicPresence(user.Presence, false),
 	})
 }
 

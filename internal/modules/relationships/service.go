@@ -3,8 +3,6 @@ package relationships
 import (
 	"context"
 	"errors"
-	"fmt"
-	"strconv"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -16,14 +14,13 @@ import (
 )
 
 var (
-	ErrUserNotFound         = errors.New("user not found")
-	ErrInvalidDiscriminator = errors.New("invalid discriminator")
-	ErrSelfRequest          = errors.New("cannot send request to yourself")
-	ErrBotTarget            = errors.New("bots cannot be added as friends")
-	ErrAlreadyFriends       = errors.New("already friends")
-	ErrBlocked              = errors.New("blocked")
-	ErrRequestExists        = errors.New("request already sent")
-	ErrRequestNotFound      = errors.New("request not found")
+	ErrUserNotFound    = errors.New("user not found")
+	ErrSelfRequest     = errors.New("cannot send request to yourself")
+	ErrBotTarget       = errors.New("bots cannot be added as friends")
+	ErrAlreadyFriends  = errors.New("already friends")
+	ErrBlocked         = errors.New("blocked")
+	ErrRequestExists   = errors.New("request already sent")
+	ErrRequestNotFound = errors.New("request not found")
 )
 
 // Federator tells a remote user's home instance about relationship changes a local user
@@ -53,21 +50,9 @@ func (s *Service) SetFederator(f Federator) {
 	s.federator = f
 }
 
-// parseDiscriminator parses string discriminator (e.g. "1234", "0") to int (1-9999 or 0).
-func parseDiscriminator(s string) (int, error) {
-	if s == "" {
-		return 0, ErrInvalidDiscriminator
-	}
-	n, err := strconv.Atoi(s)
-	if err != nil || n < 0 || n > 9999 {
-		return 0, ErrInvalidDiscriminator
-	}
-	return n, nil
-}
-
-// FindLocalUser looks a user up by username#discriminator on this instance.
-func (s *Service) FindLocalUser(ctx context.Context, username string, discriminator int) (*auth.User, error) {
-	return s.user.GetByUsernameDiscriminator(ctx, username, discriminator)
+// FindLocalUser looks a user up by username on this instance (case-insensitive).
+func (s *Service) FindLocalUser(ctx context.Context, username string) (*auth.User, error) {
+	return s.user.GetByUsername(ctx, username)
 }
 
 func isFriend(u *auth.User, otherID int64) bool {
@@ -453,14 +438,13 @@ func partialUser(u *auth.User) map[string]interface{} {
 		return nil
 	}
 	m := map[string]interface{}{
-		"id":            id.Format(u.ID),
-		"username":      u.Username,
-		"discriminator": fmt.Sprintf("%04d", u.Discriminator),
-		"display_name":  u.DisplayName,
-		"avatar":        u.Avatar,
-		"banner":        u.Banner,
-		"bio":           u.Bio,
-		"about_me":      u.AboutMe,
+		"id":           id.Format(u.ID),
+		"username":     u.Username,
+		"display_name": u.DisplayName,
+		"avatar":       u.Avatar,
+		"banner":       u.Banner,
+		"bio":          u.Bio,
+		"about_me":     u.AboutMe,
 	}
 	auth.MergeProfilePublicExtras(m, u)
 	if u.HomeDomain != "" {

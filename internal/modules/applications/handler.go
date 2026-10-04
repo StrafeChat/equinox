@@ -3,7 +3,6 @@ package applications
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"net/http"
 
 	"github.com/gofiber/fiber/v3"
@@ -79,17 +78,16 @@ func PublicJSON(a *Application, bot *auth.User) fiber.Map {
 
 func botJSON(u *auth.User) fiber.Map {
 	return fiber.Map{
-		"id":            id.Format(u.ID),
-		"username":      u.Username,
-		"discriminator": fmt.Sprintf("%04d", u.Discriminator),
-		"display_name":  u.DisplayName,
-		"avatar":        u.Avatar,
-		"banner":        u.Banner,
-		"bio":           u.Bio,
-		"about_me":      u.AboutMe,
-		"accent_color":  u.AccentColor,
-		"public_flags":  auth.PublicFlags(u),
-		"bot":           true,
+		"id":           id.Format(u.ID),
+		"username":     u.Username,
+		"display_name": u.DisplayName,
+		"avatar":       u.Avatar,
+		"banner":       u.Banner,
+		"bio":          u.Bio,
+		"about_me":     u.AboutMe,
+		"accent_color": u.AccentColor,
+		"public_flags": auth.PublicFlags(u),
+		"bot":          true,
 	}
 }
 

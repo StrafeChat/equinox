@@ -26,17 +26,16 @@ import (
 // list shape so the client's existing participant parsing handles it unchanged.
 func (s *Service) publicUserJSON(u *auth.User) map[string]interface{} {
 	m := map[string]interface{}{
-		"id":            id.Format(u.ID),
-		"username":      u.Username,
-		"discriminator": u.Discriminator,
-		"display_name":  u.DisplayName,
-		"avatar":        u.Avatar,
-		"banner":        u.Banner,
-		"bio":           u.Bio,
-		"about_me":      u.AboutMe,
-		"bot":           u.Bot,
-		"public_flags":  auth.PublicFlags(u),
-		"presence":      auth.ToPublicPresence(u.Presence, true),
+		"id":           id.Format(u.ID),
+		"username":     u.Username,
+		"display_name": u.DisplayName,
+		"avatar":       u.Avatar,
+		"banner":       u.Banner,
+		"bio":          u.Bio,
+		"about_me":     u.AboutMe,
+		"bot":          u.Bot,
+		"public_flags": auth.PublicFlags(u),
+		"presence":     auth.ToPublicPresence(u.Presence, true),
 	}
 	auth.MergeProfilePublicExtras(m, u)
 	if local := s.localDomain(); local != "" {

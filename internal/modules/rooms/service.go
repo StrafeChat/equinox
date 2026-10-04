@@ -167,9 +167,9 @@ func (s *Service) SetFederationInfo(f FederationInfo) {
 	s.fedInfo = f
 }
 
-// FindLocalUser looks a local user up by username#discriminator.
-func (s *Service) FindLocalUser(ctx context.Context, username string, discriminator int) (*auth.User, error) {
-	return s.user.GetByUsernameDiscriminator(ctx, username, discriminator)
+// FindLocalUser looks a local user up by username (case-insensitive).
+func (s *Service) FindLocalUser(ctx context.Context, username string) (*auth.User, error) {
+	return s.user.GetByUsername(ctx, username)
 }
 
 // localDomain is this instance's federation domain ("" when federation is off).
@@ -184,17 +184,16 @@ func (s *Service) localDomain() string {
 // participant carries home_domain/origin_id so clients derive @origin:domain for E2EE.
 func participantOf(u *auth.User, localDomain string) Participant {
 	p := Participant{
-		ID:            id.Format(u.ID),
-		Username:      u.Username,
-		Discriminator: u.Discriminator,
-		DisplayName:   u.DisplayName,
-		Avatar:        u.Avatar,
-		Banner:        u.Banner,
-		Bio:           u.Bio,
-		AboutMe:       u.AboutMe,
-		PublicFlags:   auth.PublicFlags(u),
-		Bot:           u.Bot,
-		Presence:      auth.ToPublicPresence(u.Presence, true),
+		ID:          id.Format(u.ID),
+		Username:    u.Username,
+		DisplayName: u.DisplayName,
+		Avatar:      u.Avatar,
+		Banner:      u.Banner,
+		Bio:         u.Bio,
+		AboutMe:     u.AboutMe,
+		PublicFlags: auth.PublicFlags(u),
+		Bot:         u.Bot,
+		Presence:    auth.ToPublicPresence(u.Presence, true),
 	}
 	if localDomain != "" {
 		p.HomeDomain = localDomain

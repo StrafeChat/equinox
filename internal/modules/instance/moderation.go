@@ -366,12 +366,9 @@ func (s *Service) takeDownSpace(ctx context.Context, actorID, spaceID int64, rea
 
 // ----------------------------------------------------------------------------- users ----
 
-var handleRe = regexp.MustCompile(`^(.+)#(\d{1,4})$`)
-
 // SearchUsers finds accounts by the exact handles an administrator has to hand: an id, an
-// email, name#0001, or a username (every account with that name). Scylla has no
-// substring search and this instance does not run one; exact lookups are what a support
-// request actually contains.
+// email, or a username. Scylla has no substring search and this instance does not run one;
+// exact lookups are what a support request actually contains.
 func (s *Service) SearchUsers(ctx context.Context, actorID int64, query string) ([]*auth.User, error) {
 	if err := s.requireAdmin(ctx, actorID); err != nil {
 		return nil, err
@@ -395,30 +392,15 @@ func (s *Service) SearchUsers(ctx context.Context, actorID int64, query string) 
 		if err := add(s.mod.Users.GetByEmail(ctx, strings.ToLower(q))); err != nil {
 			return nil, err
 		}
-	case handleRe.MatchString(q):
-		m := handleRe.FindStringSubmatch(q)
-		disc, _ := strconv.Atoi(m[2])
-		if err := add(s.mod.Users.GetByUsernameDiscriminator(ctx, m[1], disc)); err != nil {
-			return nil, err
-		}
 	default:
 		if n, err := strconv.ParseInt(q, 10, 64); err == nil && n > 0 {
 			if err := add(s.mod.Users.GetByID(ctx, n)); err != nil {
 				return nil, err
 			}
 		}
-		// A bare word is a username: every discriminator that has it.
-		discs, err := s.mod.Users.DiscriminatorsForUsername(ctx, q)
-		if err != nil {
+		// A bare word is a username (unique, case-insensitive).
+		if err := add(s.mod.Users.GetByUsername(ctx, strings.TrimPrefix(q, "@"))); err != nil {
 			return nil, err
-		}
-		for i, d := range discs {
-			if i >= SearchLimit {
-				break
-			}
-			if err := add(s.mod.Users.GetByUsernameDiscriminator(ctx, q, d)); err != nil {
-				return nil, err
-			}
 		}
 	}
 	return out, nil

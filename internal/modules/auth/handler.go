@@ -104,11 +104,10 @@ func (h *Handler) Login(c fiber.Ctx) error {
 
 func loginUserJSON(user *User) fiber.Map {
 	return fiber.Map{
-		"id":            id.Format(user.ID),
-		"email":         user.Email,
-		"username":      user.Username,
-		"discriminator": user.Discriminator,
-		"display_name":  user.DisplayName,
+		"id":           id.Format(user.ID),
+		"email":        user.Email,
+		"username":     user.Username,
+		"display_name": user.DisplayName,
 	}
 }
 
@@ -146,7 +145,7 @@ func (h *Handler) Register(c fiber.Ctx) error {
 	}
 
 	// Before anything is written: a bot that can't answer the challenge should cost this
-	// instance one HTTP round trip, not a user row and a discriminator.
+	// instance one HTTP round trip, not a user row and a claimed username.
 	if h.captcha != nil {
 		switch err := h.captcha.Verify(c.Context(), in.CaptchaToken, c.IP()); err {
 		case nil:
@@ -173,8 +172,8 @@ func (h *Handler) Register(c fiber.Ctx) error {
 			return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": err.Error(), "code": "invite_invalid"})
 		case ErrEmailInUse:
 			return c.Status(http.StatusConflict).JSON(fiber.Map{"error": "email already in use"})
-		case ErrDiscriminatorInUse:
-			return c.Status(http.StatusConflict).JSON(fiber.Map{"error": "discriminator already in use for this username"})
+		case ErrUsernameTaken:
+			return c.Status(http.StatusConflict).JSON(fiber.Map{"error": "username already taken"})
 		case ErrWeakPassword, ErrPasswordTooLong, ErrInvalidUsername:
 			return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 		default:
@@ -197,7 +196,6 @@ func (h *Handler) Register(c fiber.Ctx) error {
 		"id":                          id.Format(user.ID),
 		"email":                       user.Email,
 		"username":                    user.Username,
-		"discriminator":               user.Discriminator,
 		"display_name":                user.DisplayName,
 		"created_at":                  user.CreatedAt,
 		"email_verification_required": verificationRequired,

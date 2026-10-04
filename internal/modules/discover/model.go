@@ -72,12 +72,11 @@ type ApplyInput struct {
 
 // UserRef names a person on a card or in the review queue.
 type UserRef struct {
-	ID            string `json:"id"`
-	Username      string `json:"username"`
-	Discriminator string `json:"discriminator"`
-	DisplayName   string `json:"display_name"`
-	Avatar        string `json:"avatar,omitempty"`
-	Bot           bool   `json:"bot,omitempty"`
+	ID          string `json:"id"`
+	Username    string `json:"username"`
+	DisplayName string `json:"display_name"`
+	Avatar      string `json:"avatar,omitempty"`
+	Bot         bool   `json:"bot,omitempty"`
 }
 
 // SpaceCard is a listed space as the directory shows it.

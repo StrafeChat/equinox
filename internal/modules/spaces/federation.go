@@ -1096,22 +1096,21 @@ func (s *Service) createRemoteInvite(ctx context.Context, actorID, spaceID int64
 }
 
 // memberUserFields is the public profile part of a member payload; with federation on it
-// carries the user's home instance so clients can show name#0001@domain and build the
+// carries the user's home instance so clients can show name@domain and build the
 // E2EE identity.
 func (s *Service) memberUserFields(u *auth.User) map[string]interface{} {
 	m := map[string]interface{}{
-		"id":            id.Format(u.ID),
-		"username":      u.Username,
-		"discriminator": u.Discriminator,
-		"display_name":  u.DisplayName,
-		"avatar":        u.Avatar,
-		"banner":        u.Banner,
-		"bio":           u.Bio,
-		"about_me":      u.AboutMe,
-		"pronouns":      u.Pronouns,
-		"bot":           u.Bot,
-		"public_flags":  auth.PublicFlags(u),
-		"presence":      auth.ToPublicPresence(u.Presence, true),
+		"id":           id.Format(u.ID),
+		"username":     u.Username,
+		"display_name": u.DisplayName,
+		"avatar":       u.Avatar,
+		"banner":       u.Banner,
+		"bio":          u.Bio,
+		"about_me":     u.AboutMe,
+		"pronouns":     u.Pronouns,
+		"bot":          u.Bot,
+		"public_flags": auth.PublicFlags(u),
+		"presence":     auth.ToPublicPresence(u.Presence, true),
 	}
 	if local := s.localDomain(); local != "" {
 		m["home_domain"] = local

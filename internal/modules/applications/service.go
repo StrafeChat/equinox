@@ -4,11 +4,11 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
-	"encoding/binary"
 	"encoding/hex"
 	"fmt"
 	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -204,8 +204,7 @@ func (s *Service) AddBot(ctx context.Context, actorID, appID int64) (*auth.User,
 	if a.HasBot() {
 		return nil, "", ErrHasBot
 	}
-	botUsername := sanitizeUsername(a.Name)
-	disc, err := s.pickDiscriminator(ctx, botUsername)
+	botUsername, err := s.pickBotUsername(ctx, sanitizeUsername(a.Name))
 	if err != nil {
 		return nil, "", err
 	}
@@ -216,16 +215,15 @@ func (s *Service) AddBot(ctx context.Context, actorID, appID int64) (*auth.User,
 		// A synthetic, unique, non-login email: the account create path claims an
 		// email-lookup row, and every bot sharing "" would collide on the first one. A bot
 		// never signs in with it (it has no password), and it is not exposed.
-		Email:         fmt.Sprintf("bot+%d@bots.invalid", botID),
-		Username:      botUsername,
-		Discriminator: disc,
-		DisplayName:   a.Name,
-		Avatar:        a.Icon,
-		Bot:           true,
-		Locale:        "en-US",
-		Presence:      auth.UserPresence{Online: false, Status: "online"},
-		CreatedAt:     now,
-		UpdatedAt:     now,
+		Email:       fmt.Sprintf("bot+%d@bots.invalid", botID),
+		Username:    botUsername,
+		DisplayName: a.Name,
+		Avatar:      a.Icon,
+		Bot:         true,
+		Locale:      "en-US",
+		Presence:    auth.UserPresence{Online: false, Status: "online"},
+		CreatedAt:   now,
+		UpdatedAt:   now,
 	}
 	if err := s.users.Create(ctx, bot); err != nil {
 		return nil, "", err
@@ -284,26 +282,27 @@ func (s *Service) ResolveBotToken(ctx context.Context, rawToken string) (*auth.U
 	return s.users.GetByID(ctx, botUserID)
 }
 
-func (s *Service) pickDiscriminator(ctx context.Context, username string) (int, error) {
-	used, err := s.users.DiscriminatorsForUsername(ctx, username)
-	if err != nil {
-		return 0, err
-	}
-	taken := make(map[int]struct{}, len(used))
-	for _, d := range used {
-		taken[d] = struct{}{}
-	}
-	for i := 0; i < 9999; i++ {
-		var b [2]byte
-		if _, err := rand.Read(b[:]); err != nil {
-			return 0, err
+// pickBotUsername returns base if nobody holds it, else the first free "base2", "base3", …
+// (usernames are unique and case-insensitive, and a bot is a user). Kept within 32 characters.
+func (s *Service) pickBotUsername(ctx context.Context, base string) (string, error) {
+	for i := 1; i <= 1000; i++ {
+		cand := base
+		if i > 1 {
+			suffix := strconv.Itoa(i)
+			if n := 32 - len(suffix); len(cand) > n {
+				cand = cand[:n]
+			}
+			cand += suffix
 		}
-		d := int(binary.BigEndian.Uint16(b[:])%9999) + 1
-		if _, ok := taken[d]; !ok {
-			return d, nil
+		taken, err := s.users.UsernameTaken(ctx, cand)
+		if err != nil {
+			return "", err
+		}
+		if !taken {
+			return cand, nil
 		}
 	}
-	return 0, ErrInvalidField
+	return "", ErrInvalidField
 }
 
 // ---- helpers ----

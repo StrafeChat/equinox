@@ -2,6 +2,7 @@ package instance
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -162,23 +163,18 @@ func (f *fakeUsers) GetByEmail(_ context.Context, email string) (*auth.User, err
 	}
 	return nil, nil
 }
-func (f *fakeUsers) GetByUsernameDiscriminator(_ context.Context, name string, d int) (*auth.User, error) {
+func (f *fakeUsers) GetByUsername(_ context.Context, name string) (*auth.User, error) {
 	for _, u := range f.users {
-		if u.Username == name && u.Discriminator == d {
+		if strings.EqualFold(u.Username, name) && u.HomeDomain == "" {
 			return u, nil
 		}
 	}
 	return nil, nil
 }
 func (f *fakeUsers) EmailExists(context.Context, string) (bool, error) { return false, nil }
-func (f *fakeUsers) DiscriminatorsForUsername(_ context.Context, name string) ([]int, error) {
-	var out []int
-	for _, u := range f.users {
-		if u.Username == name {
-			out = append(out, u.Discriminator)
-		}
-	}
-	return out, nil
+func (f *fakeUsers) UsernameTaken(_ context.Context, name string) (bool, error) {
+	u, _ := f.GetByUsername(context.Background(), name)
+	return u != nil, nil
 }
 func (f *fakeUsers) UpdateRelationships(context.Context, int64, []int64, []int64) error { return nil }
 func (f *fakeUsers) UpdateBlocks(context.Context, int64, []int64, []int64) error        { return nil }
@@ -227,10 +223,10 @@ func newModService(t *testing.T) (*Service, *fakeModRepo, *fakeSessions) {
 	svc.SetModeration(ModerationDeps{
 		Repo: mod,
 		Users: &fakeUsers{users: map[int64]*auth.User{
-			adminID:  {ID: adminID, Username: "admin", Discriminator: 1, Email: "admin@x"},
-			aliceID:  {ID: aliceID, Username: "alice", Discriminator: 1, Email: "alice@x"},
-			mallory:  {ID: mallory, Username: "alice", Discriminator: 2, Email: "mallory@x"},
-			remoteID: {ID: remoteID, Username: "far", Discriminator: 1, HomeDomain: "other.example", RemoteID: &remoteOrigin},
+			adminID:  {ID: adminID, Username: "admin", Email: "admin@x"},
+			aliceID:  {ID: aliceID, Username: "alice", Email: "alice@x"},
+			mallory:  {ID: mallory, Username: "alice2", Email: "mallory@x"},
+			remoteID: {ID: remoteID, Username: "far", HomeDomain: "other.example", RemoteID: &remoteOrigin},
 		}},
 		Sessions: sessions,
 	})
@@ -365,11 +361,11 @@ func TestSearchUsersByEveryHandle(t *testing.T) {
 	svc, _, _ := newModService(t)
 	ctx := context.Background()
 	cases := map[string]int{
-		"3":          1, // id
-		"alice@x":    1, // email
-		"alice#0002": 1, // handle
-		"alice":      2, // username: both discriminators
-		"nobody":     0,
+		"3":       1, // id
+		"alice@x": 1, // email
+		"ALICE":   1, // username, case-insensitive
+		"alice":   1, // username
+		"nobody":  0,
 	}
 	for q, want := range cases {
 		got, err := svc.SearchUsers(ctx, adminID, q)
@@ -390,4 +386,4 @@ func TestSearchUsersByEveryHandle(t *testing.T) {
 }
 
 func (f *fakeUsers) SetBirthdayIndex(context.Context, int64, int, int, bool) error { return nil }
-func (f *fakeUsers) ListBirthdaysOn(context.Context, int, int) ([]int64, error) { return nil, nil }
+func (f *fakeUsers) ListBirthdaysOn(context.Context, int, int) ([]int64, error)    { return nil, nil }

@@ -15,11 +15,10 @@ var loginSchema = z.Struct(z.Shape{
 })
 
 var registerSchema = z.Struct(z.Shape{
-	"Email":         z.String().Trim().Email(z.Message("email must be valid")).Required(z.Message("email is required")),
-	"Username":      z.String().Trim().Min(2, z.Message("username must be at least 2 characters")).Max(32, z.Message("username must be at most 32 characters")).Required(z.Message("username is required")),
-	"Password":      z.String().Min(8, z.Message("password must be at least 8 characters")).Required(z.Message("password is required")),
-	"DateOfBirth":   z.Time().Optional(),
-	"Discriminator": z.Ptr(z.Int().GTE(1).LTE(9999)),
+	"Email":       z.String().Trim().Email(z.Message("email must be valid")).Required(z.Message("email is required")),
+	"Username":    z.String().Trim().Min(2, z.Message("username must be at least 2 characters")).Max(32, z.Message("username must be at most 32 characters")).Required(z.Message("username is required")),
+	"Password":    z.String().Min(8, z.Message("password must be at least 8 characters")).Required(z.Message("password is required")),
+	"DateOfBirth": z.Time().Optional(),
 	// Optional here: whether a token is actually required depends on instance config, so
 	// the handler decides and can return a captcha-specific error rather than "validation failed".
 	"CaptchaToken": z.String().Optional(),

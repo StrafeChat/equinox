@@ -2,7 +2,7 @@
 //
 // Model in one paragraph: every instance has a domain and an Ed25519 signing key it
 // publishes at https://<domain>/.well-known/strafe. Users are addressed across instances
-// as `name#0001@domain`, and carry a federated id (FID) `@<id>:<domain>` where <id> is
+// as `name@domain`, and carry a federated id (FID) `@<id>:<domain>` where <id> is
 // what their *home* instance calls them. A remote user gets a local "shadow" users row so
 // the rest of the codebase keeps working with plain local ids; the FID ↔ shadow mapping
 // lives in users_by_remote. Rooms are mirrored: each participating instance stores its
@@ -13,9 +13,7 @@ package federation
 
 import (
 	"errors"
-	"fmt"
 	"regexp"
-	"strconv"
 	"strings"
 
 	"github.com/StrafeChat/equinox/internal/id"
@@ -27,7 +25,7 @@ import (
 const LegacyServer = "strafe.internal"
 
 var (
-	ErrInvalidHandle      = errors.New("invalid handle - expected name#0001@domain")
+	ErrInvalidHandle      = errors.New("invalid handle - expected name@domain")
 	ErrInvalidFID         = errors.New("invalid federated id - expected @id:domain")
 	ErrPeerNotAllowed     = errors.New("that instance is not allowed by this server's federation policy")
 	ErrFederationOff      = errors.New("federation is not enabled on this instance")
@@ -35,13 +33,13 @@ var (
 	ErrRemoteUnavailable  = errors.New("the other instance could not be reached")
 )
 
-var handleRe = regexp.MustCompile(`^([A-Za-z0-9_.\-]{2,32})#(\d{1,4})(?:@([A-Za-z0-9.\-]+(?::\d+)?))?$`)
+var handleRe = regexp.MustCompile(`^([A-Za-z0-9_.\-]{2,32})(?:@([A-Za-z0-9.\-]+(?::\d+)?))?$`)
 
-// Handle is a user address as people type it: name#0001@domain (domain optional = local).
+// Handle is a user address as people type it: name@domain (domain optional = local).
+// Usernames are unique per instance, so the name alone identifies someone there.
 type Handle struct {
-	Username      string
-	Discriminator int
-	Domain        string
+	Username string
+	Domain   string
 }
 
 func ParseHandle(s string) (Handle, error) {
@@ -50,19 +48,14 @@ func ParseHandle(s string) (Handle, error) {
 	if m == nil {
 		return Handle{}, ErrInvalidHandle
 	}
-	d, err := strconv.Atoi(m[2])
-	if err != nil || d < 1 || d > 9999 {
-		return Handle{}, ErrInvalidHandle
-	}
-	return Handle{Username: m[1], Discriminator: d, Domain: strings.ToLower(m[3])}, nil
+	return Handle{Username: m[1], Domain: strings.ToLower(m[2])}, nil
 }
 
 func (h Handle) String() string {
-	s := fmt.Sprintf("%s#%04d", h.Username, h.Discriminator)
 	if h.Domain != "" {
-		s += "@" + h.Domain
+		return h.Username + "@" + h.Domain
 	}
-	return s
+	return h.Username
 }
 
 // FormatFID builds the federated id the E2EE engine and peers use for a user.

@@ -2,7 +2,6 @@ package users
 
 import (
 	"context"
-	"fmt"
 
 	"github.com/StrafeChat/equinox/internal/id"
 	"github.com/StrafeChat/equinox/internal/modules/auth"
@@ -22,16 +21,15 @@ func (h *Handler) broadcastUserProfile(ctx context.Context, u *auth.User) {
 		region = h.cfg.Stargate.Region
 	}
 	payload := map[string]interface{}{
-		"user_id":       id.Format(u.ID),
-		"avatar":        u.Avatar,
-		"banner":        u.Banner,
-		"display_name":  u.DisplayName,
-		"username":      u.Username,
-		"discriminator": fmt.Sprintf("%04d", u.Discriminator),
-		"bio":           u.Bio,
-		"about_me":      u.AboutMe,
-		"accent_color":  u.AccentColor,
-		"bot":           u.Bot,
+		"user_id":      id.Format(u.ID),
+		"avatar":       u.Avatar,
+		"banner":       u.Banner,
+		"display_name": u.DisplayName,
+		"username":     u.Username,
+		"bio":          u.Bio,
+		"about_me":     u.AboutMe,
+		"accent_color": u.AccentColor,
+		"bot":          u.Bot,
 	}
 	auth.MergeProfilePublicExtras(payload, u)
 	stargate.PublishToUser(ctx, h.redis, u.ID, "USER_UPDATE", payload, region)

@@ -50,13 +50,12 @@ func TestClampProfile(t *testing.T) {
 		long = append(long, 'x')
 	}
 	p := clampProfile(Profile{
-		FID:           "@1:other.example",
-		Username:      string(long),
-		DisplayName:   "  padded  ",
-		Bio:           string(long),
-		Avatar:        "javascript:alert(1)",
-		Banner:        "https://cdn.other.example/v1/banners/1/x.png",
-		Discriminator: 123456,
+		FID:         "@1:other.example",
+		Username:    string(long),
+		DisplayName: "  padded  ",
+		Bio:         string(long),
+		Avatar:      "javascript:alert(1)",
+		Banner:      "https://cdn.other.example/v1/banners/1/x.png",
 	})
 	if len([]rune(p.Username)) != 32 || len([]rune(p.Bio)) != 190 {
 		t.Errorf("username/bio not clamped: %d/%d", len([]rune(p.Username)), len([]rune(p.Bio)))
@@ -69,8 +68,5 @@ func TestClampProfile(t *testing.T) {
 	}
 	if p.Banner == "" {
 		t.Error("https banner dropped")
-	}
-	if p.Discriminator != 0 {
-		t.Errorf("out-of-range discriminator kept: %d", p.Discriminator)
 	}
 }

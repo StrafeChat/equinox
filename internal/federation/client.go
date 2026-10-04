@@ -51,7 +51,7 @@ func newNonce() string {
 }
 
 // Do sends a signed JSON request to domain's federation endpoint. fedPath is relative to
-// /federation/v1 (e.g. "/rooms" or "/users/lookup?username=a&discriminator=1"). A JSON
+// /federation/v1 (e.g. "/rooms" or "/users/lookup?username=a"). A JSON
 // 2xx body is decoded into out when out is non-nil.
 func (c *Client) Do(ctx context.Context, domain, method, fedPath string, body any, out any) (int, error) {
 	if !c.cfg.IsAllowedPeer(domain) {

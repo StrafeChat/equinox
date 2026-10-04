@@ -3,7 +3,6 @@ package discover
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"regexp"
 	"sort"
 	"strings"
@@ -419,7 +418,7 @@ func (s *Service) entry(ctx context.Context, l *Listing, admin bool) (Entry, boo
 }
 
 func userRef(u *auth.User) *UserRef {
-	return &UserRef{ID: id.Format(u.ID), Username: u.Username, Discriminator: fmt.Sprintf("%04d", u.Discriminator), DisplayName: u.DisplayName, Avatar: u.Avatar, Bot: u.Bot}
+	return &UserRef{ID: id.Format(u.ID), Username: u.Username, DisplayName: u.DisplayName, Avatar: u.Avatar, Bot: u.Bot}
 }
 
 // JoinSpace is the Discover page's join: a space an administrator listed takes anyone

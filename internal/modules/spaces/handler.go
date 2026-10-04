@@ -299,13 +299,12 @@ func userSummary(u *auth.User) fiber.Map {
 		return nil
 	}
 	m := fiber.Map{
-		"id":            id.Format(u.ID),
-		"username":      u.Username,
-		"discriminator": u.Discriminator,
-		"display_name":  u.DisplayName,
-		"avatar":        u.Avatar,
-		"public_flags":  auth.PublicFlags(u),
-		"bot":           u.Bot,
+		"id":           id.Format(u.ID),
+		"username":     u.Username,
+		"display_name": u.DisplayName,
+		"avatar":       u.Avatar,
+		"public_flags": auth.PublicFlags(u),
+		"bot":          u.Bot,
 	}
 	for k, v := range auth.ProfilePublicExtras(u) {
 		m[k] = v

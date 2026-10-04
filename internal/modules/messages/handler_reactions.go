@@ -127,11 +127,10 @@ func userSummary(u *auth.User) fiber.Map {
 		return nil
 	}
 	return fiber.Map{
-		"id":            id.Format(u.ID),
-		"username":      u.Username,
-		"discriminator": u.Discriminator,
-		"display_name":  u.DisplayName,
-		"avatar":        u.Avatar,
-		"bot":           u.Bot,
+		"id":           id.Format(u.ID),
+		"username":     u.Username,
+		"display_name": u.DisplayName,
+		"avatar":       u.Avatar,
+		"bot":          u.Bot,
 	}
 }

@@ -58,15 +58,14 @@ func (h *Handler) resolveHandle(c fiber.Ctx, handle string) (*auth.User, int, st
 		}
 		return u, 0, ""
 	}
-	if strings.Contains(handle, "@") {
-		return nil, http.StatusBadRequest, "this instance does not federate; use a local username#0001"
+	name := strings.TrimSpace(strings.TrimPrefix(handle, "@"))
+	if strings.Contains(name, "@") {
+		return nil, http.StatusBadRequest, "this instance does not federate; use a local username"
 	}
-	name, disc, ok := strings.Cut(strings.TrimPrefix(handle, "@"), "#")
-	d, err := parseDiscriminator(strings.TrimSpace(disc))
-	if !ok || err != nil || strings.TrimSpace(name) == "" {
-		return nil, http.StatusBadRequest, "expected username#0001"
+	if name == "" {
+		return nil, http.StatusBadRequest, "expected a username"
 	}
-	u, err := h.svc.FindLocalUser(c.Context(), strings.TrimSpace(name), d)
+	u, err := h.svc.FindLocalUser(c.Context(), name)
 	if err != nil {
 		return nil, http.StatusInternalServerError, "internal error"
 	}
@@ -93,8 +92,8 @@ func (h *Handler) Get(c fiber.Ctx) error {
 }
 
 // Post sends a friend request.
-// Body: { "handle": "alice#1234" } or { "handle": "alice#1234@other.instance" };
-// { "username": "alice", "discriminator": "1234" } is still accepted.
+// Body: { "handle": "alice" } or { "handle": "alice@other.instance" }; "username" is an
+// accepted alias of "handle".
 func (h *Handler) Post(c fiber.Ctx) error {
 	user := auth.GetUser(c)
 	if user == nil {
@@ -107,10 +106,10 @@ func (h *Handler) Post(c fiber.Ctx) error {
 	}
 	handle := in.Handle
 	if handle == "" {
-		if in.Username == "" || in.Discriminator == "" {
-			return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "handle is required"})
-		}
-		handle = in.Username + "#" + strings.TrimPrefix(in.Discriminator, "#")
+		handle = in.Username
+	}
+	if handle == "" {
+		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "handle is required"})
 	}
 	target, status, msg := h.resolveHandle(c, handle)
 	if target == nil {

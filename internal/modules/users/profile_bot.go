@@ -1,7 +1,6 @@
 package users
 
 import (
-	"fmt"
 	"net/http"
 
 	"github.com/gofiber/fiber/v3"
@@ -72,17 +71,16 @@ func (h *Handler) botFor(c fiber.Ctx) (*auth.User, bool) {
 // BotProfileJSON is the bot's public profile, as the application endpoints return it.
 func BotProfileJSON(u *auth.User) fiber.Map {
 	return fiber.Map{
-		"id":            id.Format(u.ID),
-		"username":      u.Username,
-		"discriminator": fmt.Sprintf("%04d", u.Discriminator),
-		"display_name":  u.DisplayName,
-		"avatar":        u.Avatar,
-		"banner":        u.Banner,
-		"bio":           u.Bio,
-		"about_me":      u.AboutMe,
-		"accent_color":  u.AccentColor,
-		"public_flags":  auth.PublicFlags(u),
-		"bot":           true,
+		"id":           id.Format(u.ID),
+		"username":     u.Username,
+		"display_name": u.DisplayName,
+		"avatar":       u.Avatar,
+		"banner":       u.Banner,
+		"bio":          u.Bio,
+		"about_me":     u.AboutMe,
+		"accent_color": u.AccentColor,
+		"public_flags": auth.PublicFlags(u),
+		"bot":          true,
 	}
 }
 

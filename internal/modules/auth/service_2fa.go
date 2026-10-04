@@ -391,7 +391,7 @@ func (s *service) SetupTOTP(ctx context.Context, userID int64) (string, string, 
 	}
 	key, err := totp.Generate(totp.GenerateOpts{
 		Issuer:      "StrafeChat",
-		AccountName: fmt.Sprintf("%s#%04d", u.Username, u.Discriminator),
+		AccountName: u.Username,
 	})
 	if err != nil {
 		return "", "", err

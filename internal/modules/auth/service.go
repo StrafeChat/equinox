@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
-	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"regexp"
@@ -29,11 +28,11 @@ var (
 	ErrWeakPassword       = errors.New("password does not meet requirements")
 	ErrPasswordTooLong    = errors.New("password must be at most 72 bytes")
 	ErrInvalidUsername    = errors.New("username must be 2-32 letters, digits, '_', '.' or '-'")
-	ErrDiscriminatorInUse = errors.New("discriminator already in use for this username")
+	ErrUsernameTaken      = errors.New("username already taken")
 	ErrInvalidCredentials = errors.New("invalid email or password")
 )
 
-// usernameRe is the same grammar federation handles use (name#0001@domain, see
+// usernameRe is the same grammar federation handles use (name@domain, see
 // federation.ParseHandle): a username containing '#', '@', ':' or whitespace could never be
 // addressed by handle, locally or from another instance.
 var usernameRe = regexp.MustCompile(`^[A-Za-z0-9_.\-]{2,32}$`)
@@ -167,7 +166,7 @@ func (s *service) Register(ctx context.Context, in RegisterInput) (*User, error)
 		return nil, ErrPasswordTooLong
 	}
 
-	// Fast path only: the repository's Create claims the email and username#discriminator
+	// Fast path only: the repository's Create claims the email and username
 	// with lightweight transactions, which is what actually prevents two concurrent
 	// registrations from both succeeding.
 	exists, err := s.repo.EmailExists(ctx, in.Email)
@@ -176,6 +175,11 @@ func (s *service) Register(ctx context.Context, in RegisterInput) (*User, error)
 	}
 	if exists {
 		return nil, ErrEmailInUse
+	}
+	if taken, err := s.repo.UsernameTaken(ctx, in.Username); err != nil {
+		return nil, err
+	} else if taken {
+		return nil, ErrUsernameTaken
 	}
 
 	hash, err := bcrypt.GenerateFromPassword([]byte(in.Password), bcrypt.DefaultCost)
@@ -230,30 +234,11 @@ func (s *service) Register(ctx context.Context, in RegisterInput) (*User, error)
 		}
 	}
 
-	var discriminator int
-	if in.Discriminator != nil {
-		existing, err := s.repo.GetByUsernameDiscriminator(ctx, in.Username, *in.Discriminator)
-		if err != nil {
-			return nil, err
-		}
-		if existing != nil {
-			return nil, ErrDiscriminatorInUse
-		}
-		discriminator = *in.Discriminator
-	} else {
-		d, err := s.pickUniqueDiscriminator(ctx, in.Username)
-		if err != nil {
-			return nil, err
-		}
-		discriminator = d
-	}
-
 	u := &User{
 		ID:            userID,
 		Email:         in.Email,
 		PasswordHash:  string(hash),
 		Username:      in.Username,
-		Discriminator: discriminator,
 		DisplayName:   in.Username,
 		Bot:           false,
 		System:        false,
@@ -284,29 +269,6 @@ func (s *service) Register(ctx context.Context, in RegisterInput) (*User, error)
 	}
 
 	return u, nil
-}
-
-func (s *service) pickUniqueDiscriminator(ctx context.Context, username string) (int, error) {
-	used, err := s.repo.DiscriminatorsForUsername(ctx, username)
-	if err != nil {
-		return 0, err
-	}
-	usedSet := make(map[int]struct{}, len(used))
-	for _, d := range used {
-		usedSet[d] = struct{}{}
-	}
-
-	for i := 0; i < 9999; i++ {
-		var b [2]byte
-		if _, err := rand.Read(b[:]); err != nil {
-			return 0, err
-		}
-		d := int(binary.BigEndian.Uint16(b[:])%9999) + 1
-		if _, taken := usedSet[d]; !taken {
-			return d, nil
-		}
-	}
-	return 0, ErrInvalidUsername
 }
 
 func (s *service) Login(ctx context.Context, email, password, ip, userAgent string) (*LoginResult, error) {

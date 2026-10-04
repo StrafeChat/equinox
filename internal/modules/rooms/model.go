@@ -50,7 +50,7 @@ type Room struct {
 	// overrides (Discord category sync) instead of its own. Resolved at read time, so editing
 	// the section updates every synced channel without copying. Nil/false = not synced.
 	PermissionsSynced *bool  `db:"permissions_synced" json:"permissions_synced,omitempty"`
-	LastMessageID   *int64 `db:"last_message_id" json:"last_message_id,omitempty"`
+	LastMessageID     *int64 `db:"last_message_id" json:"last_message_id,omitempty"`
 	// Voice rooms only. UserLimit caps how many people can be connected at once (0 =
 	// unlimited; members with Move Members bypass it, as on Discord). Bitrate is the
 	// audio bitrate clients publish at, in bits per second (0 = DefaultVoiceBitrate).
@@ -77,17 +77,16 @@ func (r *Room) IsVoice() bool {
 
 // Participant is a minimal user for room display.
 type Participant struct {
-	ID            string              `json:"id"`
-	Username      string              `json:"username"`
-	Discriminator int                 `json:"discriminator"`
-	DisplayName   string              `json:"display_name"`
-	Avatar        string              `json:"avatar,omitempty"`
-	Banner        string              `json:"banner,omitempty"`
-	Bio           string              `json:"bio,omitempty"`
-	AboutMe       string              `json:"about_me,omitempty"`
-	PublicFlags   int                 `json:"public_flags"`
-	Bot           bool                `json:"bot,omitempty"`
-	Presence      auth.PublicPresence `json:"presence"`
+	ID          string              `json:"id"`
+	Username    string              `json:"username"`
+	DisplayName string              `json:"display_name"`
+	Avatar      string              `json:"avatar,omitempty"`
+	Banner      string              `json:"banner,omitempty"`
+	Bio         string              `json:"bio,omitempty"`
+	AboutMe     string              `json:"about_me,omitempty"`
+	PublicFlags int                 `json:"public_flags"`
+	Bot         bool                `json:"bot,omitempty"`
+	Presence    auth.PublicPresence `json:"presence"`
 	// Federation (only when this instance has a domain): the user's home instance and the
 	// id it knows them by. Clients build the E2EE identity @origin_id:home_domain from these.
 	HomeDomain string `json:"home_domain,omitempty"`

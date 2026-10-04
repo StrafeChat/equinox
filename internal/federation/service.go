@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -427,15 +426,14 @@ func (s *Service) ResolveLocalID(ctx context.Context, fid string) (int64, error)
 
 func (s *Service) ProfileOf(u *auth.User) Profile {
 	return Profile{
-		FID:           s.FIDOf(u),
-		Username:      u.Username,
-		Discriminator: u.Discriminator,
-		DisplayName:   u.DisplayName,
-		Avatar:        u.Avatar,
-		Banner:        u.Banner,
-		Bio:           u.Bio,
-		AboutMe:       u.AboutMe,
-		Bot:           u.Bot,
+		FID:         s.FIDOf(u),
+		Username:    u.Username,
+		DisplayName: u.DisplayName,
+		Avatar:      u.Avatar,
+		Banner:      u.Banner,
+		Bio:         u.Bio,
+		AboutMe:     u.AboutMe,
+		Bot:         u.Bot,
 	}
 }
 
@@ -443,7 +441,7 @@ func (s *Service) RoomFederation(ctx context.Context, roomID int64) *rooms.Feder
 	return roomFederation(ctx, s.repo, roomID)
 }
 
-// ResolveHandle turns "name#0001@domain" into a local user row: the local user for this
+// ResolveHandle turns "name@domain" into a local user row: the local user for this
 // instance's own domain (or no domain), or an up-to-date shadow row fetched from the
 // remote instance.
 func (s *Service) ResolveHandle(ctx context.Context, raw string) (*auth.User, error) {
@@ -452,7 +450,7 @@ func (s *Service) ResolveHandle(ctx context.Context, raw string) (*auth.User, er
 		return nil, err
 	}
 	if h.Domain == "" || h.Domain == s.fcfg.Domain {
-		u, err := s.users.GetByUsernameDiscriminator(ctx, h.Username, h.Discriminator)
+		u, err := s.users.GetByUsername(ctx, h.Username)
 		if err != nil {
 			return nil, err
 		}
@@ -467,7 +465,6 @@ func (s *Service) ResolveHandle(ctx context.Context, raw string) (*auth.User, er
 	var p Profile
 	q := url.Values{}
 	q.Set("username", h.Username)
-	q.Set("discriminator", strconv.Itoa(h.Discriminator))
 	if _, err := s.client.Do(ctx, h.Domain, http.MethodGet, "/users/lookup?"+q.Encode(), nil, &p); err != nil {
 		var se *StatusError
 		if errors.As(err, &se) && se.Status == http.StatusNotFound {
@@ -501,9 +498,6 @@ func clampProfile(p Profile) Profile {
 	p.AboutMe = clamp(p.AboutMe, 190)
 	p.Avatar = httpOnly(p.Avatar)
 	p.Banner = httpOnly(p.Banner)
-	if p.Discriminator < 0 || p.Discriminator > 9999 {
-		p.Discriminator = 0
-	}
 	return p
 }
 
@@ -536,12 +530,11 @@ func (s *Service) EnsureShadow(ctx context.Context, domain string, p Profile) (*
 	if u == nil {
 		rid := originID
 		u = &auth.User{ID: id.Next(), HomeDomain: domain, RemoteID: &rid, CreatedAt: time.Now().UTC()}
-	} else if u.Username == p.Username && u.Discriminator == p.Discriminator && u.DisplayName == p.DisplayName &&
+	} else if u.Username == p.Username && u.DisplayName == p.DisplayName &&
 		u.Avatar == p.Avatar && u.Banner == p.Banner && u.Bio == p.Bio && u.AboutMe == p.AboutMe && u.Bot == p.Bot {
 		return u, nil
 	}
 	u.Username = p.Username
-	u.Discriminator = p.Discriminator
 	u.DisplayName = p.DisplayName
 	u.Avatar = p.Avatar
 	u.Banner = p.Banner

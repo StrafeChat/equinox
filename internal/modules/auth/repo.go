@@ -13,13 +13,13 @@ import (
 
 // ProfileUpdate holds optional fields for PATCH /users/@me.
 type ProfileUpdate struct {
-	DisplayName *string         `json:"display_name,omitempty"`
-	Bio         *string         `json:"bio,omitempty"`
-	AboutMe     *string         `json:"about_me,omitempty"`
-	Avatar      *string         `json:"avatar,omitempty"`
-	Banner      *string         `json:"banner,omitempty"`
-	AccentColor *string         `json:"accent_color,omitempty"`
-	Pronouns    *string         `json:"pronouns,omitempty"`
+	DisplayName *string `json:"display_name,omitempty"`
+	Bio         *string `json:"bio,omitempty"`
+	AboutMe     *string `json:"about_me,omitempty"`
+	Avatar      *string `json:"avatar,omitempty"`
+	Banner      *string `json:"banner,omitempty"`
+	AccentColor *string `json:"accent_color,omitempty"`
+	Pronouns    *string `json:"pronouns,omitempty"`
 	// BirthdayOptIn toggles whether birthday fields appear on the profile and the user is
 	// announced in spaces. The handler maintains the birthdays_by_day index when it changes.
 	BirthdayOptIn *bool           `json:"birthday_opt_in,omitempty"`
@@ -41,9 +41,11 @@ type UserRepository interface {
 	GetByID(ctx context.Context, id int64) (*User, error)
 	GetByIDs(ctx context.Context, ids []int64) ([]*User, error)
 	GetByEmail(ctx context.Context, email string) (*User, error)
-	GetByUsernameDiscriminator(ctx context.Context, username string, discriminator int) (*User, error)
+	// GetByUsername looks a local user up by username, case-insensitively.
+	GetByUsername(ctx context.Context, username string) (*User, error)
 	EmailExists(ctx context.Context, email string) (bool, error)
-	DiscriminatorsForUsername(ctx context.Context, username string) ([]int, error)
+	// UsernameTaken reports whether a username is already claimed (case-insensitively).
+	UsernameTaken(ctx context.Context, username string) (bool, error)
 	UpdateRelationships(ctx context.Context, userID int64, add, remove []int64) error
 	UpdateBlocks(ctx context.Context, userID int64, add, remove []int64) error
 	UpdateProfile(ctx context.Context, userID int64, upd *ProfileUpdate) (*User, error)
@@ -72,7 +74,6 @@ var userTable = table.New(table.Metadata{
 		"email",
 		"password",
 		"username",
-		"discriminator",
 		"display_name",
 		"avatar",
 		"banner",
@@ -115,12 +116,17 @@ var usersByEmailTable = table.New(table.Metadata{
 	PartKey: []string{"email"},
 })
 
-var usersByUsernameDiscriminatorTable = table.New(table.Metadata{
-	Name:    "users_by_username_discriminator",
-	Columns: []string{"username", "discriminator", "user_id"},
+var usersByUsernameTable = table.New(table.Metadata{
+	Name:    "users_by_username",
+	Columns: []string{"username", "user_id"},
 	PartKey: []string{"username"},
-	SortKey: []string{"discriminator"},
 })
+
+// usernameKey is how a username is claimed and looked up: trimmed and lowercased, so
+// "Alice" and "alice" are one name.
+func usernameKey(username string) string {
+	return strings.ToLower(strings.TrimSpace(username))
+}
 
 type scyllaUserRepo struct {
 	session gocqlx.Session
@@ -130,7 +136,7 @@ func NewUserRepository(session gocqlx.Session) UserRepository {
 	return &scyllaUserRepo{session: session}
 }
 
-// Create registers a user. The email and username#discriminator lookup rows are claimed
+// Create registers a user. The email and username lookup rows are claimed
 // first with lightweight transactions (IF NOT EXISTS), so two registrations racing on the
 // same address or tag cannot both succeed - the service's EmailExists check is only a
 // fast path. Claims are released again if a later step fails.
@@ -149,22 +155,22 @@ func (r *scyllaUserRepo) Create(ctx context.Context, u *User) error {
 	}
 
 	applied, err = r.claim(ctx,
-		"INSERT INTO users_by_username_discriminator (username, discriminator, user_id) VALUES (?, ?, ?) IF NOT EXISTS",
-		u.Username, u.Discriminator, u.ID)
+		"INSERT INTO users_by_username (username, user_id) VALUES (?, ?) IF NOT EXISTS",
+		usernameKey(u.Username), u.ID)
 	if err != nil {
 		r.release(ctx, "DELETE FROM users_by_email WHERE email = ?", u.Email)
 		return err
 	}
 	if !applied {
 		r.release(ctx, "DELETE FROM users_by_email WHERE email = ?", u.Email)
-		return ErrDiscriminatorInUse
+		return ErrUsernameTaken
 	}
 
 	stmt, names := userTable.Insert()
 	q := r.session.Query(stmt, names).WithContext(ctx)
 	if err := q.BindStruct(u).ExecRelease(); err != nil {
 		r.release(ctx, "DELETE FROM users_by_email WHERE email = ?", u.Email)
-		r.release(ctx, "DELETE FROM users_by_username_discriminator WHERE username = ? AND discriminator = ?", u.Username, u.Discriminator)
+		r.release(ctx, "DELETE FROM users_by_username WHERE username = ?", usernameKey(u.Username))
 		return err
 	}
 	return nil
@@ -276,12 +282,12 @@ func (r *scyllaUserRepo) GetByEmail(ctx context.Context, email string) (*User, e
 	return r.GetByID(ctx, row.UserID)
 }
 
-func (r *scyllaUserRepo) GetByUsernameDiscriminator(ctx context.Context, username string, discriminator int) (*User, error) {
-	var row UserByUsernameDiscriminator
-	stmt, names := usersByUsernameDiscriminatorTable.Get()
+func (r *scyllaUserRepo) GetByUsername(ctx context.Context, username string) (*User, error) {
+	var row UserByUsername
+	stmt, names := usersByUsernameTable.Get()
 	q := r.session.Query(stmt, names).WithContext(ctx)
 	defer q.Release()
-	if err := q.Bind(username, discriminator).GetRelease(&row); err != nil {
+	if err := q.Bind(usernameKey(username)).GetRelease(&row); err != nil {
 		if err == gocql.ErrNotFound {
 			return nil, nil
 		}
@@ -304,22 +310,18 @@ func (r *scyllaUserRepo) EmailExists(ctx context.Context, email string) (bool, e
 	return true, nil
 }
 
-func (r *scyllaUserRepo) DiscriminatorsForUsername(ctx context.Context, username string) ([]int, error) {
-	stmt, names := usersByUsernameDiscriminatorTable.Select()
+func (r *scyllaUserRepo) UsernameTaken(ctx context.Context, username string) (bool, error) {
+	var row UserByUsername
+	stmt, names := usersByUsernameTable.Get()
 	q := r.session.Query(stmt, names).WithContext(ctx)
 	defer q.Release()
-	iter := q.Bind(username).Iter()
-	defer iter.Close()
-
-	var out []int
-	var row UserByUsernameDiscriminator
-	for iter.StructScan(&row) {
-		out = append(out, row.Discriminator)
+	if err := q.Bind(usernameKey(username)).GetRelease(&row); err != nil {
+		if err == gocql.ErrNotFound {
+			return false, nil
+		}
+		return false, err
 	}
-	if err := iter.Close(); err != nil {
-		return nil, err
-	}
-	return out, nil
+	return true, nil
 }
 
 func (r *scyllaUserRepo) UpdateBlocks(ctx context.Context, userID int64, add, remove []int64) error {

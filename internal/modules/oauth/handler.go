@@ -4,7 +4,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -259,12 +258,11 @@ func (h *Handler) Me(c fiber.Ctx) error {
 	}
 	if info.User != nil {
 		out["user"] = fiber.Map{
-			"id":            id.Format(info.User.ID),
-			"username":      info.User.Username,
-			"discriminator": fmt.Sprintf("%04d", info.User.Discriminator),
-			"display_name":  info.User.DisplayName,
-			"avatar":        info.User.Avatar,
-			"public_flags":  auth.PublicFlags(info.User),
+			"id":           id.Format(info.User.ID),
+			"username":     info.User.Username,
+			"display_name": info.User.DisplayName,
+			"avatar":       info.User.Avatar,
+			"public_flags": auth.PublicFlags(info.User),
 		}
 	}
 	return c.JSON(out)
@@ -387,11 +385,10 @@ func clientCredentials(c fiber.Ctx, get func(string) string) (int64, string, err
 
 func botPublic(u *auth.User) fiber.Map {
 	return fiber.Map{
-		"id":            id.Format(u.ID),
-		"username":      u.Username,
-		"discriminator": fmt.Sprintf("%04d", u.Discriminator),
-		"display_name":  u.DisplayName,
-		"avatar":        u.Avatar,
-		"bot":           true,
+		"id":           id.Format(u.ID),
+		"username":     u.Username,
+		"display_name": u.DisplayName,
+		"avatar":       u.Avatar,
+		"bot":          true,
 	}
 }

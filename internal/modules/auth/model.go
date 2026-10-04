@@ -44,7 +44,6 @@ type User struct {
 	Email         string       `db:"email" json:"email"`
 	PasswordHash  string       `db:"password" json:"-"`
 	Username      string       `db:"username" json:"username"`
-	Discriminator int          `db:"discriminator" json:"discriminator"`
 	DisplayName   string       `db:"display_name" json:"display_name"`
 	Avatar        string       `db:"avatar" json:"avatar"`
 	Banner        string       `db:"banner" json:"banner"`
@@ -109,18 +108,18 @@ type UserByEmail struct {
 	UserID int64  `db:"user_id"`
 }
 
-type UserByUsernameDiscriminator struct {
-	Username      string `db:"username"`
-	Discriminator int    `db:"discriminator"`
-	UserID        int64  `db:"user_id"`
+// UserByUsername claims a username. The key is the lowercased username, so uniqueness is
+// case-insensitive, while the users row keeps the spelling the person chose.
+type UserByUsername struct {
+	Username string `db:"username"`
+	UserID   int64  `db:"user_id"`
 }
 
 type RegisterInput struct {
-	Email         string    `json:"email"`
-	Username      string    `json:"username"`
-	Password      string    `json:"password"`
-	DateOfBirth   time.Time `json:"date_of_birth"`
-	Discriminator *int      `json:"discriminator"`
+	Email       string    `json:"email"`
+	Username    string    `json:"username"`
+	Password    string    `json:"password"`
+	DateOfBirth time.Time `json:"date_of_birth"`
 	// CaptchaToken is the challenge response from the client widget. Only looked at when
 	// the instance has a captcha configured; ignored entirely otherwise.
 	CaptchaToken string `json:"captcha_token"`

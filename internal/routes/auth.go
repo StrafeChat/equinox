@@ -2,6 +2,7 @@ package routes
 
 import (
 	"context"
+	"github.com/StrafeChat/equinox/internal/logger"
 	"time"
 
 	"github.com/StrafeChat/equinox/internal/captcha"
@@ -65,9 +66,22 @@ func newCaptchaVerifier(d Deps) captcha.Verifier {
 }
 
 func SetupAuthRoutes(d Deps) {
-	userRepo := auth.NewCachedUserRepository(auth.NewUserRepository(d.Scylla), d.Redis, d.Config)
+	rawUsers := auth.NewUserRepository(d.Scylla)
+	userRepo := auth.NewCachedUserRepository(rawUsers, d.Redis, d.Config)
 	sessionRepo := auth.NewCachedSessionRepository(auth.NewSessionRepository(d.Scylla), d.Redis, d.Config)
 	twoFactorRepo := auth.NewTwoFactorRepository(d.Scylla)
+	// Usernames are unique on their own now (no #0001 tag): the first start after migration
+	// 043 fills users_by_username, renames duplicates and drops the discriminator column.
+	if m, ok := rawUsers.(auth.UsernameMigrator); ok {
+		cached, _ := userRepo.(*auth.CachedUserRepository)
+		if err := m.BackfillUniqueUsernames(context.Background(), func(id int64, oldName string) {
+			if cached != nil {
+				cached.InvalidateUser(context.Background(), id, oldName)
+			}
+		}); err != nil {
+			logger.Err("auth", err, map[string]any{"step": "backfill unique usernames"})
+		}
+	}
 	svc := auth.NewService(d.Config, userRepo, sessionRepo, twoFactorRepo, d.Redis)
 	// Registration needs the instance module to redeem an invite and to hand the first
 	// account its administrator bit. Without this, INVITE_ONLY can only close the door.

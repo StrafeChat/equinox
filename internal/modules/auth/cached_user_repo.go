@@ -26,7 +26,6 @@ type cachedUser struct {
 	ID            int64          `json:"id"`
 	Email         string         `json:"email"`
 	Username      string         `json:"username"`
-	Discriminator int            `json:"discriminator"`
 	DisplayName   string         `json:"display_name"`
 	Avatar        string         `json:"avatar"`
 	Banner        string         `json:"banner"`
@@ -65,7 +64,6 @@ func userToCached(u *User) *cachedUser {
 		ID:            u.ID,
 		Email:         u.Email,
 		Username:      u.Username,
-		Discriminator: u.Discriminator,
 		DisplayName:   u.DisplayName,
 		Avatar:        u.Avatar,
 		Banner:        u.Banner,
@@ -105,7 +103,6 @@ func cachedToUser(c *cachedUser, passwordHash string) *User {
 		Email:         c.Email,
 		PasswordHash:  passwordHash,
 		Username:      c.Username,
-		Discriminator: c.Discriminator,
 		DisplayName:   c.DisplayName,
 		Avatar:        c.Avatar,
 		Banner:        c.Banner,
@@ -136,14 +133,14 @@ func cachedToUser(c *cachedUser, passwordHash string) *User {
 	}
 }
 
-// CachedUserRepository wraps a UserRepository with Redis cache-aside for GetByID and GetByUsernameDiscriminator.
+// CachedUserRepository wraps a UserRepository with Redis cache-aside for GetByID and GetByUsername.
 type CachedUserRepository struct {
 	repo   UserRepository
 	redis  *redis.Client
 	prefix string
 }
 
-// NewCachedUserRepository returns a user repo that caches GetByID and GetByUsernameDiscriminator.
+// NewCachedUserRepository returns a user repo that caches GetByID and GetByUsername.
 func NewCachedUserRepository(repo UserRepository, redis *redis.Client, cfg *config.Config) UserRepository {
 	if redis == nil || !cfg.Database.Redis.CacheEnabled {
 		return repo
@@ -167,8 +164,17 @@ func (r *CachedUserRepository) userKey(id int64) string {
 	return r.prefix + "user:" + fmt.Sprintf("%d", id)
 }
 
-func (r *CachedUserRepository) userUDKey(username string, discriminator int) string {
-	return r.prefix + "user:ud:" + strings.ToLower(strings.TrimSpace(username)) + ":" + fmt.Sprintf("%d", discriminator)
+func (r *CachedUserRepository) userNameKey(username string) string {
+	return r.prefix + "user:name:" + usernameKey(username)
+}
+
+// InvalidateUser drops a user's cached profile and the lookup entry of a username they no
+// longer have - for writers outside this repository (the username migration renames rows).
+func (r *CachedUserRepository) InvalidateUser(ctx context.Context, id int64, oldUsername string) {
+	r.invalidateUser(ctx, id)
+	if oldUsername != "" {
+		_ = r.redis.Del(ctx, r.userNameKey(oldUsername))
+	}
 }
 
 func (r *CachedUserRepository) Create(ctx context.Context, u *User) error {
@@ -272,8 +278,8 @@ func (r *CachedUserRepository) GetByEmail(ctx context.Context, email string) (*U
 	return r.repo.GetByEmail(ctx, email)
 }
 
-func (r *CachedUserRepository) GetByUsernameDiscriminator(ctx context.Context, username string, discriminator int) (*User, error) {
-	key := r.userUDKey(username, discriminator)
+func (r *CachedUserRepository) GetByUsername(ctx context.Context, username string) (*User, error) {
+	key := r.userNameKey(username)
 	val, err := r.redis.Get(ctx, key).Bytes()
 	if err == nil {
 		var c cachedUser
@@ -282,7 +288,7 @@ func (r *CachedUserRepository) GetByUsernameDiscriminator(ctx context.Context, u
 		}
 	}
 
-	u, err := r.repo.GetByUsernameDiscriminator(ctx, username, discriminator)
+	u, err := r.repo.GetByUsername(ctx, username)
 	if err != nil || u == nil {
 		return u, err
 	}
@@ -297,8 +303,8 @@ func (r *CachedUserRepository) EmailExists(ctx context.Context, email string) (b
 	return r.repo.EmailExists(ctx, email)
 }
 
-func (r *CachedUserRepository) DiscriminatorsForUsername(ctx context.Context, username string) ([]int, error) {
-	return r.repo.DiscriminatorsForUsername(ctx, username)
+func (r *CachedUserRepository) UsernameTaken(ctx context.Context, username string) (bool, error) {
+	return r.repo.UsernameTaken(ctx, username)
 }
 
 func (r *CachedUserRepository) UpdateBlocks(ctx context.Context, userID int64, add, remove []int64) error {

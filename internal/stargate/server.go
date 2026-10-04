@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -173,12 +172,11 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	s.hub.subscribe(client, "user", strconv.FormatInt(user.ID, 10))
 
 	readyUser := map[string]interface{}{
-		"id":            id.Format(user.ID),
-		"username":      user.Username,
-		"discriminator": fmt.Sprintf("%04d", user.Discriminator),
-		"display_name":  user.DisplayName,
-		"public_flags":  auth.PublicFlags(user),
-		"bot":           user.Bot,
+		"id":           id.Format(user.ID),
+		"username":     user.Username,
+		"display_name": user.DisplayName,
+		"public_flags": auth.PublicFlags(user),
+		"bot":          user.Bot,
 	}
 	if user.Avatar != "" {
 		readyUser["avatar"] = user.Avatar

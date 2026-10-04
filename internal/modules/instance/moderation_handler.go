@@ -2,7 +2,6 @@ package instance
 
 import (
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"net/url"
 
@@ -39,14 +38,13 @@ func userSummaryJSON(u *auth.User) fiber.Map {
 		return nil
 	}
 	return fiber.Map{
-		"id":            id.Format(u.ID),
-		"username":      u.Username,
-		"discriminator": fmt.Sprintf("%04d", u.Discriminator),
-		"display_name":  u.DisplayName,
-		"avatar":        u.Avatar,
-		"home_domain":   u.HomeDomain,
-		"public_flags":  auth.PublicFlags(u),
-		"bot":           u.Bot,
+		"id":           id.Format(u.ID),
+		"username":     u.Username,
+		"display_name": u.DisplayName,
+		"avatar":       u.Avatar,
+		"home_domain":  u.HomeDomain,
+		"public_flags": auth.PublicFlags(u),
+		"bot":          u.Bot,
 	}
 }
 

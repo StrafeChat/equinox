@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -79,14 +78,13 @@ func (h *Handler) Instance(c fiber.Ctx) error {
 	return c.JSON(h.svc.Info())
 }
 
-// LookupUser GET /users/lookup?username=&discriminator= - a local user's profile.
+// LookupUser GET /users/lookup?username= - a local user's profile.
 func (h *Handler) LookupUser(c fiber.Ctx) error {
 	username := c.Query("username")
-	disc, err := strconv.Atoi(c.Query("discriminator"))
-	if username == "" || err != nil {
-		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "username and discriminator required"})
+	if username == "" {
+		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "username required"})
 	}
-	u, err := h.svc.users.GetByUsernameDiscriminator(c.Context(), username, disc)
+	u, err := h.svc.users.GetByUsername(c.Context(), username)
 	if err != nil {
 		return fail(c, err, nil)
 	}
@@ -125,15 +123,14 @@ func (h *Handler) UserUpdated(c fiber.Ctx) error {
 	}
 	if h.svc.redis != nil {
 		payload := map[string]interface{}{
-			"user_id":       id.Format(u.ID),
-			"avatar":        u.Avatar,
-			"banner":        u.Banner,
-			"display_name":  u.DisplayName,
-			"username":      u.Username,
-			"discriminator": strconv.Itoa(u.Discriminator),
-			"bio":           u.Bio,
-			"about_me":      u.AboutMe,
-			"pronouns":      u.Pronouns,
+			"user_id":      id.Format(u.ID),
+			"avatar":       u.Avatar,
+			"banner":       u.Banner,
+			"display_name": u.DisplayName,
+			"username":     u.Username,
+			"bio":          u.Bio,
+			"about_me":     u.AboutMe,
+			"pronouns":     u.Pronouns,
 		}
 		rows, _ := h.svc.roomRepo.ListByUser(c.Context(), u.ID)
 		for _, row := range rows {

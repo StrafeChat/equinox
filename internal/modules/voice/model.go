@@ -19,11 +19,10 @@ import (
 // UserSummary is the bit of profile every client needs to draw a participant tile,
 // carried on the state so voice rooms render without a member-list fetch.
 type UserSummary struct {
-	ID            string `json:"id"`
-	Username      string `json:"username"`
-	Discriminator int    `json:"discriminator"`
-	DisplayName   string `json:"display_name"`
-	Avatar        string `json:"avatar,omitempty"`
+	ID          string `json:"id"`
+	Username    string `json:"username"`
+	DisplayName string `json:"display_name"`
+	Avatar      string `json:"avatar,omitempty"`
 	// Set for a user on another instance, so a client can map the participant's
 	// federated LiveKit identity back to this row.
 	HomeDomain string `json:"home_domain,omitempty"`
@@ -35,11 +34,10 @@ func summaryOf(u *auth.User) *UserSummary {
 		return nil
 	}
 	out := &UserSummary{
-		ID:            id.Format(u.ID),
-		Username:      u.Username,
-		Discriminator: u.Discriminator,
-		DisplayName:   u.DisplayName,
-		Avatar:        u.Avatar,
+		ID:          id.Format(u.ID),
+		Username:    u.Username,
+		DisplayName: u.DisplayName,
+		Avatar:      u.Avatar,
 	}
 	if u.IsRemote() {
 		out.HomeDomain = u.HomeDomain
