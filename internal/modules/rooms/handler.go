@@ -285,6 +285,9 @@ func (h *Handler) CreatePM(c fiber.Ctx) error {
 		}
 		room, created, err := h.svc.CreatePM(c.Context(), user.ID, targetID)
 		if err != nil {
+			if err == ErrBlocked || err == ErrPMNotAllowed {
+				return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": err.Error()})
+			}
 			if err == ErrUserNotFound {
 				return c.Status(http.StatusNotFound).JSON(fiber.Map{"error": "user not found"})
 			}
@@ -309,6 +312,8 @@ func (h *Handler) CreatePM(c fiber.Ctx) error {
 		room, err := h.svc.CreateGroupPM(c.Context(), user.ID, name, ids)
 		if err != nil {
 			switch err {
+			case ErrBlocked, ErrPMNotAllowed:
+				return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": err.Error()})
 			case ErrMinParticipants, ErrTooManyParticipants, ErrInvalidName:
 				return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 			case ErrUserNotFound:
@@ -353,6 +358,8 @@ func (h *Handler) AddParticipant(c fiber.Ctx) error {
 	}
 	if err := h.svc.AddParticipant(c.Context(), user.ID, roomID, targetID); err != nil {
 		switch err {
+		case ErrBlocked, ErrPMNotAllowed:
+			return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": err.Error()})
 		case ErrRoomNotFound:
 			return c.Status(http.StatusNotFound).JSON(fiber.Map{"error": "room not found"})
 		case ErrNotParticipant:

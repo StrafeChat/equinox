@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/base64"
 	"encoding/hex"
 	"strings"
 	"time"
@@ -138,7 +139,19 @@ type AuthorizeResult struct {
 
 // Authorize records the user's consent: installs the bot when asked to, then returns the
 // code for the redirect.
-func (s *Service) Authorize(ctx context.Context, userID, clientID int64, redirectURI, rawScope string, spaceID, perms int64) (*AuthorizeResult, error) {
+func (s *Service) Authorize(ctx context.Context, userID, clientID int64, redirectURI, rawScope string, spaceID, perms int64, codeChallenge, codeChallengeMethod string) (*AuthorizeResult, error) {
+	// PKCE (RFC 7636) is optional per request but, when used, only S256 is accepted:
+	// "plain" offers nothing a stolen code could not replay. Checked first so a malformed
+	// challenge never installs a bot or records consent.
+	codeChallenge = strings.TrimSpace(codeChallenge)
+	codeChallengeMethod = strings.ToUpper(strings.TrimSpace(codeChallengeMethod))
+	if codeChallenge != "" {
+		if codeChallengeMethod != "S256" || !validPKCEString(codeChallenge) {
+			return nil, ErrInvalidBody
+		}
+	} else {
+		codeChallengeMethod = ""
+	}
 	req, err := s.validateRequest(ctx, userID, clientID, redirectURI, rawScope, perms)
 	if err != nil {
 		return nil, err
@@ -162,6 +175,7 @@ func (s *Service) Authorize(ctx context.Context, userID, clientID int64, redirec
 	code, codeHash := newToken()
 	if err := s.repo.SaveCode(ctx, codeHash, codeRow{
 		UserID: userID, ApplicationID: clientID, Scopes: req.Scopes, RedirectURI: req.RedirectURI, CreatedAt: time.Now().UTC(),
+		CodeChallenge: codeChallenge, CodeChallengeMethod: codeChallengeMethod,
 	}); err != nil {
 		return nil, err
 	}
@@ -179,7 +193,7 @@ type TokenResult struct {
 
 // Exchange trades an authorization code for tokens. The client authenticates with its id and
 // secret; the code must match the client and redirect it was issued for.
-func (s *Service) Exchange(ctx context.Context, clientID int64, clientSecret, rawCode, redirectURI string) (*TokenResult, error) {
+func (s *Service) Exchange(ctx context.Context, clientID int64, clientSecret, rawCode, redirectURI, codeVerifier string) (*TokenResult, error) {
 	app, err := s.authClient(ctx, clientID, clientSecret)
 	if err != nil {
 		return nil, err
@@ -194,7 +208,37 @@ func (s *Service) Exchange(ctx context.Context, clientID int64, clientSecret, ra
 	if time.Since(code.CreatedAt) > CodeTTL {
 		return nil, ErrInvalidGrant
 	}
+	if code.CodeChallenge != "" {
+		// The code was issued against a PKCE challenge: whoever redeems it must hold the
+		// verifier, so a code intercepted on the redirect is useless by itself.
+		codeVerifier = strings.TrimSpace(codeVerifier)
+		if !validPKCEString(codeVerifier) {
+			return nil, ErrInvalidGrant
+		}
+		sum := sha256.Sum256([]byte(codeVerifier))
+		want := base64.RawURLEncoding.EncodeToString(sum[:])
+		if subtle.ConstantTimeCompare([]byte(want), []byte(code.CodeChallenge)) != 1 {
+			return nil, ErrInvalidGrant
+		}
+	}
 	return s.issue(ctx, code.UserID, app.ID, code.Scopes)
+}
+
+// validPKCEString is RFC 7636's grammar for both the verifier and an S256 challenge:
+// 43-128 characters from [A-Za-z0-9-._~].
+func validPKCEString(s string) bool {
+	if len(s) < 43 || len(s) > 128 {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		ch := s[i]
+		switch {
+		case ch >= 'A' && ch <= 'Z', ch >= 'a' && ch <= 'z', ch >= '0' && ch <= '9', ch == '-', ch == '.', ch == '_', ch == '~':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // Refresh mints a fresh token pair from a refresh token. The old pair is replaced.

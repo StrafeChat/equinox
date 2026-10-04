@@ -82,8 +82,8 @@ func SetupUsersRoutes(d Deps) {
 	// person's own (limits, Nebula storage, USER_UPDATE fan-out).
 	usersHandler.SetApplications(applications.NewRepository(d.Scylla))
 	d.App.Patch("/applications/:id/bot", requireAuth, usersHandler.PatchBotProfile)
-	d.App.Post("/applications/:id/bot/avatar", requireAuth, usersHandler.PostBotAvatar)
-	d.App.Post("/applications/:id/bot/banner", requireAuth, usersHandler.PostBotBanner)
+	d.App.Post("/applications/:id/bot/avatar", requireAuth, perUserLimiter(10, time.Minute), usersHandler.PostBotAvatar)
+	d.App.Post("/applications/:id/bot/banner", requireAuth, perUserLimiter(10, time.Minute), usersHandler.PostBotBanner)
 
 	// The two endpoints an OAuth2 access token may call about the account. They are
 	// registered before the /users/@me group below so their scoped auth runs instead of
@@ -95,8 +95,8 @@ func SetupUsersRoutes(d Deps) {
 	// /users/@me - current user
 	me := d.App.Group("/users/@me", requireAuth)
 	me.Patch("", usersHandler.PatchMe)
-	me.Post("/avatar", usersHandler.PostAvatar)
-	me.Post("/banner", usersHandler.PostBanner)
+	me.Post("/avatar", perUserLimiter(10, time.Minute), usersHandler.PostAvatar)
+	me.Post("/banner", perUserLimiter(10, time.Minute), usersHandler.PostBanner)
 
 	// /users/@me/2fa - TOTP, passkeys, recovery codes.
 	//

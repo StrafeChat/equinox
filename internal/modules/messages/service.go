@@ -85,6 +85,7 @@ var (
 	ErrNotParticipant  = errors.New("not a participant")
 	ErrMessageNotFound = errors.New("message not found")
 	ErrForbidden       = errors.New("forbidden")
+	ErrBlocked         = errors.New("you cannot message this user")
 	ErrInvalidInput    = errors.New("invalid message input")
 	ErrContentTooLong  = errors.New("message is too long")
 	ErrTooManyMentions = errors.New("too many mentions")
@@ -494,6 +495,23 @@ func (s *Service) create(ctx context.Context, userID, roomID int64, in *CreateMe
 	if err != nil {
 		return nil, err
 	}
+	// A direct message across a block is refused here, not merely hidden by the client -
+	// otherwise the blocked side keeps delivering (and notifying) through the existing room.
+	if room.Type == rooms.TypePM && len(participants) == 2 {
+		other := participants[0]
+		if other == userID {
+			other = participants[1]
+		}
+		if other != userID {
+			blocked, berr := s.blockedBetween(ctx, userID, other)
+			if berr != nil {
+				return nil, berr
+			}
+			if blocked {
+				return nil, ErrBlocked
+			}
+		}
+	}
 	// Attachments are claimed before content validation so an attachment-only message
 	// (no text) is valid in a plaintext room; E2EE rooms always carry ciphertext because
 	// the attachment metadata itself lives inside it.
@@ -571,6 +589,7 @@ func (s *Service) create(ctx context.Context, userID, roomID int64, in *CreateMe
 	for _, a := range attachments {
 		if aid, perr := id.Parse(a.ID); perr == nil {
 			_ = s.repo.SetAttachmentMessage(ctx, roomID, aid, msgID)
+			s.untrackPendingUpload(ctx, roomID, aid)
 		}
 	}
 	if err := s.rooms.UpdateLastMessageID(ctx, roomID, participants, msgID); err != nil {
@@ -1013,6 +1032,7 @@ func (s *Service) UploadAttachment(ctx context.Context, userID, roomID int64, in
 		_ = nebula.Delete(ctx, s.cfg.Nebula.BaseURL, s.cfg.Nebula.UploadSecret, key)
 		return nil, err
 	}
+	s.trackPendingUpload(ctx, roomID, attID)
 	a := row.ToAttachment()
 	return &a, nil
 }
@@ -1143,4 +1163,30 @@ func parseIDStrings(ss []string) []int64 {
 		}
 	}
 	return out
+}
+
+// blockedBetween reports whether either account has blocked the other.
+func (s *Service) blockedBetween(ctx context.Context, a, b int64) (bool, error) {
+	ua, err := s.userRepo.GetByID(ctx, a)
+	if err != nil {
+		return false, err
+	}
+	ub, err := s.userRepo.GetByID(ctx, b)
+	if err != nil {
+		return false, err
+	}
+	if ua == nil || ub == nil {
+		return false, nil
+	}
+	for _, v := range ua.Blocks {
+		if v == b {
+			return true, nil
+		}
+	}
+	for _, v := range ub.Blocks {
+		if v == a {
+			return true, nil
+		}
+	}
+	return false, nil
 }

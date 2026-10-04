@@ -18,9 +18,34 @@ import (
 type relationshipChecker struct {
 	rooms  rooms.Repository
 	spaces *spaces.Service
+	users  auth.UserRepository
 }
 
 func (c *relationshipChecker) CanExchangeKeys(ctx context.Context, userA, userB int64) (bool, error) {
+	// A block ends key exchange too: no new Olm sessions (and so no new E2EE messages) can be
+	// set up with someone who has blocked you, whatever rooms or spaces are shared.
+	if c.users != nil {
+		ua, err := c.users.GetByID(ctx, userA)
+		if err != nil {
+			return false, err
+		}
+		ub, err := c.users.GetByID(ctx, userB)
+		if err != nil {
+			return false, err
+		}
+		if ua != nil && ub != nil {
+			for _, v := range ua.Blocks {
+				if v == userB {
+					return false, nil
+				}
+			}
+			for _, v := range ub.Blocks {
+				if v == userA {
+					return false, nil
+				}
+			}
+		}
+	}
 	if room, err := c.rooms.GetPMRoom(ctx, userA, userB); err != nil {
 		return false, err
 	} else if room != nil {
@@ -60,7 +85,7 @@ func SetupDevicesRoutes(d Deps) {
 	roomRepo := rooms.NewRepository(d.Scylla)
 	spaceRepo := spaces.NewRepository(d.Scylla)
 	spaceSvc := spaces.NewService(spaceRepo, roomRepo, userRepo, d.Redis, d.Config)
-	rel := &relationshipChecker{rooms: roomRepo, spaces: spaceSvc}
+	rel := &relationshipChecker{rooms: roomRepo, spaces: spaceSvc, users: userRepo}
 
 	devHandler := devices.NewHandler(devSvc, rel)
 	if d.Federation != nil {

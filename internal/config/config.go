@@ -204,6 +204,11 @@ type FeatureFlags struct {
 	// says. The account that registers first is made an admin automatically, so this is
 	// the escape hatch for an operator who has lost that account - never the usual route.
 	InstanceAdmins []int64
+	// PMPolicy decides who may START a direct message (or pull someone into a group DM):
+	// "shared" (default) only friends and people who share a space with you; "open" anyone,
+	// the pre-beta behaviour. Existing conversations are never re-checked, and blocks are
+	// enforced in both modes.
+	PMPolicy string
 }
 
 // CaptchaConfig configures the registration challenge. It only matters when
@@ -353,6 +358,7 @@ func Load() (*Config, error) {
 			Captcha:        getEnvBool("CAPTCHA", false),
 			InviteOnly:     getEnvBool("INVITE_ONLY", false),
 			InstanceAdmins: parseIDList(getEnvArray("INSTANCE_ADMINS", nil)),
+			PMPolicy:       strings.ToLower(strings.TrimSpace(getEnvString("PM_POLICY", "shared"))),
 		},
 		Captcha: loadCaptchaConfig(),
 		Voice:   loadVoiceConfig(),
@@ -470,6 +476,14 @@ func validate(cfg *Config) error {
 	}
 	// Refuse to boot half-configured rather than accepting every registration while the
 	// operator believes the instance is protected.
+	if cfg.Flags.PMPolicy == "" {
+		cfg.Flags.PMPolicy = "shared"
+	}
+	switch cfg.Flags.PMPolicy {
+	case "shared", "open":
+	default:
+		return errors.New("PM_POLICY must be \"shared\" (friends and shared spaces only) or \"open\"")
+	}
 	if cfg.Flags.Captcha {
 		if err := validateCaptcha(cfg.Captcha); err != nil {
 			return err

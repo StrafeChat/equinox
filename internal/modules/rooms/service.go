@@ -30,9 +30,70 @@ type SpaceMemberChecker interface {
 	EffectiveChannelPermissions(ctx context.Context, userID, spaceID, roomID int64) (int64, error)
 }
 
+// SharedSpaceChecker answers whether two accounts are members of at least one common space -
+// the "people you share a server with" half of the direct-message policy.
+type SharedSpaceChecker interface {
+	ShareSpace(ctx context.Context, userA, userB int64) (bool, error)
+}
+
+// SetSharedSpaceChecker wires the shared-space lookup used by PM_POLICY=shared. Without it,
+// only friendship opens a conversation under that policy.
+func (s *Service) SetSharedSpaceChecker(c SharedSpaceChecker) { s.sharedSpace = c }
+
+func containsID(list []int64, id int64) bool {
+	for _, v := range list {
+		if v == id {
+			return true
+		}
+	}
+	return false
+}
+
+// checkPMAllowed is the gate on STARTING a direct conversation with someone (or pulling them
+// into a group DM): never across a block in either direction, and under PM_POLICY=shared only
+// with friends or people who share a space. Existing conversations are not re-checked here;
+// sending into one across a block is refused by the messages service instead.
+func (s *Service) checkPMAllowed(ctx context.Context, actorID, targetID int64) error {
+	if actorID == targetID {
+		return nil
+	}
+	actor, err := s.user.GetByID(ctx, actorID)
+	if err != nil {
+		return err
+	}
+	target, err := s.user.GetByID(ctx, targetID)
+	if err != nil {
+		return err
+	}
+	if actor == nil || target == nil {
+		return ErrUserNotFound
+	}
+	if containsID(actor.Blocks, targetID) || containsID(target.Blocks, actorID) {
+		return ErrBlocked
+	}
+	if s.cfg != nil && s.cfg.Flags.PMPolicy == "open" {
+		return nil
+	}
+	if containsID(actor.Relationships, targetID) || containsID(target.Relationships, actorID) {
+		return nil
+	}
+	if s.sharedSpace != nil {
+		ok, err := s.sharedSpace.ShareSpace(ctx, actorID, targetID)
+		if err != nil {
+			return err
+		}
+		if ok {
+			return nil
+		}
+	}
+	return ErrPMNotAllowed
+}
+
 var (
 	ErrRoomNotFound        = errors.New("room not found")
 	ErrNotParticipant      = errors.New("not a participant of this room")
+	ErrBlocked             = errors.New("you cannot message this user")
+	ErrPMNotAllowed        = errors.New("you can only message friends and people you share a space with")
 	ErrNotGroupRoom        = errors.New("not a group room")
 	ErrAlreadyInGroup      = errors.New("user already in group")
 	ErrMinParticipants     = errors.New("group must have at least 2 participants")
@@ -88,6 +149,7 @@ type Service struct {
 	spaceChecker  SpaceMemberChecker
 	fedInfo       FederationInfo
 	federator     Federator
+	sharedSpace   SharedSpaceChecker
 }
 
 func NewService(repo Repository, user auth.UserRepository, redis *redis.Client, cfg *config.Config, onSystemEvent OnRoomSystemEvent, spaceChecker SpaceMemberChecker) *Service {
@@ -408,6 +470,9 @@ func (s *Service) CreatePM(ctx context.Context, actorID, targetID int64) (*RoomW
 		s.enrich(ctx, rwp)
 		return rwp, false, nil
 	}
+	if err := s.checkPMAllowed(ctx, actorID, targetID); err != nil {
+		return nil, false, err
+	}
 	roomID := id.Next()
 	room := &Room{
 		ID:       roomID,
@@ -476,6 +541,11 @@ func (s *Service) CreateGroupPM(ctx context.Context, actorID int64, name string,
 	}
 	if err := s.usersExist(ctx, allIDs[1:]); err != nil {
 		return nil, err
+	}
+	for _, pid := range allIDs[1:] {
+		if err := s.checkPMAllowed(ctx, actorID, pid); err != nil {
+			return nil, err
+		}
 	}
 	roomID := id.Next()
 	room := &Room{
@@ -546,6 +616,9 @@ func (s *Service) AddParticipant(ctx context.Context, actorID, roomID, targetID 
 		return ErrTooManyParticipants
 	}
 	if err := s.usersExist(ctx, []int64{targetID}); err != nil {
+		return err
+	}
+	if err := s.checkPMAllowed(ctx, actorID, targetID); err != nil {
 		return err
 	}
 	if err := s.repo.AddParticipant(ctx, roomID, targetID); err != nil {

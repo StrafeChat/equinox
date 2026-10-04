@@ -154,6 +154,9 @@ func (h *Handler) Authorize(c fiber.Ctx) error {
 		ResponseType string    `json:"response_type"`
 		SpaceID      flexInt64 `json:"space_id"`
 		Permissions  flexInt64 `json:"permissions"`
+		// PKCE (optional): passed straight through from the authorization URL.
+		CodeChallenge       string `json:"code_challenge"`
+		CodeChallengeMethod string `json:"code_challenge_method"`
 	}
 	if len(c.Body()) == 0 || json.Unmarshal(c.Body(), &in) != nil {
 		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "invalid_request"})
@@ -165,7 +168,7 @@ func (h *Handler) Authorize(c fiber.Ctx) error {
 	if err != nil {
 		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "invalid_client"})
 	}
-	res, err := h.svc.Authorize(c.Context(), user.ID, clientID, in.RedirectURI, in.Scope, int64(in.SpaceID), int64(in.Permissions))
+	res, err := h.svc.Authorize(c.Context(), user.ID, clientID, in.RedirectURI, in.Scope, int64(in.SpaceID), int64(in.Permissions), in.CodeChallenge, in.CodeChallengeMethod)
 	if err != nil {
 		return oauthError(c, err)
 	}
@@ -205,7 +208,7 @@ func (h *Handler) Token(c fiber.Ctx) error {
 	var res *TokenResult
 	switch get("grant_type") {
 	case "authorization_code":
-		res, err = h.svc.Exchange(c.Context(), clientID, secret, get("code"), get("redirect_uri"))
+		res, err = h.svc.Exchange(c.Context(), clientID, secret, get("code"), get("redirect_uri"), get("code_verifier"))
 	case "refresh_token":
 		res, err = h.svc.Refresh(c.Context(), clientID, secret, get("refresh_token"))
 	default:

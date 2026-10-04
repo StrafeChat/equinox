@@ -2,6 +2,7 @@ package routes
 
 import (
 	"context"
+	"time"
 
 	"github.com/StrafeChat/equinox/internal/middleware"
 	"github.com/StrafeChat/equinox/internal/modules/auth"
@@ -42,7 +43,7 @@ func SetupSpacesRoutes(d Deps) {
 	r.Delete("/:id/invites/:code", spaceHandler.DeleteInvite)
 	r.Get("/:id/audit-log", spaceHandler.ListAuditLog)
 	r.Get("/:id/emojis", spaceHandler.ListEmojis)
-	r.Post("/:id/emojis", spaceHandler.PostEmoji)
+	r.Post("/:id/emojis", perUserLimiter(10, time.Minute), spaceHandler.PostEmoji)
 	r.Patch("/:id/emojis/:emojiId", spaceHandler.PatchEmoji)
 	r.Delete("/:id/emojis/:emojiId", spaceHandler.DeleteEmoji)
 
@@ -79,8 +80,8 @@ func SetupSpacesRoutes(d Deps) {
 	r.Get("/:id/rooms", spaceHandler.GetRooms)
 	r.Post("/:id/ack-all", spaceHandler.AckAll)
 	r.Post("/:id/resync", spaceHandler.Resync)
-	r.Post("/:id/icon", spaceHandler.PostSpaceIcon)
-	r.Post("/:id/banner", spaceHandler.PostSpaceBanner)
+	r.Post("/:id/icon", perUserLimiter(10, time.Minute), spaceHandler.PostSpaceIcon)
+	r.Post("/:id/banner", perUserLimiter(10, time.Minute), spaceHandler.PostSpaceBanner)
 	r.Patch("/:id", spaceHandler.PatchSpace)
 	r.Delete("/:id", spaceHandler.DeleteSpace)
 	r.Get("/:id", spaceHandler.Get)

@@ -1,11 +1,13 @@
 package routes
 
 import (
+	"context"
 	"github.com/StrafeChat/equinox/internal/middleware"
 	"github.com/StrafeChat/equinox/internal/modules/auth"
 	"github.com/StrafeChat/equinox/internal/modules/messages"
 	"github.com/StrafeChat/equinox/internal/modules/rooms"
 	"github.com/StrafeChat/equinox/internal/modules/spaces"
+	"time"
 )
 
 func SetupMessagesRoutes(d Deps) {
@@ -22,9 +24,12 @@ func SetupMessagesRoutes(d Deps) {
 		msgSvc.SetFederator(d.Federation)
 	}
 	msgHandler := messages.NewHandler(msgSvc)
+	msgSvc.StartOrphanSweeper(context.Background())
 
 	r := d.App.Group("/rooms", requireAuth)
-	r.Post("/:id/attachments", msgHandler.UploadAttachment)
+	// Uploads are the one message action that costs disk: cap them per account so a flood
+	// cannot fill storage (unclaimed uploads are also swept, see messages/orphans.go).
+	r.Post("/:id/attachments", perUserLimiter(30, time.Minute), msgHandler.UploadAttachment)
 	r.Post("/:id/messages", msgHandler.Create)
 	r.Get("/:id/messages", msgHandler.List)
 	r.Get("/:id/messages/search", msgHandler.Search)

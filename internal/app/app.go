@@ -2,7 +2,9 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"os/signal"
 	"strings"
@@ -37,6 +39,18 @@ func New(cfg *config.Config) (*App, error) {
 	}
 	fiberCfg := fiber.Config{
 		BodyLimit: int(bodyLimit),
+		// An error nothing handled must not reach the client as text: a gocql or Redis
+		// message names tables and hosts. Fiber's own *fiber.Error values (404, 405, 413,
+		// ...) are safe and kept as JSON; anything else - including a recovered panic -
+		// becomes a generic 500 and is logged here with the real cause.
+		ErrorHandler: func(c fiber.Ctx, err error) error {
+			var fe *fiber.Error
+			if errors.As(err, &fe) && fe.Code < http.StatusInternalServerError {
+				return c.Status(fe.Code).JSON(fiber.Map{"error": fe.Message})
+			}
+			logger.Err("http", err, map[string]any{"method": c.Method(), "path": c.Path()})
+			return c.Status(http.StatusInternalServerError).JSON(fiber.Map{"error": "internal error"})
+		},
 	}
 	if len(cfg.HTTP.TrustedProxies) > 0 {
 		// Behind Caddy/nginx the TCP peer is always the proxy; take the client address

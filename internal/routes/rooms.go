@@ -19,6 +19,7 @@ func SetupRoomsRoutes(d Deps) {
 	onSystemEvent := newSystemMessenger(d, roomRepo, msgRepo)
 	spaceSvc := spaces.NewService(spaceRepo, roomRepo, userRepo, d.Redis, d.Config)
 	roomSvc := rooms.NewService(roomRepo, userRepo, d.Redis, d.Config, onSystemEvent, spaceSvc)
+	roomSvc.SetSharedSpaceChecker(&sharedSpaceChecker{spaces: spaceSvc})
 	roomHandler := rooms.NewHandler(roomSvc)
 	if d.Federation != nil {
 		roomSvc.SetFederator(d.Federation)

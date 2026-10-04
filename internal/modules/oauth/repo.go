@@ -14,6 +14,10 @@ type codeRow struct {
 	Scopes        []string
 	RedirectURI   string
 	CreatedAt     time.Time
+	// PKCE (RFC 7636): set when the authorization request carried a code_challenge; the
+	// token exchange must then present the matching code_verifier.
+	CodeChallenge       string
+	CodeChallengeMethod string
 }
 
 type tokenRow struct {
@@ -50,15 +54,15 @@ func NewRepository(session gocqlx.Session) Repository { return &repo{session: se
 
 func (r *repo) SaveCode(ctx context.Context, codeHash string, c codeRow) error {
 	return r.session.Query(
-		"INSERT INTO oauth_codes (code_hash, user_id, application_id, scopes, redirect_uri, created_at) VALUES (?, ?, ?, ?, ?, ?) USING TTL ?",
+		"INSERT INTO oauth_codes (code_hash, user_id, application_id, scopes, redirect_uri, created_at, code_challenge, code_challenge_method) VALUES (?, ?, ?, ?, ?, ?, ?, ?) USING TTL ?",
 		nil).WithContext(ctx).
-		Bind(codeHash, c.UserID, c.ApplicationID, c.Scopes, c.RedirectURI, c.CreatedAt, int(CodeTTL.Seconds())).ExecRelease()
+		Bind(codeHash, c.UserID, c.ApplicationID, c.Scopes, c.RedirectURI, c.CreatedAt, c.CodeChallenge, c.CodeChallengeMethod, int(CodeTTL.Seconds())).ExecRelease()
 }
 
 func (r *repo) TakeCode(ctx context.Context, codeHash string) (*codeRow, error) {
 	var c codeRow
-	err := r.session.Query("SELECT user_id, application_id, scopes, redirect_uri, created_at FROM oauth_codes WHERE code_hash = ?", nil).
-		WithContext(ctx).Bind(codeHash).Scan(&c.UserID, &c.ApplicationID, &c.Scopes, &c.RedirectURI, &c.CreatedAt)
+	err := r.session.Query("SELECT user_id, application_id, scopes, redirect_uri, created_at, code_challenge, code_challenge_method FROM oauth_codes WHERE code_hash = ?", nil).
+		WithContext(ctx).Bind(codeHash).Scan(&c.UserID, &c.ApplicationID, &c.Scopes, &c.RedirectURI, &c.CreatedAt, &c.CodeChallenge, &c.CodeChallengeMethod)
 	if err == gocql.ErrNotFound {
 		return nil, nil
 	}
