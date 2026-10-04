@@ -297,14 +297,47 @@ func (s *Service) EditFederated(ctx context.Context, roomID, msgID int64, cipher
 // DeleteFederated applies a delete relayed by another instance. Blobs live on the origin
 // instance's CDN, so no attachment cleanup here.
 func (s *Service) DeleteFederated(ctx context.Context, roomID, msgID int64) error {
+	// Load the room and the message before scrubbing it so the same ghost-unread bookkeeping the
+	// local Delete does (mention rollback + last_message_id heal, fanned out to the space's
+	// members) also runs on the mirror - otherwise a federated space channel keeps the phantom
+	// unread / mention badge that the local path was just fixed to avoid.
+	room, rerr := s.rooms.GetByID(ctx, roomID)
+	msg, merr := s.repo.GetByID(ctx, roomID, msgID)
 	if err := s.repo.SoftDelete(ctx, roomID, msgID); err != nil {
 		return err
 	}
+	var newLast *int64
+	lastChanged := false
+	if rerr == nil && room != nil {
+		fanout := s.spaceParticipants(ctx, room, nil)
+		if merr == nil && msg != nil {
+			s.rollbackDeletedMentions(ctx, room, fanout, msg)
+		}
+		if room.LastMessageID != nil && *room.LastMessageID == msgID {
+			if prev, perr := s.repo.List(ctx, roomID, &msgID, 1); perr == nil {
+				lastChanged = true
+				if len(prev) > 0 {
+					newLast = &prev[0].ID
+					_ = s.rooms.UpdateLastMessageID(ctx, roomID, fanout, prev[0].ID)
+				} else {
+					_ = s.rooms.ClearLastMessageID(ctx, roomID, fanout)
+				}
+			}
+		}
+	}
 	if s.redis != nil && s.cfg != nil {
-		stargate.PublishToSpace(ctx, s.redis, roomID, "MESSAGE_DELETE", map[string]interface{}{
+		payload := map[string]interface{}{
 			"room_id":    id.Format(roomID),
 			"message_id": id.Format(msgID),
-		}, s.region())
+		}
+		if lastChanged {
+			if newLast != nil {
+				payload["last_message_id"] = id.Format(*newLast)
+			} else {
+				payload["last_message_id"] = nil
+			}
+		}
+		stargate.PublishToSpace(ctx, s.redis, roomID, "MESSAGE_DELETE", payload, s.region())
 	}
 	return nil
 }
@@ -786,6 +819,18 @@ func (s *Service) Delete(ctx context.Context, userID, roomID, msgID int64) error
 	if err := s.repo.SoftDelete(ctx, roomID, msgID); err != nil {
 		return err
 	}
+	// Space channels have no room_participants rows, so authorize() leaves `participants` empty
+	// for them. Both the read-cursor heal and the mention rollback below fan out per user, so
+	// resolve the real recipient set (the space's members) first - passing the empty slice left
+	// every member's rooms_by_user row and mention counter untouched, which is exactly why a
+	// deleted space-room message left a phantom unread / phantom mention badge that survived
+	// reloads. For PMs this is the participant list unchanged.
+	fanout := s.spaceParticipants(ctx, room, participants)
+	// A mention inside the deleted message would otherwise leave a red badge nothing can clear:
+	// the read cursor (healed just below) can't advance past a message that no longer exists, so
+	// opening the room never acks it away. Roll the mention counter back by one for everyone who
+	// still has this mention outstanding.
+	s.rollbackDeletedMentions(ctx, room, fanout, msg)
 	// Deleting the room's newest message leaves last_message_id pointing at a row that no
 	// longer exists. The per-user read cursor can never advance to it (there's nothing left to
 	// read up to), so the room shows a permanent unread that only clears while you're actually
@@ -801,9 +846,9 @@ func (s *Service) Delete(ctx context.Context, userID, roomID, msgID int64) error
 			lastChanged = true
 			if len(prev) > 0 {
 				newLast = &prev[0].ID
-				_ = s.rooms.UpdateLastMessageID(ctx, roomID, participants, prev[0].ID)
+				_ = s.rooms.UpdateLastMessageID(ctx, roomID, fanout, prev[0].ID)
 			} else {
-				_ = s.rooms.ClearLastMessageID(ctx, roomID, participants)
+				_ = s.rooms.ClearLastMessageID(ctx, roomID, fanout)
 			}
 		}
 	}
@@ -830,6 +875,70 @@ func (s *Service) Delete(ctx context.Context, userID, roomID, msgID int64) error
 		s.federator.AfterMessageDeleted(ctx, roomID, participants, msgID)
 	}
 	return nil
+}
+
+// rollbackDeletedMentions lowers the mention counter by one for everyone the deleted message
+// mentioned who still has that mention outstanding, and tells each of them live so the red
+// badge clears without a reload. Without this, a mention inside a deleted message is a badge
+// that can never go away: the delete heals the read cursor down to a surviving message, so
+// opening the room acks nothing and the counter is never reset. Best-effort; a space @everyone
+// expands to the member set (fanout) exactly as message creation did when it incremented them.
+func (s *Service) rollbackDeletedMentions(ctx context.Context, room *rooms.Room, fanout []int64, msg *Message) {
+	if msg == nil {
+		return
+	}
+	notifyUserIDs := msg.Mentions
+	if len(msg.MentionRoles) > 0 && room.SpaceID != nil && s.spaceAuth != nil {
+		if fromRoles, err := s.spaceAuth.ListSpaceMemberUserIDsByRoles(ctx, *room.SpaceID, msg.MentionRoles); err == nil {
+			notifyUserIDs = append(append([]int64{}, msg.Mentions...), fromRoles...)
+		}
+	}
+	notify := resolveMentionNotifySet(msg.SenderID, fanout, notifyUserIDs, msg.MentionEveryone)
+	if len(notify) == 0 {
+		return
+	}
+	var toDecrement []int64
+	newCounts := make(map[int64]int64, len(notify))
+	for _, uid := range notify {
+		total, err := s.rooms.GetMentionCount(ctx, uid, room.ID)
+		if err != nil {
+			continue
+		}
+		baseline := int64(0)
+		if row, rerr := s.rooms.GetRoomRow(ctx, uid, room.ID); rerr == nil && row != nil && row.MentionCountBaseline != nil {
+			baseline = *row.MentionCountBaseline
+		}
+		// Already acked past this mention for this user - decrementing now would push the
+		// counter under their baseline and swallow their next real mention.
+		if int64(total) <= baseline {
+			continue
+		}
+		toDecrement = append(toDecrement, uid)
+		nd := int64(total) - 1 - baseline
+		if nd < 0 {
+			nd = 0
+		}
+		newCounts[uid] = nd
+	}
+	if len(toDecrement) == 0 {
+		return
+	}
+	if err := s.rooms.DecrementMentionCounts(ctx, room.ID, toDecrement); err != nil {
+		return
+	}
+	if s.redis == nil || s.cfg == nil {
+		return
+	}
+	region := s.cfg.Stargate.Region
+	if region == "" {
+		region = "default"
+	}
+	for _, uid := range toDecrement {
+		stargate.PublishToUser(ctx, s.redis, uid, "MESSAGE_MENTION_UPDATE", map[string]interface{}{
+			"room_id":       id.Format(room.ID),
+			"mention_count": newCounts[uid],
+		}, region)
+	}
 }
 
 // UploadsConfigured reports whether Nebula is set up for attachment storage.

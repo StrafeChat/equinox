@@ -94,6 +94,9 @@ type Repository interface {
 	UpdateReadState(ctx context.Context, userID, roomID, lastReadMessageID int64) error
 	// IncrementMentionCounts bumps room_mention_counts by 1 for each user (e.g. everyone a new message mentions).
 	IncrementMentionCounts(ctx context.Context, roomID int64, userIDs []int64) error
+	// DecrementMentionCounts lowers room_mention_counts by 1 for each user - used when a message
+	// that mentioned them is deleted, so the badge for a now-gone mention stops lingering.
+	DecrementMentionCounts(ctx context.Context, roomID int64, userIDs []int64) error
 	// SetMentionCountBaseline snapshots the counter's current total as of an ack - see
 	// RoomRow.DisplayMentionCount. Deliberately not a DELETE on the counter row: Cassandra/
 	// Scylla counters can silently lose an increment that lands shortly after a delete
@@ -372,6 +375,31 @@ func (r *repo) IncrementMentionCounts(ctx context.Context, roomID int64, userIDs
 		return nil
 	}
 	const stmt = "UPDATE room_mention_counts SET count = count + 1 WHERE user_id = ? AND room_id = ?"
+	const chunkSize = 50
+	for i := 0; i < len(userIDs); i += chunkSize {
+		end := i + chunkSize
+		if end > len(userIDs) {
+			end = len(userIDs)
+		}
+		b := r.session.Batch(gocql.CounterBatch).WithContext(ctx)
+		for _, uid := range userIDs[i:end] {
+			b.Query(stmt, uid, roomID)
+		}
+		if err := r.session.ExecuteBatch(b); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// DecrementMentionCounts lowers room_mention_counts by 1 for each user. Callers must only pass
+// users who still have the mention outstanding (raw total > their baseline); otherwise the
+// counter drops below the baseline and that user's next real mention is silently swallowed.
+func (r *repo) DecrementMentionCounts(ctx context.Context, roomID int64, userIDs []int64) error {
+	if len(userIDs) == 0 {
+		return nil
+	}
+	const stmt = "UPDATE room_mention_counts SET count = count - 1 WHERE user_id = ? AND room_id = ?"
 	const chunkSize = 50
 	for i := 0; i < len(userIDs); i += chunkSize {
 		end := i + chunkSize

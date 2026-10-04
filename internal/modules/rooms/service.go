@@ -1045,8 +1045,15 @@ func (s *Service) Ack(ctx context.Context, userID, roomID, messageID int64) erro
 		messageID = *room.LastMessageID
 	}
 	if row, err := s.repo.GetRoomRow(ctx, userID, roomID); err == nil && row != nil && row.LastReadMessageID != nil {
-		// ACK cursor is monotonic; ignore stale backwards ACKs.
+		// ACK cursor is monotonic; ignore stale backwards ACKs - but a non-advancing ack must
+		// still be able to clear a STRANDED mention badge. A mention whose message was later
+		// deleted leaves room_mention_counts above the baseline with nothing newer to ack (the
+		// read cursor was healed down to a surviving message), so the room reads as "caught up"
+		// yet the badge never clears. Reset the baseline here (what a normal ack does) so opening
+		// the room finally clears it - this is what retires ghosts that predate the delete-time
+		// rollback.
 		if messageID <= *row.LastReadMessageID {
+			s.clearStrandedMentions(ctx, userID, roomID, row)
 			return nil
 		}
 	}
@@ -1072,6 +1079,38 @@ func (s *Service) Ack(ctx context.Context, userID, roomID, messageID int64) erro
 		stargate.PublishToUser(ctx, s.redis, userID, "MESSAGE_ACK", payload, region)
 	}
 	return nil
+}
+
+// clearStrandedMentions resets a user's mention baseline to the current raw total (so the
+// displayed badge becomes zero) when the total is ahead of the baseline, and tells the user's
+// other sessions. Called from a non-advancing ack: the only way displayed mentions can be > 0
+// while the room is already caught up is a mention whose message was deleted, which is always
+// safe to clear.
+func (s *Service) clearStrandedMentions(ctx context.Context, userID, roomID int64, row *RoomRow) {
+	total, err := s.repo.GetMentionCount(ctx, userID, roomID)
+	if err != nil {
+		return
+	}
+	baseline := int64(0)
+	if row != nil && row.MentionCountBaseline != nil {
+		baseline = *row.MentionCountBaseline
+	}
+	if int64(total) <= baseline {
+		return
+	}
+	if err := s.repo.SetMentionCountBaseline(ctx, userID, roomID, int64(total)); err != nil {
+		return
+	}
+	if s.redis != nil && s.cfg != nil {
+		region := s.cfg.Stargate.Region
+		if region == "" {
+			region = "default"
+		}
+		stargate.PublishToUser(ctx, s.redis, userID, "MESSAGE_MENTION_UPDATE", map[string]interface{}{
+			"room_id":       id.Format(roomID),
+			"mention_count": int64(0),
+		}, region)
+	}
 }
 
 // SetRoomNotifySettings updates the caller's own mute/notify-mode override for a room.
