@@ -45,6 +45,14 @@ const (
 	PermPrioritySpeaker int64 = 1 << 22
 )
 
+// Appended after voice shipped: bit positions are permanent, so a new bit goes at the end
+// whatever its category. Room-scoped text bit.
+const (
+	// PermAttachFiles lets a member upload files and images with a message (Discord's
+	// "Attach Files"). On by default for @everyone; without it a member can still post text.
+	PermAttachFiles int64 = 1 << 23
+)
+
 // AllVoice is every voice bit.
 const AllVoice = PermConnect | PermSpeak | PermVideo | PermMuteMembers | PermDeafenMembers |
 	PermMoveMembers | PermUseVAD | PermPrioritySpeaker
@@ -56,12 +64,13 @@ const DefaultVoice = PermConnect | PermSpeak | PermVideo | PermUseVAD
 // DefaultEveryone is @everyone for new spaces: Discord's defaults for a member with no
 // roles - can view/talk/react/invite and use voice, cannot manage anything or mass-mention.
 const DefaultEveryone = PermViewRoom | PermSendMessages | PermReadMessageHistory |
-	PermAddReactions | PermUseExternalEmojis | PermCreateInvite | DefaultVoice
+	PermAddReactions | PermUseExternalEmojis | PermCreateInvite | PermAttachFiles | DefaultVoice
 
 // AllRoom is every room-scoped bit: space owner's implicit permissions in any room, and
 // what Administrator resolves to for EffectiveChannelPermissions.
 const AllRoom = PermViewRoom | PermSendMessages | PermReadMessageHistory |
-	PermAddReactions | PermUseExternalEmojis | PermMentionEveryone | PermManageMessages | AllVoice
+	PermAddReactions | PermUseExternalEmojis | PermMentionEveryone | PermManageMessages |
+	PermAttachFiles | AllVoice
 
 // AllSpace is every space-scoped bit: space owner's implicit permissions, and what
 // Administrator resolves to for SpacePermissionBase.

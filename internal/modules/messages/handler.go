@@ -50,6 +50,9 @@ func (h *Handler) Create(c fiber.Ctx) error {
 		if err == ErrNotParticipant {
 			return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": "not a participant"})
 		}
+		if err == ErrAttachForbidden {
+			return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": err.Error()})
+		}
 		if err == ErrForbidden {
 			return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": "missing permission to send messages in this channel"})
 		}
@@ -126,6 +129,8 @@ func (h *Handler) UploadAttachment(c fiber.Ctx) error {
 		switch err {
 		case ErrNotParticipant:
 			return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": "not a participant"})
+		case ErrAttachForbidden:
+			return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": err.Error()})
 		case ErrForbidden:
 			return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": "missing permission to send messages in this channel"})
 		case ErrRoomNotFound:

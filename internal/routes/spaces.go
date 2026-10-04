@@ -2,6 +2,7 @@ package routes
 
 import (
 	"context"
+	"github.com/StrafeChat/equinox/internal/logger"
 	"time"
 
 	"github.com/StrafeChat/equinox/internal/middleware"
@@ -24,6 +25,11 @@ func SetupSpacesRoutes(d Deps) {
 	spaceSvc.SetSystemMessenger(spaces.SystemMessenger(newSystemMessenger(d, roomRepo, messages.NewRepository(d.Scylla))))
 	// Daily birthday greetings for opted-in members in spaces that set a birthday channel.
 	spaceSvc.StartBirthdayWorker(context.Background())
+	// Attach Files is a newer bit: grant it wherever Send Messages already was so members of
+	// spaces created before it existed keep being able to upload (runs once per keyspace).
+	if err := spaceSvc.BackfillAttachFilesPermission(context.Background()); err != nil {
+		logger.Err("spaces", err, map[string]any{"step": "backfill attach-files permission"})
+	}
 	if d.Federation != nil {
 		// Changes to a space hosted here reach the instances mirroring it; a member's
 		// join/leave/invite in a space hosted elsewhere goes to that instance. The engine

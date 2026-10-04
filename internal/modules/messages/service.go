@@ -85,6 +85,7 @@ var (
 	ErrNotParticipant  = errors.New("not a participant")
 	ErrMessageNotFound = errors.New("message not found")
 	ErrForbidden       = errors.New("forbidden")
+	ErrAttachForbidden = errors.New("missing permission to attach files in this channel")
 	ErrBlocked         = errors.New("you cannot message this user")
 	ErrInvalidInput    = errors.New("invalid message input")
 	ErrContentTooLong  = errors.New("message is too long")
@@ -360,6 +361,9 @@ func (s *Service) checkChannelPerms(ctx context.Context, userID, roomID int64, r
 			return ErrForbidden
 		}
 		if !permissions.Has(perms, n) {
+			if n == permissions.PermAttachFiles {
+				return ErrAttachForbidden
+			}
 			return ErrForbidden
 		}
 	}
@@ -491,7 +495,13 @@ func (s *Service) create(ctx context.Context, userID, roomID int64, in *CreateMe
 	if len(in.Mentions) > MaxMentionsPerMessage || len(in.MentionRoles) > MaxMentionsPerMessage {
 		return nil, ErrTooManyMentions
 	}
-	room, participants, err := s.authorize(ctx, userID, roomID, permissions.PermSendMessages)
+	// Attaching files is its own permission (Discord's "Attach Files"): a message that
+	// carries attachments needs it on top of Send Messages.
+	need := []int64{permissions.PermSendMessages}
+	if len(in.Attachments) > 0 || len(given) > 0 {
+		need = append(need, permissions.PermAttachFiles)
+	}
+	room, participants, err := s.authorize(ctx, userID, roomID, need...)
 	if err != nil {
 		return nil, err
 	}
@@ -987,7 +997,7 @@ func (s *Service) UploadAttachment(ctx context.Context, userID, roomID int64, in
 	if in.Size > s.MaxAttachmentBytes() {
 		return nil, ErrAttachmentTooLarge
 	}
-	if _, _, err := s.authorize(ctx, userID, roomID, permissions.PermSendMessages); err != nil {
+	if _, _, err := s.authorize(ctx, userID, roomID, permissions.PermSendMessages, permissions.PermAttachFiles); err != nil {
 		return nil, err
 	}
 
