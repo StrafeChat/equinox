@@ -17,6 +17,9 @@ type SystemMessenger func(ctx context.Context, roomID int64, recipientIDs []int6
 const (
 	SystemMemberJoin  = "space_member_join"
 	SystemMemberLeave = "space_member_leave"
+	// SystemBirthday is posted in a space's birthday channel for an opted-in member on their
+	// birthday. Payload: {user_id, message} (message is the space's custom template, or "").
+	SystemBirthday = "space_birthday"
 )
 
 // SetSystemMessenger enables join/leave notices in system rooms.

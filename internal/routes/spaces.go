@@ -1,6 +1,8 @@
 package routes
 
 import (
+	"context"
+
 	"github.com/StrafeChat/equinox/internal/middleware"
 	"github.com/StrafeChat/equinox/internal/modules/auth"
 	"github.com/StrafeChat/equinox/internal/modules/messages"
@@ -19,6 +21,8 @@ func SetupSpacesRoutes(d Deps) {
 	// Join/leave notices in a space's system room go through the same path as group
 	// "X added Y" messages.
 	spaceSvc.SetSystemMessenger(spaces.SystemMessenger(newSystemMessenger(d, roomRepo, messages.NewRepository(d.Scylla))))
+	// Daily birthday greetings for opted-in members in spaces that set a birthday channel.
+	spaceSvc.StartBirthdayWorker(context.Background())
 	if d.Federation != nil {
 		// Changes to a space hosted here reach the instances mirroring it; a member's
 		// join/leave/invite in a space hosted elsewhere goes to that instance. The engine

@@ -19,7 +19,11 @@ type ProfileUpdate struct {
 	Avatar      *string         `json:"avatar,omitempty"`
 	Banner      *string         `json:"banner,omitempty"`
 	AccentColor *string         `json:"accent_color,omitempty"`
-	Presence    *PresenceUpdate `json:"presence,omitempty"`
+	Pronouns    *string         `json:"pronouns,omitempty"`
+	// BirthdayOptIn toggles whether birthday fields appear on the profile and the user is
+	// announced in spaces. The handler maintains the birthdays_by_day index when it changes.
+	BirthdayOptIn *bool           `json:"birthday_opt_in,omitempty"`
+	Presence      *PresenceUpdate `json:"presence,omitempty"`
 	// Flags is the profile-badge bitfield (see badges.go). Set only by the instance
 	// module's admin badge assignment; a nil pointer leaves it unchanged.
 	Flags *int `json:"flags,omitempty"`
@@ -43,6 +47,8 @@ type UserRepository interface {
 	UpdateRelationships(ctx context.Context, userID int64, add, remove []int64) error
 	UpdateBlocks(ctx context.Context, userID int64, add, remove []int64) error
 	UpdateProfile(ctx context.Context, userID int64, upd *ProfileUpdate) (*User, error)
+	SetBirthdayIndex(ctx context.Context, userID int64, month, day int, present bool) error
+	ListBirthdaysOn(ctx context.Context, month, day int) ([]int64, error)
 	// SetTOTP writes the encrypted TOTP secret and enabled flag together, since they only
 	// ever change as a pair (setup/enable writes both, disable clears both).
 	SetTOTP(ctx context.Context, userID int64, secret string, enabled bool) error
@@ -74,6 +80,8 @@ var userTable = table.New(table.Metadata{
 		"bots",
 		"system",
 		"bio",
+		"pronouns",
+		"birthday_opt_in",
 		"flags",
 		"relationships",
 		"spaces",
@@ -393,6 +401,12 @@ func (r *scyllaUserRepo) UpdateProfile(ctx context.Context, userID int64, upd *P
 	if upd.AccentColor != nil {
 		u.AccentColor = *upd.AccentColor
 	}
+	if upd.Pronouns != nil {
+		u.Pronouns = *upd.Pronouns
+	}
+	if upd.BirthdayOptIn != nil {
+		u.BirthdayOptIn = *upd.BirthdayOptIn
+	}
 	if upd.Flags != nil {
 		u.Flags = *upd.Flags
 	}
@@ -407,15 +421,41 @@ func (r *scyllaUserRepo) UpdateProfile(ctx context.Context, userID int64, upd *P
 			u.Presence.CustomStatus = *upd.Presence.CustomStatus
 		}
 	}
-	stmt, names := userTable.Update("display_name", "bio", "about_me", "avatar", "banner", "accent_color", "flags", "presence", "updated_at")
+	stmt, names := userTable.Update("display_name", "bio", "about_me", "avatar", "banner", "accent_color", "pronouns", "birthday_opt_in", "flags", "presence", "updated_at")
 	q := r.session.Query(stmt, names).WithContext(ctx)
-	return u, q.Bind(u.DisplayName, u.Bio, u.AboutMe, u.Avatar, u.Banner, u.AccentColor, u.Flags, u.Presence, u.UpdatedAt, u.ID).ExecRelease()
+	return u, q.Bind(u.DisplayName, u.Bio, u.AboutMe, u.Avatar, u.Banner, u.AccentColor, u.Pronouns, u.BirthdayOptIn, u.Flags, u.Presence, u.UpdatedAt, u.ID).ExecRelease()
 }
 
 func (r *scyllaUserRepo) SetTOTP(ctx context.Context, userID int64, secret string, enabled bool) error {
 	stmt, names := userTable.Update("totp_secret", "totp_enabled")
 	q := r.session.Query(stmt, names).WithContext(ctx)
 	return q.Bind(secret, enabled, userID).ExecRelease()
+}
+
+// SetBirthdayIndex adds or removes a user from the birthdays_by_day partition for (month, day),
+// which the daily announcement job reads. Called when a user opts in/out (present=opt-in state).
+func (r *scyllaUserRepo) SetBirthdayIndex(ctx context.Context, userID int64, month, day int, present bool) error {
+	if month < 1 || month > 12 || day < 1 || day > 31 {
+		return nil
+	}
+	if present {
+		return r.session.Query("INSERT INTO birthdays_by_day (month, day, user_id) VALUES (?, ?, ?)", nil).
+			WithContext(ctx).Bind(month, day, userID).ExecRelease()
+	}
+	return r.session.Query("DELETE FROM birthdays_by_day WHERE month = ? AND day = ? AND user_id = ?", nil).
+		WithContext(ctx).Bind(month, day, userID).ExecRelease()
+}
+
+// ListBirthdaysOn returns the user ids with a birthday on (month, day), from the index.
+func (r *scyllaUserRepo) ListBirthdaysOn(ctx context.Context, month, day int) ([]int64, error) {
+	iter := r.session.Query("SELECT user_id FROM birthdays_by_day WHERE month = ? AND day = ?", nil).
+		WithContext(ctx).Bind(month, day).Iter()
+	var out []int64
+	var uid int64
+	for iter.Scan(&uid) {
+		out = append(out, uid)
+	}
+	return out, iter.Close()
 }
 
 func (r *scyllaUserRepo) SetEmailVerified(ctx context.Context, userID int64, verified bool) error {

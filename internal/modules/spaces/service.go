@@ -946,6 +946,7 @@ func spaceToEventPayload(s *Space) map[string]interface{} {
 		"features":                      s.Features,
 		"afk_timeout":                   s.AFKTimeout,
 		"system_room_flags":             s.SystemRoomFlags,
+		"birthday_message":              s.BirthdayMessage,
 		"max_presences":                 s.MaxPresences,
 		"max_members":                   s.MaxMembers,
 		"vanity_url_code":               s.VanityURLCode,
@@ -960,6 +961,9 @@ func spaceToEventPayload(s *Space) map[string]interface{} {
 	}
 	if s.SystemRoomID != nil {
 		m["system_room_id"] = id.Format(*s.SystemRoomID)
+	}
+	if s.BirthdayChannelID != nil {
+		m["birthday_channel_id"] = id.Format(*s.BirthdayChannelID)
 	}
 	if s.RulesRoomID != nil {
 		m["rules_room_id"] = id.Format(*s.RulesRoomID)

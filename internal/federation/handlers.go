@@ -133,6 +133,7 @@ func (h *Handler) UserUpdated(c fiber.Ctx) error {
 			"discriminator": strconv.Itoa(u.Discriminator),
 			"bio":           u.Bio,
 			"about_me":      u.AboutMe,
+			"pronouns":      u.Pronouns,
 		}
 		rows, _ := h.svc.roomRepo.ListByUser(c.Context(), u.ID)
 		for _, row := range rows {

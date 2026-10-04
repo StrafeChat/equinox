@@ -72,6 +72,9 @@ func (h *Handler) Me(c fiber.Ctx) error {
 		"avatar":         user.Avatar,
 		"banner":         user.Banner,
 		"accent_color":   user.AccentColor,
+		"pronouns":       user.Pronouns,
+		"birthday_opt_in": user.BirthdayOptIn,
+		"birthday":       auth.BirthdayMMDD(user),
 		"public_flags":   auth.PublicFlags(user),
 		"bot":            user.Bot,
 		"presence":       auth.ToPublicPresence(user.Presence, false),
@@ -113,6 +116,15 @@ func (h *Handler) PatchMe(c fiber.Ctx) error {
 		return c.Status(http.StatusNotFound).JSON(fiber.Map{"error": "user not found"})
 	}
 
+	// Opting into/out of birthdays adds or removes the user from the day index the daily
+	// announcement job reads (only meaningful once a date of birth is set).
+	if upd.BirthdayOptIn != nil && !updated.DateOfBirth.IsZero() {
+		mo, d := int(updated.DateOfBirth.Month()), updated.DateOfBirth.Day()
+		if err := h.userRepo.SetBirthdayIndex(c.Context(), updated.ID, mo, d, *upd.BirthdayOptIn); err != nil {
+			logger.Err("users", err, map[string]any{"user_id": updated.ID})
+		}
+	}
+
 	// Real-time: publish PRESENCE_UPDATE when presence changed (Redis Pub/Sub -> WebSocket)
 	if upd.Presence != nil && h.redis != nil {
 		region := "default"
@@ -152,7 +164,8 @@ func hasProfileUpdate(u *auth.ProfileUpdate) bool {
 		return false
 	}
 	if u.DisplayName != nil || u.Bio != nil || u.AboutMe != nil ||
-		u.Avatar != nil || u.Banner != nil || u.AccentColor != nil || u.Presence != nil {
+		u.Avatar != nil || u.Banner != nil || u.AccentColor != nil || u.Presence != nil ||
+		u.Pronouns != nil || u.BirthdayOptIn != nil {
 		return true
 	}
 	return false
@@ -163,5 +176,6 @@ func hasProfileFieldsForRealtime(u *auth.ProfileUpdate) bool {
 		return false
 	}
 	return u.DisplayName != nil || u.Bio != nil || u.AboutMe != nil ||
-		u.Avatar != nil || u.Banner != nil || u.AccentColor != nil
+		u.Avatar != nil || u.Banner != nil || u.AccentColor != nil ||
+		u.Pronouns != nil || u.BirthdayOptIn != nil
 }

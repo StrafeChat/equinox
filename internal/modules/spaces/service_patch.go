@@ -20,7 +20,11 @@ var (
 	ErrInvalidNotifLevel  = errors.New("default notifications must be 0 (all messages) or 1 (only mentions)")
 	ErrInvalidSystemFlags = errors.New("unknown system message flag")
 	ErrInvalidWidgetRoom  = errors.New("widget invite room must be a text room in this space")
+	ErrInvalidBirthdayRoom    = errors.New("birthday channel must be a text room in this space")
+	ErrInvalidBirthdayMessage = errors.New("birthday message must be at most 500 characters")
 )
+
+const maxBirthdayMessage = 500
 
 // roomInSpaceOfType resolves a string room id and checks it belongs to the space and has
 // the wanted type. An empty id clears the setting (nil, nil).
@@ -171,11 +175,32 @@ func (s *Service) PatchSpace(ctx context.Context, actorID, spaceID int64, in *Pa
 		set["widget_enabled"] = *in.WidgetEnabled
 		diff(changes, "widget_enabled", sp.WidgetEnabled, *in.WidgetEnabled)
 	}
+	if in.BirthdayChannelID != nil {
+		rid, err := s.roomInSpaceOfType(ctx, spaceID, *in.BirthdayChannelID, rooms.TypeSpaceText, ErrInvalidBirthdayRoom)
+		if err != nil {
+			return nil, err
+		}
+		if fmtRoomID(rid) != fmtRoomID(sp.BirthdayChannelID) {
+			set["birthday_channel_id"] = nullableID(rid)
+			diff(changes, "birthday_channel_id", fmtRoomID(sp.BirthdayChannelID), fmtRoomID(rid))
+		}
+	}
+	if in.BirthdayMessage != nil {
+		msg := strings.TrimSpace(*in.BirthdayMessage)
+		if utf8.RuneCountInString(msg) > maxBirthdayMessage {
+			return nil, ErrInvalidBirthdayMessage
+		}
+		if msg != sp.BirthdayMessage {
+			set["birthday_message"] = msg
+			diff(changes, "birthday_message", sp.BirthdayMessage, msg)
+		}
+	}
 
 	if len(set) == 0 {
 		if in.Name == nil && in.Description == nil && in.SystemRoomID == nil && in.SystemRoomFlags == nil &&
 			in.DefaultMessageNotif == nil && in.AFKRoomID == nil && in.AFKTimeout == nil &&
-			in.WidgetEnabled == nil && in.WidgetRoomID == nil {
+			in.WidgetEnabled == nil && in.WidgetRoomID == nil &&
+			in.BirthdayChannelID == nil && in.BirthdayMessage == nil {
 			return nil, ErrNothingToPatch
 		}
 		// Everything supplied already matched: nothing to write, nothing to announce.

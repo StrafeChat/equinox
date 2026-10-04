@@ -255,6 +255,7 @@ func spaceToJSON(s *Space) fiber.Map {
 		"features":                      s.Features,
 		"afk_timeout":                   s.AFKTimeout,
 		"system_room_flags":             s.SystemRoomFlags,
+		"birthday_message":              s.BirthdayMessage,
 		"max_presences":                 s.MaxPresences,
 		"max_members":                   s.MaxMembers,
 		"vanity_url_code":               s.VanityURLCode,
@@ -269,6 +270,9 @@ func spaceToJSON(s *Space) fiber.Map {
 	}
 	if s.SystemRoomID != nil {
 		m["system_room_id"] = id.Format(*s.SystemRoomID)
+	}
+	if s.BirthdayChannelID != nil {
+		m["birthday_channel_id"] = id.Format(*s.BirthdayChannelID)
 	}
 	if s.RulesRoomID != nil {
 		m["rules_room_id"] = id.Format(*s.RulesRoomID)
@@ -294,7 +298,7 @@ func userSummary(u *auth.User) fiber.Map {
 	if u == nil {
 		return nil
 	}
-	return fiber.Map{
+	m := fiber.Map{
 		"id":            id.Format(u.ID),
 		"username":      u.Username,
 		"discriminator": u.Discriminator,
@@ -303,6 +307,10 @@ func userSummary(u *auth.User) fiber.Map {
 		"public_flags":  auth.PublicFlags(u),
 		"bot":           u.Bot,
 	}
+	for k, v := range auth.ProfilePublicExtras(u) {
+		m[k] = v
+	}
+	return m
 }
 
 func inviteToJSON(inv *SpaceInvite, inviter *auth.User) fiber.Map {

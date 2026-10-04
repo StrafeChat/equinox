@@ -192,6 +192,11 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if user.Bio != "" {
 		readyUser["bio"] = user.Bio
 	}
+	readyUser["pronouns"] = user.Pronouns
+	readyUser["birthday_opt_in"] = user.BirthdayOptIn
+	if b := auth.BirthdayMMDD(user); b != "" {
+		readyUser["birthday"] = b
+	}
 	if p := auth.ToPublicPresence(user.Presence, false); p.Status != "" || p.CustomStatus != "" {
 		readyUser["presence"] = p
 	}

@@ -1108,6 +1108,7 @@ func (s *Service) memberUserFields(u *auth.User) map[string]interface{} {
 		"banner":        u.Banner,
 		"bio":           u.Bio,
 		"about_me":      u.AboutMe,
+		"pronouns":      u.Pronouns,
 		"bot":           u.Bot,
 		"public_flags":  auth.PublicFlags(u),
 		"presence":      auth.ToPublicPresence(u.Presence, true),

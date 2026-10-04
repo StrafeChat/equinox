@@ -38,6 +38,7 @@ func (s *Service) publicUserJSON(u *auth.User) map[string]interface{} {
 		"public_flags":  auth.PublicFlags(u),
 		"presence":      auth.ToPublicPresence(u.Presence, true),
 	}
+	auth.MergeProfilePublicExtras(m, u)
 	if local := s.localDomain(); local != "" {
 		m["home_domain"] = local
 		if u.IsRemote() {

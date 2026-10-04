@@ -124,6 +124,9 @@ func ownProfileJSON(u *auth.User) fiber.Map {
 		"avatar":         u.Avatar,
 		"banner":         u.Banner,
 		"accent_color":   u.AccentColor,
-		"presence":       auth.ToPublicPresence(u.Presence, false),
+		"pronouns":        u.Pronouns,
+		"birthday_opt_in": u.BirthdayOptIn,
+		"birthday":        auth.BirthdayMMDD(u),
+		"presence":        auth.ToPublicPresence(u.Presence, false),
 	}
 }

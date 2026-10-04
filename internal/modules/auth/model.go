@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/gocql/gocql"
@@ -51,6 +52,8 @@ type User struct {
 	Bots          []string     `db:"bots" json:"bots"`
 	System        bool         `db:"system" json:"system"`
 	Bio           string       `db:"bio" json:"bio"`
+	Pronouns      string       `db:"pronouns" json:"pronouns"`
+	BirthdayOptIn bool         `db:"birthday_opt_in" json:"birthday_opt_in"`
 	Flags         int          `db:"flags" json:"flags"`
 	Relationships []int64      `db:"relationships" json:"relationships"`
 	Spaces        []int64      `db:"spaces" json:"spaces"`
@@ -143,4 +146,36 @@ type Session struct {
 type LoginInput struct {
 	Email    string `json:"email"`
 	Password string `json:"password"`
+}
+
+// ProfilePublicExtras are the profile fields to merge into any PUBLIC user object: pronouns
+// (always, like the bio) and the birthday fields - which appear only when the user opted in and
+// has a date of birth, and never expose the birth year. birthday is "MM-DD"; is_birthday is true
+// on the day (UTC).
+// BirthdayMMDD returns the user's birthday as "MM-DD" (empty when no date of birth). Used on
+// the self view so the owner always sees their own birthday regardless of the opt-in setting.
+func BirthdayMMDD(u *User) string {
+	if u == nil || u.DateOfBirth.IsZero() {
+		return ""
+	}
+	return fmt.Sprintf("%02d-%02d", int(u.DateOfBirth.Month()), u.DateOfBirth.Day())
+}
+
+func ProfilePublicExtras(u *User) map[string]interface{} {
+	m := map[string]interface{}{"pronouns": u.Pronouns}
+	if u.BirthdayOptIn && !u.DateOfBirth.IsZero() {
+		mo, d := int(u.DateOfBirth.Month()), u.DateOfBirth.Day()
+		m["birthday"] = fmt.Sprintf("%02d-%02d", mo, d)
+		now := time.Now().UTC()
+		m["is_birthday"] = int(now.Month()) == mo && now.Day() == d
+	}
+	return m
+}
+
+// MergeProfilePublicExtras writes ProfilePublicExtras into an existing user map in place.
+func MergeProfilePublicExtras(dst map[string]interface{}, u *User) map[string]interface{} {
+	for k, v := range ProfilePublicExtras(u) {
+		dst[k] = v
+	}
+	return dst
 }

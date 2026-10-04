@@ -209,3 +209,17 @@ func (s *Service) republishRoomVisibility(ctx context.Context, spaceID int64, ro
 		}
 	}
 }
+
+// everyoneCanView reports whether the default @everyone role can view a room (its effective
+// overrides, so a synced channel is judged by its section). Used to decide whether a new room
+// is safe to announce space-wide or must be delivered only to members who can see it.
+func (s *Service) everyoneCanView(ctx context.Context, spaceID, roomID int64) bool {
+	snap, err := s.Snapshot(ctx, spaceID)
+	if err != nil {
+		return true
+	}
+	base := snap.basePermissions(nil)
+	ov := snap.EffectiveRoomOverrides(roomID)
+	perms := resolveEffectiveRoomPermissions(base, snap.EveryoneRoleID, nil, 0, ov.Roles, ov.Users)
+	return permissions.Has(perms, permissions.PermViewRoom)
+}

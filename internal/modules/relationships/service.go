@@ -462,6 +462,7 @@ func partialUser(u *auth.User) map[string]interface{} {
 		"bio":           u.Bio,
 		"about_me":      u.AboutMe,
 	}
+	auth.MergeProfilePublicExtras(m, u)
 	if u.HomeDomain != "" {
 		m["home_domain"] = u.HomeDomain
 	}

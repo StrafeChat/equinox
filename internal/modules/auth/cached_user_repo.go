@@ -34,6 +34,8 @@ type cachedUser struct {
 	Bots          []string       `json:"bots"`
 	System        bool           `json:"system"`
 	Bio           string         `json:"bio"`
+	Pronouns      string         `json:"pronouns"`
+	BirthdayOptIn bool           `json:"birthday_opt_in"`
 	Flags         int            `json:"flags"`
 	Relationships []int64        `json:"relationships"`
 	Spaces        []int64        `json:"spaces"`
@@ -71,6 +73,8 @@ func userToCached(u *User) *cachedUser {
 		Bots:          u.Bots,
 		System:        u.System,
 		Bio:           u.Bio,
+		Pronouns:      u.Pronouns,
+		BirthdayOptIn: u.BirthdayOptIn,
 		Flags:         u.Flags,
 		Relationships: u.Relationships,
 		Spaces:        u.Spaces,
@@ -109,6 +113,8 @@ func cachedToUser(c *cachedUser, passwordHash string) *User {
 		Bots:          c.Bots,
 		System:        c.System,
 		Bio:           c.Bio,
+		Pronouns:      c.Pronouns,
+		BirthdayOptIn: c.BirthdayOptIn,
 		Flags:         c.Flags,
 		Relationships: c.Relationships,
 		Spaces:        c.Spaces,
@@ -350,4 +356,12 @@ func (r *CachedUserRepository) SetPassword(ctx context.Context, userID int64, ha
 	}
 	r.invalidateUser(context.Background(), userID)
 	return nil
+}
+
+func (c *CachedUserRepository) SetBirthdayIndex(ctx context.Context, userID int64, month, day int, present bool) error {
+	return c.repo.SetBirthdayIndex(ctx, userID, month, day, present)
+}
+
+func (c *CachedUserRepository) ListBirthdaysOn(ctx context.Context, month, day int) ([]int64, error) {
+	return c.repo.ListBirthdaysOn(ctx, month, day)
 }

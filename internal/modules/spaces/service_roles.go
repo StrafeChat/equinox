@@ -997,7 +997,15 @@ func (s *Service) CreateRoom(ctx context.Context, actorID, spaceID int64, in *Cr
 	// their list straight from the event. A new room has no overrides yet.
 	payload := AttachOverrides(RoomMap(room), RoomOverrides{})
 	payload["room_id"] = id.Format(room.ID)
-	s.publishSpaceEvent(ctx, spaceID, "SPACE_ROOM_CREATE", payload)
+	// A room created private - directly denied to @everyone, or synced into a private section -
+	// must not be announced space-wide, or its name/metadata would leak to members who can't see
+	// it. Announce it space-wide only when @everyone can view it; otherwise deliver it per-member
+	// (viewers get SPACE_ROOM_CREATE, everyone else nothing).
+	if s.everyoneCanView(ctx, spaceID, room.ID) {
+		s.publishSpaceEvent(ctx, spaceID, "SPACE_ROOM_CREATE", payload)
+	} else {
+		s.republishRoomVisibility(ctx, spaceID, []int64{room.ID})
+	}
 	s.fedRoomChanged(ctx, spaceID, room.ID, false)
 	s.audit(ctx, spaceID, actorID, AuditRoomCreate, id.Format(room.ID), map[string]change{
 		"name": {New: room.Name},

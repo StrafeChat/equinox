@@ -363,3 +363,6 @@ func TestSearchUsersByEveryHandle(t *testing.T) {
 		t.Errorf("non-admin search = %v, want ErrNotAdmin", err)
 	}
 }
+
+func (f *fakeUsers) SetBirthdayIndex(context.Context, int64, int, int, bool) error { return nil }
+func (f *fakeUsers) ListBirthdaysOn(context.Context, int, int) ([]int64, error) { return nil, nil }

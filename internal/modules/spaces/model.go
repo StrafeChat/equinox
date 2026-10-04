@@ -26,6 +26,10 @@ type Space struct {
 	AFKTimeout            int      `db:"afk_timeout" json:"afk_timeout"`
 	SystemRoomID          *int64   `db:"system_room_id" json:"system_room_id,omitempty"`
 	SystemRoomFlags       int      `db:"system_room_flags" json:"system_room_flags"`
+	// Birthdays: the text channel opted-in members are wished a happy birthday in, and an
+	// optional custom message template (empty = the client's default greeting).
+	BirthdayChannelID     *int64   `db:"birthday_channel_id" json:"birthday_channel_id,omitempty"`
+	BirthdayMessage       string   `db:"birthday_message" json:"birthday_message,omitempty"`
 	RulesRoomID           *int64   `db:"rules_room_id" json:"rules_room_id,omitempty"`
 	MaxPresences          int      `db:"max_presences" json:"max_presences"`
 	MaxMembers            int      `db:"max_members" json:"max_members"`
@@ -201,6 +205,10 @@ type PatchSpaceInput struct {
 	// Server widget (see Space.WidgetEnabled).
 	WidgetEnabled *bool   `json:"widget_enabled,omitempty"`
 	WidgetRoomID  *string `json:"widget_room_id,omitempty"`
+	// Birthdays: the announcement channel (empty string clears it) and an optional message
+	// template.
+	BirthdayChannelID *string `json:"birthday_channel_id,omitempty"`
+	BirthdayMessage   *string `json:"birthday_message,omitempty"`
 }
 
 // SpaceInvite is an invite link/code for joining a space. MaxUses 0 = unlimited;

@@ -22,6 +22,7 @@ const (
 	maxAvatar       = 256
 	maxBanner       = 256
 	maxCustomStatus = 128
+	maxPronouns     = 40
 )
 
 // accentColorRe: clients put this straight into CSS, so only a plain hex colour is allowed.
@@ -40,8 +41,10 @@ func ParsePatchMeBody(body []byte, out *auth.ProfileUpdate) (string, bool) {
 		AboutMe     *string `json:"about_me,omitempty"`
 		Avatar      *string `json:"avatar,omitempty"`
 		Banner      *string `json:"banner,omitempty"`
-		AccentColor *string `json:"accent_color,omitempty"`
-		Presence    *struct {
+		AccentColor   *string `json:"accent_color,omitempty"`
+		Pronouns      *string `json:"pronouns,omitempty"`
+		BirthdayOptIn *bool   `json:"birthday_opt_in,omitempty"`
+		Presence      *struct {
 			Online       *bool   `json:"online,omitempty"`
 			Status       *string `json:"status,omitempty"`
 			CustomStatus *string `json:"custom_status,omitempty"`
@@ -93,6 +96,16 @@ func ParsePatchMeBody(body []byte, out *auth.ProfileUpdate) (string, bool) {
 			return "accent_color must be a hex colour like #1e90ff", false
 		}
 		out.AccentColor = &s
+	}
+	if tmp.Pronouns != nil {
+		s := strings.TrimSpace(*tmp.Pronouns)
+		if tooLong(s, maxPronouns) {
+			return "pronouns must be at most 40 characters", false
+		}
+		out.Pronouns = &s
+	}
+	if tmp.BirthdayOptIn != nil {
+		out.BirthdayOptIn = tmp.BirthdayOptIn
 	}
 	if tmp.Presence != nil {
 		out.Presence = &auth.PresenceUpdate{}
