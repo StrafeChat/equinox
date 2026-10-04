@@ -82,10 +82,28 @@ func resolveEffectiveRoomPermissions(
 		perms |= o.Allow
 		break
 	}
+	return applyImplicitRoomRules(perms)
+}
+
+// applyImplicitRoomRules is Discord's two dependent-permission rules, applied after the
+// overwrite stack so every consumer (messages, voice, search, the gateway, the client's
+// mirror of this function) agrees: a member who cannot View Room has no permission at all in
+// that room, and one who cannot Send Messages cannot do the things that only make sense
+// while sending - attach files or mention @everyone.
+func applyImplicitRoomRules(perms int64) int64 {
+	if !permissions.Has(perms, permissions.PermViewRoom) {
+		return 0
+	}
+	if !permissions.Has(perms, permissions.PermSendMessages) {
+		perms &^= permissions.PermAttachFiles | permissions.PermMentionEveryone
+	}
 	return perms
 }
 
 // SpacePermissionBase is OR of @everyone + member roles (no room overrides). For management checks.
+// The owner and anyone holding Administrator get every space bit, Discord's rule, so a
+// management check never has to remember to test the Administrator bit separately (role
+// hierarchy still applies to them - only the owner is above it).
 func (s *Service) SpacePermissionBase(ctx context.Context, userID, spaceID int64) (int64, error) {
 	snap, err := s.permissionSnapshot(ctx, spaceID, 0)
 	if err != nil {
@@ -98,7 +116,11 @@ func (s *Service) SpacePermissionBase(ctx context.Context, userID, spaceID int64
 	if err != nil || mem == nil {
 		return 0, ErrNotMember
 	}
-	return snap.basePermissions(mem.RoleIDs), nil
+	base := snap.basePermissions(mem.RoleIDs)
+	if permissions.Has(base, permissions.PermAdministrator) {
+		return permissions.AllSpace, nil
+	}
+	return base, nil
 }
 
 func (s *Service) ensureEveryoneRoleID(ctx context.Context, sp *Space) (int64, error) {

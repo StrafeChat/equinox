@@ -25,8 +25,10 @@ func (s *Service) getLiveMessage(ctx context.Context, roomID, msgID int64) (*Mes
 
 // addReactionRow records userID's reaction unless it is already there, enforcing the
 // distinct-emoji cap. Returns the rows as they stood before the write and whether a row
-// was written.
-func (s *Service) addReactionRow(ctx context.Context, roomID, msgID, userID int64, emoji string) ([]Reaction, bool, error) {
+// was written. mayStartNew, when set, is consulted only if nobody has reacted with this
+// emoji yet - Discord's rule that Add Reactions gates new reactions while joining an
+// existing one is open to anyone who can read the message.
+func (s *Service) addReactionRow(ctx context.Context, roomID, msgID, userID int64, emoji string, mayStartNew func() error) ([]Reaction, bool, error) {
 	existing, err := s.repo.ListReactions(ctx, roomID, msgID)
 	if err != nil {
 		return nil, false, err
@@ -38,8 +40,15 @@ func (s *Service) addReactionRow(ctx context.Context, roomID, msgID, userID int6
 			return existing, false, nil
 		}
 	}
-	if !distinct[emoji] && len(distinct) >= MaxReactionsPerMessage {
-		return nil, false, ErrTooManyReactions
+	if !distinct[emoji] {
+		if mayStartNew != nil {
+			if err := mayStartNew(); err != nil {
+				return nil, false, err
+			}
+		}
+		if len(distinct) >= MaxReactionsPerMessage {
+			return nil, false, ErrTooManyReactions
+		}
 	}
 	if err := s.repo.AddReaction(ctx, roomID, msgID, userID, emoji); err != nil {
 		return nil, false, err
@@ -67,7 +76,10 @@ func (s *Service) AddReaction(ctx context.Context, userID, roomID, msgID int64, 
 	if err != nil {
 		return nil, err
 	}
-	room, participants, err := s.authorize(ctx, userID, roomID, permissions.PermAddReactions)
+	// Discord: reacting needs Read Message History; Add Reactions is only required to start a
+	// reaction nobody has used on the message yet (checked in addReactionRow). A room hosted
+	// elsewhere applies the same rule at its origin.
+	room, participants, err := s.authorize(ctx, userID, roomID, permissions.PermViewRoom, permissions.PermReadMessageHistory)
 	if err != nil {
 		return nil, err
 	}
@@ -77,7 +89,9 @@ func (s *Service) AddReaction(ctx context.Context, userID, roomID, msgID int64, 
 	if _, err := s.getLiveMessage(ctx, roomID, msgID); err != nil {
 		return nil, err
 	}
-	existing, added, err := s.addReactionRow(ctx, roomID, msgID, userID, emoji)
+	existing, added, err := s.addReactionRow(ctx, roomID, msgID, userID, emoji, func() error {
+		return s.checkChannelPerms(ctx, userID, roomID, room, permissions.PermAddReactions)
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -135,7 +149,7 @@ func (s *Service) AddReactionFederated(ctx context.Context, roomID, msgID, userI
 	if _, err := s.getLiveMessage(ctx, roomID, msgID); err != nil {
 		return err
 	}
-	_, added, err := s.addReactionRow(ctx, roomID, msgID, userID, emoji)
+	_, added, err := s.addReactionRow(ctx, roomID, msgID, userID, emoji, nil)
 	if err != nil {
 		return err
 	}

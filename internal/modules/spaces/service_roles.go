@@ -550,14 +550,15 @@ func (s *Service) checkOverrideGrant(ctx context.Context, actorID, spaceID, room
 	return allow, deny, nil
 }
 
-// PutRoomRoleOverride sets allow/deny for a role in a room. Requires ManageRooms.
+// PutRoomRoleOverride sets allow/deny for a role in a room. Requires ManageRoles: as on
+// Discord, room permission overrides are part of role management, not room management.
 func (s *Service) PutRoomRoleOverride(ctx context.Context, actorID, spaceID, roomID, roleID int64, in *PutRoomRoleOverrideInput) error {
 	if origin, actor, err := s.remoteSpace(ctx, actorID, spaceID); err != nil {
 		return err
 	} else if origin != "" {
 		return s.fed.RemoteOverride(ctx, origin, spaceID, actor, roomID, roleID, 0, in.Allow, in.Deny, false)
 	}
-	if err := s.canManageRooms(ctx, actorID, spaceID); err != nil {
+	if err := s.canManageRoles(ctx, actorID, spaceID); err != nil {
 		return err
 	}
 	if err := s.assertRoomInSpace(ctx, spaceID, roomID); err != nil {
@@ -595,14 +596,15 @@ func (s *Service) PutRoomRoleOverride(ctx context.Context, actorID, spaceID, roo
 	return nil
 }
 
-// PutRoomUserOverride sets allow/deny for a user in a room. Requires ManageRooms.
+// PutRoomUserOverride sets allow/deny for a user in a room. Requires ManageRoles (see
+// PutRoomRoleOverride).
 func (s *Service) PutRoomUserOverride(ctx context.Context, actorID, spaceID, roomID, targetUserID int64, in *PutRoomUserOverrideInput) error {
 	if origin, actor, err := s.remoteSpace(ctx, actorID, spaceID); err != nil {
 		return err
 	} else if origin != "" {
 		return s.fed.RemoteOverride(ctx, origin, spaceID, actor, roomID, 0, targetUserID, in.Allow, in.Deny, false)
 	}
-	if err := s.canManageRooms(ctx, actorID, spaceID); err != nil {
+	if err := s.canManageRoles(ctx, actorID, spaceID); err != nil {
 		return err
 	}
 	if err := s.assertRoomInSpace(ctx, spaceID, roomID); err != nil {
@@ -643,14 +645,14 @@ func (s *Service) PutRoomUserOverride(ctx context.Context, actorID, spaceID, roo
 	return nil
 }
 
-// DeleteRoomRoleOverride removes an override row.
+// DeleteRoomRoleOverride removes an override row. Requires ManageRoles.
 func (s *Service) DeleteRoomRoleOverride(ctx context.Context, actorID, spaceID, roomID, roleID int64) error {
 	if origin, actor, err := s.remoteSpace(ctx, actorID, spaceID); err != nil {
 		return err
 	} else if origin != "" {
 		return s.fed.RemoteOverride(ctx, origin, spaceID, actor, roomID, roleID, 0, 0, 0, true)
 	}
-	if err := s.canManageRooms(ctx, actorID, spaceID); err != nil {
+	if err := s.canManageRoles(ctx, actorID, spaceID); err != nil {
 		return err
 	}
 	if err := s.assertRoomInSpace(ctx, spaceID, roomID); err != nil {
@@ -670,14 +672,14 @@ func (s *Service) DeleteRoomRoleOverride(ctx context.Context, actorID, spaceID, 
 	return nil
 }
 
-// DeleteRoomUserOverride removes a user override row.
+// DeleteRoomUserOverride removes a user override row. Requires ManageRoles.
 func (s *Service) DeleteRoomUserOverride(ctx context.Context, actorID, spaceID, roomID, targetUserID int64) error {
 	if origin, actor, err := s.remoteSpace(ctx, actorID, spaceID); err != nil {
 		return err
 	} else if origin != "" {
 		return s.fed.RemoteOverride(ctx, origin, spaceID, actor, roomID, 0, targetUserID, 0, 0, true)
 	}
-	if err := s.canManageRooms(ctx, actorID, spaceID); err != nil {
+	if err := s.canManageRoles(ctx, actorID, spaceID); err != nil {
 		return err
 	}
 	if err := s.assertRoomInSpace(ctx, spaceID, roomID); err != nil {

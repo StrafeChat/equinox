@@ -325,7 +325,9 @@ func (s *Service) ListSpaceMemberUserIDs(ctx context.Context, spaceID int64) ([]
 //
 // A message that mentions an excluded role still renders it (Mentions/MentionRoles are
 // stored as parsed either way) - it just isn't treated as a notify-worthy mention.
-func (s *Service) ListSpaceMemberUserIDsByRoles(ctx context.Context, spaceID int64, roleIDs []int64) ([]int64, error) {
+// With includeUnmentionable (the sender holds Mention @everyone, Discord's licence to ping any
+// role) each role's own mentionable flag is ignored.
+func (s *Service) ListSpaceMemberUserIDsByRoles(ctx context.Context, spaceID int64, roleIDs []int64, includeUnmentionable bool) ([]int64, error) {
 	if len(roleIDs) == 0 {
 		return nil, nil
 	}
@@ -347,7 +349,7 @@ func (s *Service) ListSpaceMemberUserIDsByRoles(ctx context.Context, spaceID int
 		// Respects each role's own "mentionable" setting - a role an admin deliberately
 		// marked as not mentionable shouldn't start notifying its holders just because
 		// someone hand-typed (or an old message contains) its raw <@&roleId> syntax.
-		if _, ok := mentionable[rid]; ok {
+		if _, ok := mentionable[rid]; ok || includeUnmentionable {
 			want[rid] = struct{}{}
 		}
 	}

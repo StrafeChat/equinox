@@ -178,8 +178,10 @@ type SpaceChannelAuth interface {
 	// ListSpaceMemberUserIDs lists all members for fan-out of rooms_by_user.last_message_id on new messages.
 	ListSpaceMemberUserIDs(ctx context.Context, spaceID int64) ([]int64, error)
 	// ListSpaceMemberUserIDsByRoles expands a role mention (<@&roleId>) into the member
-	// user IDs holding any of the given roles, for the mention-count notify set.
-	ListSpaceMemberUserIDsByRoles(ctx context.Context, spaceID int64, roleIDs []int64) ([]int64, error)
+	// user IDs holding any of the given roles, for the mention-count notify set. Roles that
+	// are not mentionable are skipped unless includeUnmentionable (the sender holds Mention
+	// @everyone, which on Discord also licenses pinging any role).
+	ListSpaceMemberUserIDsByRoles(ctx context.Context, spaceID int64, roleIDs []int64, includeUnmentionable bool) ([]int64, error)
 }
 
 // Federator relays message events to the other instances whose users share the room.
@@ -421,15 +423,15 @@ func roomE2EEOff(room *rooms.Room) bool {
 }
 
 // enforceSlowmode applies a space text room's slowmode to the sender: one message per
-// SlowmodeSeconds, except for members who may manage messages (moderators), matching how
-// Discord exempts them. The window is a Redis key that expires on its own.
+// SlowmodeSeconds, except for members who may manage messages or manage rooms, the two
+// permissions Discord exempts. The window is a Redis key that expires on its own.
 func (s *Service) enforceSlowmode(ctx context.Context, userID, roomID int64, room *rooms.Room) error {
 	if room.SlowmodeSeconds <= 0 || room.SpaceID == nil || room.Type != rooms.TypeSpaceText || s.redis == nil {
 		return nil
 	}
 	if s.spaceAuth != nil {
 		if perms, err := s.spaceAuth.EffectiveChannelPermissions(ctx, userID, *room.SpaceID, roomID); err == nil &&
-			permissions.Has(perms, permissions.PermManageMessages) {
+			(permissions.Has(perms, permissions.PermManageMessages) || permissions.Has(perms, permissions.PermManageRooms)) {
 			return nil
 		}
 	}
@@ -569,14 +571,19 @@ func (s *Service) create(ctx context.Context, userID, roomID int64, in *CreateMe
 	}
 	// The @everyone permission gate applies regardless of where the flag came from: in an
 	// E2EE space room the client's declaration is all the server has, and without this
-	// check any member could mass-notify the whole space just by setting the flag.
-	if mentionEveryone && room.SpaceID != nil && s.spaceAuth != nil {
-		perms, permErr := s.spaceAuth.EffectiveChannelPermissions(ctx, userID, *room.SpaceID, roomID)
-		if permErr != nil || !permissions.Has(perms, permissions.PermMentionEveryone) {
-			// Sender lacks the permission: the literal "@everyone"/"@here" text is still
-			// sent as content, it just doesn't notify anyone - matches Discord.
-			mentionEveryone = false
+	// check any member could mass-notify the whole space just by setting the flag. The same
+	// bit is Discord's licence to ping any role: with it a role mention notifies the role's
+	// holders even when the role is not marked mentionable.
+	canMassMention := false
+	if (mentionEveryone || len(mentionRoleIDs) > 0) && room.SpaceID != nil && s.spaceAuth != nil {
+		if perms, permErr := s.spaceAuth.EffectiveChannelPermissions(ctx, userID, *room.SpaceID, roomID); permErr == nil {
+			canMassMention = permissions.Has(perms, permissions.PermMentionEveryone)
 		}
+	}
+	if mentionEveryone && room.SpaceID != nil && s.spaceAuth != nil && !canMassMention {
+		// Sender lacks the permission: the literal "@everyone"/"@here" text is still
+		// sent as content, it just doesn't notify anyone - matches Discord.
+		mentionEveryone = false
 	}
 
 	msgID := id.Next()
@@ -635,7 +642,7 @@ func (s *Service) create(ctx context.Context, userID, roomID int64, in *CreateMe
 	// role as a highlighted mention, but nobody holding that role ever got a badge for it.
 	notifyUserIDs := mentionUserIDs
 	if len(mentionRoleIDs) > 0 && room.SpaceID != nil && s.spaceAuth != nil {
-		if fromRoles, err := s.spaceAuth.ListSpaceMemberUserIDsByRoles(ctx, *room.SpaceID, mentionRoleIDs); err == nil {
+		if fromRoles, err := s.spaceAuth.ListSpaceMemberUserIDsByRoles(ctx, *room.SpaceID, mentionRoleIDs, canMassMention); err == nil {
 			notifyUserIDs = append(append([]int64{}, mentionUserIDs...), fromRoles...)
 		}
 	}
@@ -918,7 +925,13 @@ func (s *Service) rollbackDeletedMentions(ctx context.Context, room *rooms.Room,
 	}
 	notifyUserIDs := msg.Mentions
 	if len(msg.MentionRoles) > 0 && room.SpaceID != nil && s.spaceAuth != nil {
-		if fromRoles, err := s.spaceAuth.ListSpaceMemberUserIDsByRoles(ctx, *room.SpaceID, msg.MentionRoles); err == nil {
+		// Whether the sender could ping non-mentionable roles is not stored with the message;
+		// their current permission in the room is the closest stand-in.
+		canMassMention := false
+		if perms, err := s.spaceAuth.EffectiveChannelPermissions(ctx, msg.SenderID, *room.SpaceID, room.ID); err == nil {
+			canMassMention = permissions.Has(perms, permissions.PermMentionEveryone)
+		}
+		if fromRoles, err := s.spaceAuth.ListSpaceMemberUserIDsByRoles(ctx, *room.SpaceID, msg.MentionRoles, canMassMention); err == nil {
 			notifyUserIDs = append(append([]int64{}, msg.Mentions...), fromRoles...)
 		}
 	}
