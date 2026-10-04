@@ -12,6 +12,7 @@ import (
 
 	"github.com/StrafeChat/equinox/internal/id"
 	"github.com/StrafeChat/equinox/internal/logger"
+	"github.com/StrafeChat/equinox/internal/mail"
 	"github.com/StrafeChat/equinox/internal/modules/auth"
 	"github.com/StrafeChat/equinox/internal/modules/messages"
 	"github.com/StrafeChat/equinox/internal/modules/rooms"
@@ -41,6 +42,10 @@ type ModerationDeps struct {
 	Remover  SpaceRemover
 	Redis    *redis.Client
 	Region   string
+	// TwoFactor issues replacement recovery codes for an admin recovery action; Mailer
+	// delivers them to the user. Either may be nil (2FA store absent / email off).
+	TwoFactor auth.TwoFactorRepository
+	Mailer    mail.Mailer
 }
 
 func (s *Service) SetModeration(d ModerationDeps) { s.mod = &d }
@@ -167,6 +172,81 @@ func (s *Service) SetUserBadges(ctx context.Context, actorID, userID int64, flag
 		return auth.PublicFlags(updated), nil
 	}
 	return flags, nil
+}
+
+// RegenerateUserRecoveryCodes issues a fresh set of 2FA recovery codes for a user (an admin
+// support action for someone locked out of their authenticator) and, when email is configured
+// and the account has an address, mails them. It returns the new codes and whether the email
+// was sent, so the dashboard can show them for the admin to relay if mail is off. The old codes
+// stop working immediately. The codes bypass only the 2FA step, never the password.
+func (s *Service) RegenerateUserRecoveryCodes(ctx context.Context, actorID, userID int64) ([]string, bool, error) {
+	if err := s.requireAdmin(ctx, actorID); err != nil {
+		return nil, false, err
+	}
+	if s.mod == nil || s.mod.TwoFactor == nil {
+		return nil, false, ErrRecoveryUnavailable
+	}
+	u, err := s.mod.Users.GetByID(ctx, userID)
+	if err != nil {
+		return nil, false, err
+	}
+	if u == nil {
+		return nil, false, ErrUserNotFound
+	}
+	if u.IsRemote() || u.Bot {
+		// A shadow row or bot has no 2FA / account recovery on this instance.
+		return nil, false, ErrCannotBanRemote
+	}
+	codes, err := auth.AdminRegenerateRecoveryCodes(ctx, s.mod.TwoFactor, userID)
+	if err != nil {
+		return nil, false, err
+	}
+	emailed := false
+	if s.mod.Mailer != nil && strings.Contains(u.Email, "@") {
+		if err := s.sendRecoveryCodesEmail(ctx, u, codes); err != nil {
+			logger.Err("instance", err, map[string]any{"stage": "recovery_email", "user_id": userID})
+		} else {
+			emailed = true
+		}
+	}
+	s.audit(ctx, actorID, AuditUserRecovery, TargetUser, userID, "")
+	// When the codes reached the user by email, don't hand them back to the admin too - they
+	// belong to the user. Only when email is off (or failed) does the admin get them to relay.
+	if emailed {
+		return nil, true, nil
+	}
+	return codes, false, nil
+}
+
+func (s *Service) sendRecoveryCodesEmail(ctx context.Context, u *auth.User, codes []string) error {
+	name := s.cfg.Mail.InstanceName
+	if name == "" {
+		name = "Strafe"
+	}
+	list := strings.Join(codes, "\n  ")
+	text := "Hi " + u.Username + ",\n\n" +
+		"An administrator generated new recovery codes for your account on " + name + ". " +
+		"Your previous recovery codes no longer work.\n\n" +
+		"Keep these somewhere safe. Each one can be used once to sign in if you lose your " +
+		"authenticator (you will still need your password):\n\n  " + list + "\n\n" +
+		"If you did not expect this, contact your instance administrator.\n"
+	rows := ""
+	for _, c := range codes {
+		rows += "<li style=\"font-family:monospace;font-size:15px;letter-spacing:1px\">" + c + "</li>"
+	}
+	html := "<p>Hi " + u.Username + ",</p>" +
+		"<p>An administrator generated new recovery codes for your account on <strong>" + name + "</strong>. " +
+		"Your previous recovery codes no longer work.</p>" +
+		"<p>Keep these somewhere safe. Each one can be used once to sign in if you lose your " +
+		"authenticator (you will still need your password):</p>" +
+		"<ul>" + rows + "</ul>" +
+		"<p style=\"color:#666\">If you did not expect this, contact your instance administrator.</p>"
+	return s.mod.Mailer.Send(ctx, mail.Message{
+		To:      u.Email,
+		Subject: "Your " + name + " recovery codes",
+		Text:    text,
+		HTML:    html,
+	})
 }
 
 // SetSpaceOfficial marks a space as official - part of this instance - or clears it. Admin

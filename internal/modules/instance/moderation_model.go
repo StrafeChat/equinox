@@ -32,6 +32,7 @@ const (
 	AuditInviteCreate  = "invite_create"
 	AuditInviteRevoke  = "invite_revoke"
 	AuditUserBadges    = "user_badges"
+	AuditUserRecovery  = "user_recovery_regen"
 
 	MaxReportDetails = 2000
 	MaxBanReason     = 500
@@ -49,6 +50,7 @@ var (
 	ErrSpaceNotFound   = errors.New("space not found")
 	ErrCannotBanSelf   = errors.New("you cannot ban yourself")
 	ErrCannotBanRemote = errors.New("that account lives on another instance")
+	ErrRecoveryUnavailable = errors.New("recovery codes are not available on this instance")
 	ErrAlreadyBanned   = errors.New("that account is already banned")
 	ErrNotBanned       = errors.New("that account is not banned")
 	ErrInvalidBan      = errors.New("ban reason must be at most 500 characters and expiry at most a year")

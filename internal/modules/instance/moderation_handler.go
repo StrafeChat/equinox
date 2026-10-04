@@ -23,6 +23,8 @@ func moderationError(c fiber.Ctx, err error) error {
 		return c.Status(http.StatusConflict).JSON(fiber.Map{"error": err.Error()})
 	case ErrInvalidBan, ErrInvalidReport, ErrInvalidAction, ErrInvalidQuery, ErrInvalidBadges:
 		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	case ErrRecoveryUnavailable:
+		return c.Status(http.StatusServiceUnavailable).JSON(fiber.Map{"error": err.Error()})
 	default:
 		return errorFor(c, err)
 	}
@@ -200,6 +202,25 @@ func (h *Handler) SetBadges(c fiber.Ctx) error {
 		return moderationError(c, err)
 	}
 	return c.JSON(fiber.Map{"public_flags": flags})
+}
+
+// RegenerateRecoveryCodes POST /instance/users/:id/recovery_codes - admin regenerates a user's
+// 2FA recovery codes and emails them; when email is off they come back in the response for the
+// admin to hand over.
+func (h *Handler) RegenerateRecoveryCodes(c fiber.Ctx) error {
+	user := auth.GetUser(c)
+	if user == nil {
+		return c.Status(http.StatusUnauthorized).JSON(fiber.Map{"error": "unauthorized"})
+	}
+	uid, ok := parseIDParam(c, "id")
+	if !ok {
+		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "invalid user id"})
+	}
+	codes, emailed, err := h.svc.RegenerateUserRecoveryCodes(c.Context(), user.ID, uid)
+	if err != nil {
+		return moderationError(c, err)
+	}
+	return c.JSON(fiber.Map{"codes": codes, "emailed": emailed})
 }
 
 // SetSpaceOfficial PATCH /instance/spaces/:id/official - mark a space as part of this

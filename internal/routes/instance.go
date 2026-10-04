@@ -30,9 +30,11 @@ func newInstanceService(d Deps, userRepo auth.UserRepository, sessionRepo auth.S
 		Spaces:   spaceRepo,
 		Messages: messages.NewRepository(d.Scylla),
 		Rooms:    roomRepo,
-		Remover:  spaceSvc,
-		Redis:    d.Redis,
-		Region:   d.Config.Stargate.Region,
+		Remover:   spaceSvc,
+		Redis:     d.Redis,
+		Region:    d.Config.Stargate.Region,
+		TwoFactor: auth.NewTwoFactorRepository(d.Scylla),
+		Mailer:    d.Mailer,
 	})
 	return svc
 }
@@ -82,6 +84,7 @@ func SetupInstanceRoutes(d Deps) {
 	r.Post("/users/:id/ban", h.BanUser)
 	r.Delete("/users/:id/ban", h.UnbanUser)
 	r.Patch("/users/:id/badges", h.SetBadges)
+	r.Post("/users/:id/recovery_codes", h.RegenerateRecoveryCodes)
 	r.Get("/bans", h.ListBans)
 
 	r.Get("/spaces/:id", h.GetSpace)

@@ -559,6 +559,27 @@ func (s *service) DeleteWebAuthnCredential(ctx context.Context, userID int64, cr
 	return s.tfrepo.DeleteWebAuthnCredential(ctx, userID, credentialID)
 }
 
+// AdminRegenerateRecoveryCodes issues a fresh batch of recovery codes for a user, replaces the
+// stored set with their hashes, and returns the plaintext codes. Unlike the self-service
+// RegenerateRecoveryCodes it takes NO password - it is for an instance admin acting on behalf
+// of a user locked out of their account; the caller must have already checked admin authority.
+// The codes only help someone who also has the account password (they bypass the 2FA step, not
+// the password), so delivering them to the user by email is safe.
+func AdminRegenerateRecoveryCodes(ctx context.Context, tfrepo TwoFactorRepository, userID int64) ([]string, error) {
+	codes, err := generateRecoveryCodes()
+	if err != nil {
+		return nil, err
+	}
+	hashes := make([]string, len(codes))
+	for i, c := range codes {
+		hashes[i] = hashRecoveryCode(c)
+	}
+	if err := tfrepo.CreateRecoveryCodes(ctx, userID, hashes); err != nil {
+		return nil, err
+	}
+	return codes, nil
+}
+
 func (s *service) RegenerateRecoveryCodes(ctx context.Context, userID int64, password string) ([]string, error) {
 	u, err := s.repo.GetByID(ctx, userID)
 	if err != nil {
