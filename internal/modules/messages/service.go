@@ -791,9 +791,16 @@ func (s *Service) Delete(ctx context.Context, userID, roomID, msgID int64) error
 	// read up to), so the room shows a permanent unread that only clears while you're actually
 	// inside it. Advance last_message_id to the newest surviving message - or clear it if that
 	// was the last message. Best-effort: a failure here must not fail the delete itself.
+	// `lastChanged` records that this delete moved the room's newest message, so the event
+	// below can carry the new last_message_id and clients heal their read cursor without a
+	// reload (otherwise their cached last_message_id keeps a phantom unread alive).
+	lastChanged := false
+	var newLast *int64
 	if room.LastMessageID != nil && *room.LastMessageID == msgID {
 		if prev, perr := s.repo.List(ctx, roomID, &msgID, 1); perr == nil {
+			lastChanged = true
 			if len(prev) > 0 {
+				newLast = &prev[0].ID
 				_ = s.rooms.UpdateLastMessageID(ctx, roomID, participants, prev[0].ID)
 			} else {
 				_ = s.rooms.ClearLastMessageID(ctx, roomID, participants)
@@ -809,6 +816,13 @@ func (s *Service) Delete(ctx context.Context, userID, roomID, msgID int64) error
 		payload := map[string]interface{}{
 			"room_id":    id.Format(roomID),
 			"message_id": id.Format(msgID),
+		}
+		if lastChanged {
+			if newLast != nil {
+				payload["last_message_id"] = id.Format(*newLast)
+			} else {
+				payload["last_message_id"] = nil
+			}
 		}
 		stargate.PublishToSpace(ctx, s.redis, roomID, "MESSAGE_DELETE", payload, s.cfg.Stargate.Region)
 	}

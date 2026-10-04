@@ -5,7 +5,9 @@ import (
 	"time"
 
 	"github.com/StrafeChat/equinox/internal/id"
+	"github.com/StrafeChat/equinox/internal/modules/permissions"
 	"github.com/StrafeChat/equinox/internal/modules/rooms"
+	"github.com/StrafeChat/equinox/internal/stargate"
 )
 
 // clearOwnOverrides removes every permission override stored directly on a room and tells
@@ -119,6 +121,8 @@ func (s *Service) applyPermissionsSync(ctx context.Context, spaceID int64, room 
 	// The snapshot carries each room's synced flag and its overrides, both of which just
 	// changed - drop it so the next permission check and room listing rebuild from the writes.
 	s.invalidateSnapshot(ctx, spaceID)
+	// Syncing changes the channel's effective View, so some members may gain or lose it.
+	s.republishRoomVisibility(ctx, spaceID, []int64{room.ID})
 	return true, nil
 }
 
@@ -128,4 +132,80 @@ type roomForSync struct {
 	Type     int
 	ParentID int64
 	Synced   bool
+}
+
+// visibilityAffectedRooms returns the rooms whose per-member View could change from a
+// permission change on roomID: the room itself, plus - when it is a section - every channel
+// synced to it (those inherit the section's overrides).
+func (s *Service) visibilityAffectedRooms(ctx context.Context, spaceID, roomID int64) []int64 {
+	ids := []int64{roomID}
+	room, err := s.roomRepo.GetByID(ctx, roomID)
+	if err != nil || room == nil || room.Type != rooms.TypeRoomSection {
+		return ids
+	}
+	all, err := s.listRooms(ctx, spaceID)
+	if err != nil {
+		return ids
+	}
+	for _, r := range all {
+		if r.ParentID != nil && *r.ParentID == roomID && r.PermissionsSynced != nil && *r.PermissionsSynced {
+			ids = append(ids, r.ID)
+		}
+	}
+	return ids
+}
+
+// republishRoomVisibility tells each member whether they can now see the given rooms, so a
+// permission change adds or removes them from sidebars in real time (Discord-style) without a
+// reload - including for a member who never had the room because it was created private.
+// Members who can view get SPACE_ROOM_CREATE (the client upserts it); members who cannot get
+// SPACE_ROOM_DELETE (the client drops it, which also clears any metadata it had cached). Runs
+// only on override/sync changes, which are infrequent admin actions.
+func (s *Service) republishRoomVisibility(ctx context.Context, spaceID int64, roomIDs []int64) {
+	if s.redis == nil || len(roomIDs) == 0 {
+		return
+	}
+	snap, err := s.Snapshot(ctx, spaceID)
+	if err != nil {
+		return
+	}
+	members, err := s.repo.ListMembers(ctx, spaceID)
+	if err != nil || len(members) == 0 {
+		return
+	}
+	region := s.stargateRegion()
+	for _, rid := range roomIDs {
+		room, err := s.roomRepo.GetByID(ctx, rid)
+		if err != nil || room == nil || room.SpaceID == nil || *room.SpaceID != spaceID {
+			continue
+		}
+		payload := AttachOverrides(RoomMap(room), snap.RoomOverridesFor(rid))
+		payload["room_id"] = id.Format(rid)
+		ov := snap.EffectiveRoomOverrides(rid)
+		var canView, cannotView []int64
+		for i := range members {
+			m := &members[i]
+			visible := snap.OwnerID == m.UserID
+			if !visible {
+				base := snap.basePermissions(m.RoleIDs)
+				if permissions.Has(base, permissions.PermAdministrator) {
+					visible = true
+				} else {
+					perms := resolveEffectiveRoomPermissions(base, snap.EveryoneRoleID, m.RoleIDs, m.UserID, ov.Roles, ov.Users)
+					visible = permissions.Has(perms, permissions.PermViewRoom)
+				}
+			}
+			if visible {
+				canView = append(canView, m.UserID)
+			} else {
+				cannotView = append(cannotView, m.UserID)
+			}
+		}
+		if len(canView) > 0 {
+			stargate.PublishToUsers(ctx, s.redis, canView, "SPACE_ROOM_CREATE", payload, region)
+		}
+		if len(cannotView) > 0 {
+			stargate.PublishToUsers(ctx, s.redis, cannotView, "SPACE_ROOM_DELETE", map[string]interface{}{"room_id": id.Format(rid), "space_id": id.Format(spaceID)}, region)
+		}
+	}
 }

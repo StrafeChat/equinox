@@ -586,6 +586,7 @@ func (s *Service) PutRoomRoleOverride(ctx context.Context, actorID, spaceID, roo
 	}
 	s.invalidateSnapshot(ctx, spaceID)
 	s.publishSpaceEvent(ctx, spaceID, "SPACE_ROOM_OVERRIDE_UPDATE", roomOverrideEventData(o))
+	s.republishRoomVisibility(ctx, spaceID, s.visibilityAffectedRooms(ctx, spaceID, roomID))
 	s.fedRoomChanged(ctx, spaceID, roomID, false)
 	s.audit(ctx, spaceID, actorID, AuditOverrideUpdate, id.Format(roomID)+":role:"+id.Format(roleID), map[string]change{
 		"allow": {New: o.Allow},
@@ -633,6 +634,7 @@ func (s *Service) PutRoomUserOverride(ctx context.Context, actorID, spaceID, roo
 	}
 	s.invalidateSnapshot(ctx, spaceID)
 	s.publishSpaceEvent(ctx, spaceID, "SPACE_ROOM_USER_OVERRIDE_UPDATE", roomUserOverrideEventData(o))
+	s.republishRoomVisibility(ctx, spaceID, s.visibilityAffectedRooms(ctx, spaceID, roomID))
 	s.fedRoomChanged(ctx, spaceID, roomID, false)
 	s.audit(ctx, spaceID, actorID, AuditOverrideUpdate, id.Format(roomID)+":user:"+id.Format(targetUserID), map[string]change{
 		"allow": {New: o.Allow},
@@ -662,6 +664,7 @@ func (s *Service) DeleteRoomRoleOverride(ctx context.Context, actorID, spaceID, 
 		"room_id": id.Format(roomID),
 		"role_id": id.Format(roleID),
 	})
+	s.republishRoomVisibility(ctx, spaceID, s.visibilityAffectedRooms(ctx, spaceID, roomID))
 	s.fedRoomChanged(ctx, spaceID, roomID, false)
 	s.audit(ctx, spaceID, actorID, AuditOverrideDelete, id.Format(roomID)+":role:"+id.Format(roleID), nil, "")
 	return nil
@@ -688,6 +691,7 @@ func (s *Service) DeleteRoomUserOverride(ctx context.Context, actorID, spaceID, 
 		"room_id": id.Format(roomID),
 		"user_id": id.Format(targetUserID),
 	})
+	s.republishRoomVisibility(ctx, spaceID, s.visibilityAffectedRooms(ctx, spaceID, roomID))
 	s.fedRoomChanged(ctx, spaceID, roomID, false)
 	s.audit(ctx, spaceID, actorID, AuditOverrideDelete, id.Format(roomID)+":user:"+id.Format(targetUserID), nil, "")
 	return nil
