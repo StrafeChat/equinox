@@ -155,11 +155,24 @@ func (s *service) storeEmailToken(ctx context.Context, key func(string) string, 
 	return token, nil
 }
 
-// redeemEmailToken resolves and burns a token in one step (GETDEL), so two clicks on the
-// same link cannot both succeed. A missing token is "invalid", any other Redis failure is
-// an error - the two must not be confused or an outage reads as "link expired".
-func (s *service) redeemEmailToken(ctx context.Context, key string, invalid error) (*User, error) {
-	raw, err := s.redis.GetDel(ctx, key).Bytes()
+// redeemEmailToken resolves the account a token points at. When burn is true the token is
+// consumed in the same step (GETDEL) so it can be used exactly once - that is what a password
+// reset needs. When burn is false the token is only read (GET) and survives until its TTL, so
+// the action is idempotent: redeeming the same link again returns the same account rather than
+// "invalid". Verification uses that, because email-security scanners (Outlook SafeLinks, Gmail,
+// antivirus) routinely fetch the link before the human clicks it - a single-use verify link got
+// spent by the scanner, the account was quietly verified, and the person's own click then hit a
+// missing token and read "this link is not valid or has expired". A missing token is "invalid",
+// any other Redis failure is an error - the two must not be confused or an outage reads as
+// "link expired".
+func (s *service) redeemEmailToken(ctx context.Context, key string, invalid error, burn bool) (*User, error) {
+	var raw []byte
+	var err error
+	if burn {
+		raw, err = s.redis.GetDel(ctx, key).Bytes()
+	} else {
+		raw, err = s.redis.Get(ctx, key).Bytes()
+	}
 	if err != nil {
 		if errors.Is(err, redis.Nil) {
 			return nil, invalid
@@ -238,7 +251,10 @@ func (s *service) VerifyEmail(ctx context.Context, token string) (*User, error) 
 	if !validEmailToken(token) {
 		return nil, ErrEmailTokenInvalid
 	}
-	u, err := s.redeemEmailToken(ctx, s.emailVerifyKey(token), ErrEmailTokenInvalid)
+	// burn=false: idempotent. The link may be fetched more than once (a security scanner before
+	// the human, a double-mount, a refresh); every fetch within the TTL should succeed, not just
+	// the first. The token simply expires on its own after emailVerifyTTL.
+	u, err := s.redeemEmailToken(ctx, s.emailVerifyKey(token), ErrEmailTokenInvalid, false)
 	if err != nil {
 		return nil, err
 	}
@@ -309,7 +325,8 @@ func (s *service) ResetPassword(ctx context.Context, token, password string) (*U
 	// Whether the account has a password to reset was settled when the token was issued
 	// (RequestPasswordReset looked the account up uncached); the token's existence is the
 	// proof of that here.
-	u, err := s.redeemEmailToken(ctx, s.passwordResetKey(token), ErrResetTokenInvalid)
+	// burn=true: a reset link is a password in all but name and must work exactly once.
+	u, err := s.redeemEmailToken(ctx, s.passwordResetKey(token), ErrResetTokenInvalid, true)
 	if err != nil {
 		return nil, err
 	}
