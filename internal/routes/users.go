@@ -130,8 +130,9 @@ func SetupUsersRoutes(d Deps) {
 	// /users/@me/relationships
 	r := me.Group("/relationships")
 	r.Get("", relHandler.Get)
-	r.Post("", relHandler.Post)
-	r.Put("/:user_id", relHandler.PutByID)
+	// Anti-spam: friend requests are the other mass-outreach path. 15/min per account.
+	r.Post("", perUserLimiter(15, time.Minute), relHandler.Post)
+	r.Put("/:user_id", perUserLimiter(15, time.Minute), relHandler.PutByID)
 	r.Put("/:user_id/block", relHandler.PutBlock)
 	r.Delete("/:user_id/block", relHandler.DeleteBlock)
 	r.Put("/:user_id/ignore", relHandler.PutIgnore)

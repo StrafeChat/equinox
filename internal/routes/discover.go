@@ -1,6 +1,8 @@
 package routes
 
 import (
+	"time"
+
 	"github.com/StrafeChat/equinox/internal/middleware"
 	"github.com/StrafeChat/equinox/internal/modules/applications"
 	"github.com/StrafeChat/equinox/internal/modules/auth"
@@ -31,9 +33,10 @@ func SetupDiscoverRoutes(d Deps) {
 	h := discover.NewHandler(svc)
 
 	g := d.App.Group("/discover", requireAuth)
-	g.Get("/spaces", h.Spaces)
-	g.Get("/bots", h.Bots)
-	g.Post("/spaces/:id/join", h.JoinSpace)
+	// Directory browsing and joins per account - caps scraping and join-flooding.
+	g.Get("/spaces", perUserLimiter(60, time.Minute), h.Spaces)
+	g.Get("/bots", perUserLimiter(60, time.Minute), h.Bots)
+	g.Post("/spaces/:id/join", perUserLimiter(20, time.Minute), h.JoinSpace)
 
 	d.App.Get("/spaces/:id/discover", requireAuth, h.SpaceStatus)
 	d.App.Put("/spaces/:id/discover", requireAuth, h.SpaceApply)

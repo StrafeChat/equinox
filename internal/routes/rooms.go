@@ -1,6 +1,8 @@
 package routes
 
 import (
+	"time"
+
 	"github.com/StrafeChat/equinox/internal/middleware"
 	"github.com/StrafeChat/equinox/internal/modules/auth"
 	"github.com/StrafeChat/equinox/internal/modules/messages"
@@ -30,11 +32,13 @@ func SetupRoomsRoutes(d Deps) {
 	r.Get("", roomHandler.List)
 	r.Get("/notes", roomHandler.GetNotes)
 	r.Get("/:id", roomHandler.Get)
-	r.Patch("/:id", roomHandler.UpdateRoom)
+	r.Patch("/:id", perUserLimiter(20, time.Minute), roomHandler.UpdateRoom)
 	r.Post("/:id/ack", roomHandler.Ack)
 	r.Patch("/:id/notify-settings", roomHandler.SetNotifySettings)
 	r.Post("/:id/typing", roomHandler.Typing)
-	r.Post("/:id/participants", roomHandler.AddParticipant)
+	// Anti-spam: opening DMs and adding people to groups are how one account reaches many
+	// strangers. 10 new conversations a minute is plenty for a person; a mass-DM script is not.
+	r.Post("/:id/participants", perUserLimiter(20, time.Minute), roomHandler.AddParticipant)
 	r.Delete("/:id/participants/:user_id", roomHandler.RemoveParticipant)
-	r.Post("", roomHandler.CreatePM)
+	r.Post("", perUserLimiter(10, time.Minute), roomHandler.CreatePM)
 }
