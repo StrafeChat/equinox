@@ -28,26 +28,31 @@ type Space struct {
 	SystemRoomFlags       int      `db:"system_room_flags" json:"system_room_flags"`
 	// Birthdays: the text channel opted-in members are wished a happy birthday in, and an
 	// optional custom message template (empty = the client's default greeting).
-	BirthdayChannelID     *int64   `db:"birthday_channel_id" json:"birthday_channel_id,omitempty"`
-	BirthdayMessage       string   `db:"birthday_message" json:"birthday_message,omitempty"`
-	RulesRoomID           *int64   `db:"rules_room_id" json:"rules_room_id,omitempty"`
-	MaxPresences          int      `db:"max_presences" json:"max_presences"`
-	MaxMembers            int      `db:"max_members" json:"max_members"`
-	VanityURLCode         string   `db:"vanity_url_code" json:"vanity_url_code"`
-	PreferredLocale       string   `db:"preferred_locale" json:"preferred_locale"`
-	PublicUpdatesRoomID   *int64   `db:"public_updates_room_id" json:"public_updates_room_id,omitempty"`
-	MaxVideoRoomUsers     int      `db:"max_video_room_users" json:"max_video_room_users"`
-	EveryoneRoleID        int64    `db:"everyone_role_id" json:"everyone_role_id,omitempty"`
+	BirthdayChannelID   *int64 `db:"birthday_channel_id" json:"birthday_channel_id,omitempty"`
+	BirthdayMessage     string `db:"birthday_message" json:"birthday_message,omitempty"`
+	RulesRoomID         *int64 `db:"rules_room_id" json:"rules_room_id,omitempty"`
+	MaxPresences        int    `db:"max_presences" json:"max_presences"`
+	MaxMembers          int    `db:"max_members" json:"max_members"`
+	VanityURLCode       string `db:"vanity_url_code" json:"vanity_url_code"`
+	PreferredLocale     string `db:"preferred_locale" json:"preferred_locale"`
+	PublicUpdatesRoomID *int64 `db:"public_updates_room_id" json:"public_updates_room_id,omitempty"`
+	MaxVideoRoomUsers   int    `db:"max_video_room_users" json:"max_video_room_users"`
+	EveryoneRoleID      int64  `db:"everyone_role_id" json:"everyone_role_id,omitempty"`
 	// Server widget: a public JSON document (GET /spaces/:id/widget.json) with the member
 	// and online counts plus, when WidgetRoomID is set, an invite that never expires, for
 	// embedding a "join us" card outside Strafe. WidgetInviteCode is that invite; it is
 	// created lazily the first time the widget is served and never exposed on the space
 	// payload itself (only through the widget document).
-	WidgetEnabled    bool      `db:"widget_enabled" json:"widget_enabled"`
-	WidgetRoomID     *int64    `db:"widget_room_id" json:"widget_room_id,omitempty"`
-	WidgetInviteCode string    `db:"widget_invite_code" json:"-"`
-	CreatedAt        time.Time `db:"created_at" json:"created_at"`
-	UpdatedAt        time.Time `db:"updated_at" json:"updated_at"`
+	WidgetEnabled    bool   `db:"widget_enabled" json:"widget_enabled"`
+	WidgetRoomID     *int64 `db:"widget_room_id" json:"widget_room_id,omitempty"`
+	WidgetInviteCode string `db:"widget_invite_code" json:"-"`
+	// Light automod, enforced on send with VerificationLevel (see messages/automod.go):
+	// which Automod* rules are on, and the mention cap the mass-mention rule uses (0 =
+	// DefaultAutomodMentionLimit).
+	AutomodFlags        int       `db:"automod_flags" json:"automod_flags"`
+	AutomodMentionLimit int       `db:"automod_mention_limit" json:"automod_mention_limit"`
+	CreatedAt           time.Time `db:"created_at" json:"created_at"`
+	UpdatedAt           time.Time `db:"updated_at" json:"updated_at"`
 	// Federation is set on a mirror of a space another instance hosts (see federation.go);
 	// not stored, filled from the federation mapping on read.
 	Federation *SpaceFederation `db:"-" json:"federation,omitempty"`
@@ -66,6 +71,47 @@ const (
 	DefaultNotifAllMessages  = 0
 	DefaultNotifOnlyMentions = 1
 )
+
+// Verification levels (spaces.verification_level): what a member who holds no role must
+// satisfy before they can send messages in the space. Cumulative, like Discord's (there
+// is no level 4: Strafe has no phone verification). Members with any role, and anyone with
+// Manage Messages or Administrator, are exempt - they are the people the moderators vouch
+// for, and raiders are not.
+const (
+	VerificationNone     = 0 // anyone may talk
+	VerificationLow      = 1 // verified email address
+	VerificationMedium   = 2 // + account older than VerificationAccountAge
+	VerificationHigh     = 3 // + member of the space for VerificationMemberAge
+	MaxVerificationLevel = VerificationHigh
+)
+
+// Automod rules (spaces.automod_flags). Content rules apply to plaintext channels only -
+// the server cannot read an E2EE room; the mention cap applies to declared mentions there.
+const (
+	AutomodRepeatedMessages = 1 << 0 // the same text three times within a minute
+	AutomodInviteLinks      = 1 << 1 // invite links to other spaces (and Discord servers)
+	AutomodMassMentions     = 1 << 2 // more than AutomodMentionLimit distinct user/role mentions
+	automodAll              = AutomodRepeatedMessages | AutomodInviteLinks | AutomodMassMentions
+
+	DefaultAutomodMentionLimit = 5
+	MaxAutomodMentionLimit     = 50
+)
+
+// SendPolicy is what sending into a space channel is gated on, read in one call by the
+// messages module (SpaceChannelAuth.SendPolicy): the space's settings plus the sender's
+// standing. JoinedAt is zero and HasRole false for a non-member; both are left unread when
+// the space has neither a verification level nor automod on.
+type SendPolicy struct {
+	VerificationLevel   int
+	AutomodFlags        int
+	AutomodMentionLimit int
+	JoinedAt            time.Time
+	// HasRole: the member holds a role beyond @everyone (exempt from the verification level).
+	HasRole bool
+}
+
+// Enforced reports whether anything in the policy can refuse a message.
+func (p *SendPolicy) Enforced() bool { return p.VerificationLevel > 0 || p.AutomodFlags != 0 }
 
 // AFKTimeouts are the accepted values for spaces.afk_timeout (seconds) - Discord's set.
 var AFKTimeouts = map[int]bool{60: true, 300: true, 900: true, 1800: true, 3600: true}
@@ -209,6 +255,11 @@ type PatchSpaceInput struct {
 	// template.
 	BirthdayChannelID *string `json:"birthday_channel_id,omitempty"`
 	BirthdayMessage   *string `json:"birthday_message,omitempty"`
+	// Moderation: the verification level (Verification*) and automod (Automod* flags plus
+	// the mention cap, 0 for the default).
+	VerificationLevel   *int `json:"verification_level,omitempty"`
+	AutomodFlags        *int `json:"automod_flags,omitempty"`
+	AutomodMentionLimit *int `json:"automod_mention_limit,omitempty"`
 }
 
 // SpaceInvite is an invite link/code for joining a space. MaxUses 0 = unlimited;

@@ -209,6 +209,12 @@ type FeatureFlags struct {
 	// the pre-beta behaviour. Existing conversations are never re-checked, and blocks are
 	// enforced in both modes.
 	PMPolicy string
+	// BlockDisposableEmail refuses registration with an address at a known throwaway-mail
+	// provider (auth/disposable_domains.txt), on by default; BlockedEmailDomains is the
+	// operator's own additions to that list (EMAIL_BLOCKED_DOMAINS, comma separated; a
+	// domain covers its subdomains).
+	BlockDisposableEmail bool
+	BlockedEmailDomains  []string
 }
 
 // CaptchaConfig configures the registration challenge. It only matters when
@@ -359,6 +365,9 @@ func Load() (*Config, error) {
 			InviteOnly:     getEnvBool("INVITE_ONLY", false),
 			InstanceAdmins: parseIDList(getEnvArray("INSTANCE_ADMINS", nil)),
 			PMPolicy:       strings.ToLower(strings.TrimSpace(getEnvString("PM_POLICY", "shared"))),
+
+			BlockDisposableEmail: getEnvBool("EMAIL_BLOCK_DISPOSABLE", true),
+			BlockedEmailDomains:  cleanDomains(getEnvArray("EMAIL_BLOCKED_DOMAINS", nil)),
 		},
 		Captcha: loadCaptchaConfig(),
 		Voice:   loadVoiceConfig(),

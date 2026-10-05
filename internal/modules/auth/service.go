@@ -25,6 +25,7 @@ var (
 	ErrInviteRequired     = errors.New("an invite code is required to register on this instance")
 	ErrInviteInvalid      = errors.New("that invite code is not valid")
 	ErrEmailInUse         = errors.New("email already in use")
+	ErrDisposableEmail    = errors.New("disposable email addresses cannot be used here - use a permanent address")
 	ErrWeakPassword       = errors.New("password does not meet requirements")
 	ErrPasswordTooLong    = errors.New("password must be at most 72 bytes")
 	ErrInvalidUsername    = errors.New("username must be 2-32 letters, digits, '_', '.' or '-'")
@@ -158,6 +159,11 @@ func (s *service) Register(ctx context.Context, in RegisterInput) (*User, error)
 
 	// Normalize email; zog validates format and required fields.
 	in.Email = strings.ToLower(in.Email)
+	// A throwaway address is how a banned person comes straight back (and how a bot
+	// farm registers in bulk); refused before anything is claimed or spent.
+	if s.emailDomainRefused(in.Email) {
+		return nil, ErrDisposableEmail
+	}
 	in.Username = strings.TrimSpace(in.Username)
 	if !usernameRe.MatchString(in.Username) {
 		return nil, ErrInvalidUsername

@@ -24,12 +24,12 @@ func newInstanceService(d Deps, userRepo auth.UserRepository, sessionRepo auth.S
 	spaceRepo := spaces.NewRepository(d.Scylla)
 	spaceSvc := spaces.NewService(spaceRepo, roomRepo, userRepo, d.Redis, d.Config)
 	svc.SetModeration(instance.ModerationDeps{
-		Repo:     instance.NewModerationRepository(d.Scylla),
-		Users:    userRepo,
-		Sessions: sessionRepo,
-		Spaces:   spaceRepo,
-		Messages: messages.NewRepository(d.Scylla),
-		Rooms:    roomRepo,
+		Repo:      instance.NewModerationRepository(d.Scylla),
+		Users:     userRepo,
+		Sessions:  sessionRepo,
+		Spaces:    spaceRepo,
+		Messages:  messages.NewRepository(d.Scylla),
+		Rooms:     roomRepo,
 		Remover:   spaceSvc,
 		Redis:     d.Redis,
 		Region:    d.Config.Stargate.Region,
@@ -90,6 +90,10 @@ func SetupInstanceRoutes(d Deps) {
 	r.Patch("/users/:id/badges", h.SetBadges)
 	r.Post("/users/:id/recovery_codes", h.RegenerateRecoveryCodes)
 	r.Get("/bans", h.ListBans)
+	// Network bans: enforced on /auth (see instance.Handler.BlockBannedIPs).
+	r.Get("/ip_bans", h.ListIPBans)
+	r.Post("/ip_bans", h.BanIP)
+	r.Delete("/ip_bans", h.UnbanIP)
 
 	r.Get("/spaces/:id", h.GetSpace)
 	r.Patch("/spaces/:id/official", h.SetSpaceOfficial)

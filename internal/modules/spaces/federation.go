@@ -803,6 +803,8 @@ func (s *Service) ApplyMirrorSpace(ctx context.Context, sp *Space) error {
 		"everyone_role_id":              sp.EveryoneRoleID,
 		"widget_enabled":                sp.WidgetEnabled,
 		"widget_room_id":                nullableID(sp.WidgetRoomID),
+		"automod_flags":                 sp.AutomodFlags,
+		"automod_mention_limit":         sp.AutomodMentionLimit,
 		"updated_at":                    sp.UpdatedAt,
 	}
 	if err := s.repo.UpdateSpaceFields(ctx, sp.ID, set); err != nil {

@@ -123,6 +123,11 @@ func (s *Service) banUser(ctx context.Context, actorID, userID int64, in BanInpu
 		exp := now.Add(time.Duration(in.MaxAgeSeconds) * time.Second)
 		b.ExpiresAt = &exp
 	}
+	// Read before the sessions are revoked below - a revoked session is no longer "live".
+	var sessionIPs []string
+	if in.BanIPs {
+		sessionIPs = s.liveSessionIPs(ctx, userID)
+	}
 	if err := s.mod.Repo.CreateBan(ctx, b); err != nil {
 		return nil, err
 	}
@@ -131,6 +136,9 @@ func (s *Service) banUser(ctx context.Context, actorID, userID int64, in BanInpu
 	// again; a session that survives is caught by the next start of the gateway.
 	if err := s.mod.Sessions.RevokeAllForUser(ctx, userID); err != nil {
 		logger.Err("instance", err, map[string]any{"stage": "revoke_sessions", "user_id": userID})
+	}
+	if len(sessionIPs) > 0 {
+		b.BannedIPs = s.banIPs(ctx, actorID, sessionIPs, reason, b.ExpiresAt)
 	}
 	if s.mod.Redis != nil {
 		stargate.PublishToUser(ctx, s.mod.Redis, userID, SessionRevokedEvent, map[string]interface{}{
@@ -687,6 +695,7 @@ func (s *Service) ListAudit(ctx context.Context, actorID int64) ([]AuditEntry, e
 type Stats struct {
 	OpenReports int  `json:"open_reports"`
 	Bans        int  `json:"bans"`
+	IPBans      int  `json:"ip_bans"`
 	Invites     int  `json:"invites"`
 	InviteOnly  bool `json:"invite_only"`
 	// Instance-wide counts. -1 means "could not determine right now" (the count scan
@@ -708,6 +717,10 @@ func (s *Service) GetStats(ctx context.Context, actorID int64) (*Stats, error) {
 	if err != nil {
 		return nil, err
 	}
+	ipBans, err := s.ListIPBans(ctx, actorID)
+	if err != nil {
+		return nil, err
+	}
 	invites, err := s.ListInvites(ctx, actorID)
 	if err != nil {
 		return nil, err
@@ -715,6 +728,7 @@ func (s *Service) GetStats(ctx context.Context, actorID int64) (*Stats, error) {
 	st := &Stats{
 		OpenReports: len(open),
 		Bans:        len(bans),
+		IPBans:      len(ipBans),
 		Invites:     len(invites),
 		InviteOnly:  s.cfg.Flags.InviteOnly,
 		Accounts:    s.cachedCount(ctx, "stats:accounts", s.mod.Repo.CountUsers),

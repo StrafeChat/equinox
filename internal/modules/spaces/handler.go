@@ -72,7 +72,8 @@ func HTTPError(err error) (status int, message string, ok bool) {
 		errors.Is(err, ErrInvalidNotifLevel), errors.Is(err, ErrInvalidSystemFlags), errors.Is(err, ErrInvalidWidgetRoom),
 		errors.Is(err, ErrInvalidInvite), errors.Is(err, ErrInvalidUserLimit), errors.Is(err, ErrInvalidBitrate),
 		errors.Is(err, ErrAlreadyOwner), errors.Is(err, ErrSpaceNameMismatch), errors.Is(err, ErrInvalidBot),
-		errors.Is(err, ErrManagedRole), errors.Is(err, ErrNotLocalUser):
+		errors.Is(err, ErrManagedRole), errors.Is(err, ErrNotLocalUser), errors.Is(err, ErrInvalidVerification),
+		errors.Is(err, ErrInvalidAutomodFlags), errors.Is(err, ErrInvalidMentionLimit):
 		return http.StatusBadRequest, err.Error(), true
 	}
 	return 0, "", false
@@ -262,6 +263,8 @@ func spaceToJSON(s *Space) fiber.Map {
 		"preferred_locale":              s.PreferredLocale,
 		"max_video_room_users":          s.MaxVideoRoomUsers,
 		"widget_enabled":                s.WidgetEnabled,
+		"automod_flags":                 s.AutomodFlags,
+		"automod_mention_limit":         s.AutomodMentionLimit,
 		"created_at":                    s.CreatedAt,
 		"updated_at":                    s.UpdatedAt,
 	}

@@ -33,10 +33,20 @@ const (
 	AuditInviteRevoke  = "invite_revoke"
 	AuditUserBadges    = "user_badges"
 	AuditUserRecovery  = "user_recovery_regen"
+	// IP bans have no numeric target: the entry's target type is TargetIP, its target id
+	// 0 and the CIDR leads the reason field ("10.0.0.0/8: spam farm").
+	AuditIPBan   = "ip_ban"
+	AuditIPUnban = "ip_unban"
+	TargetIP     = "ip"
 
 	MaxReportDetails = 2000
 	MaxBanReason     = 500
 	MaxBanAgeSeconds = 365 * 24 * 60 * 60
+	// The narrowest prefix an IP ban may cover: /8 for IPv4 (a hosting provider's whole
+	// allocation at most) and /32 for IPv6 (one provider's customer block). Anything
+	// wider is a typo that would lock the instance's own users out.
+	MinIPv4BanPrefix = 8
+	MinIPv6BanPrefix = 32
 	// A report queue page. The admin reads newest first; nobody pages through thousands.
 	ReportPageSize = 100
 	AuditPageSize  = 200
@@ -46,22 +56,26 @@ const (
 var ReportReasons = []string{"spam", "harassment", "hate", "sexual", "violence", "illegal", "impersonation", "other"}
 
 var (
-	ErrUserNotFound    = errors.New("user not found")
-	ErrSpaceNotFound   = errors.New("space not found")
-	ErrCannotBanSelf   = errors.New("you cannot ban yourself")
-	ErrCannotBanRemote = errors.New("that account lives on another instance")
+	ErrUserNotFound        = errors.New("user not found")
+	ErrSpaceNotFound       = errors.New("space not found")
+	ErrCannotBanSelf       = errors.New("you cannot ban yourself")
+	ErrCannotBanRemote     = errors.New("that account lives on another instance")
 	ErrRecoveryUnavailable = errors.New("recovery codes are not available on this instance")
-	ErrAlreadyBanned   = errors.New("that account is already banned")
-	ErrNotBanned       = errors.New("that account is not banned")
-	ErrInvalidBan      = errors.New("ban reason must be at most 500 characters and expiry at most a year")
-	ErrReportNotFound  = errors.New("report not found")
-	ErrReportClosed    = errors.New("that report has already been handled")
-	ErrInvalidReport   = errors.New("invalid report")
-	ErrReportSelf      = errors.New("you cannot report yourself")
-	ErrDuplicateReport = errors.New("you already have an open report about this")
-	ErrInvalidAction   = errors.New("unknown resolution action")
-	ErrInvalidQuery    = errors.New("search for an id, an email, name#0001 or a username")
-	ErrInvalidBadges   = errors.New("unknown badge flag")
+	ErrAlreadyBanned       = errors.New("that account is already banned")
+	ErrNotBanned           = errors.New("that account is not banned")
+	ErrInvalidBan          = errors.New("ban reason must be at most 500 characters and expiry at most a year")
+	ErrInvalidCIDR         = errors.New("enter an IP address or a CIDR range such as 203.0.113.0/24")
+	ErrCIDRTooWide         = errors.New("that range is too wide to ban: use at least a /8 (IPv4) or /32 (IPv6)")
+	ErrIPBanExists         = errors.New("that address or range is already banned")
+	ErrIPBanNotFound       = errors.New("that address or range is not banned")
+	ErrReportNotFound      = errors.New("report not found")
+	ErrReportClosed        = errors.New("that report has already been handled")
+	ErrInvalidReport       = errors.New("invalid report")
+	ErrReportSelf          = errors.New("you cannot report yourself")
+	ErrDuplicateReport     = errors.New("you already have an open report about this")
+	ErrInvalidAction       = errors.New("unknown resolution action")
+	ErrInvalidQuery        = errors.New("search for an id, an email, name#0001 or a username")
+	ErrInvalidBadges       = errors.New("unknown badge flag")
 )
 
 // Ban keeps an account off the instance: its sessions are revoked when it is written, and
@@ -72,10 +86,36 @@ type Ban struct {
 	Reason    string     `db:"reason" json:"reason"`
 	CreatedAt time.Time  `db:"created_at" json:"created_at"`
 	ExpiresAt *time.Time `db:"expires_at" json:"expires_at,omitempty"`
+	// BannedIPs lists the ranges BanInput.BanIPs added alongside; only on the response to
+	// the ban itself, never stored.
+	BannedIPs []string `db:"-" json:"banned_ips,omitempty"`
 }
 
 func (b *Ban) Expired(now time.Time) bool {
 	return b.ExpiresAt != nil && !b.ExpiresAt.After(now)
+}
+
+// IPBan keeps a network off the instance: nothing under CIDR may register or sign in while
+// it stands. CIDR is canonical (net.IPNet.String() of the parsed range, so "1.2.3.4" is
+// stored as "1.2.3.4/32" and a host-bit-laden "10.1.2.3/8" as "10.0.0.0/8"). ExpiresAt nil
+// means until lifted.
+type IPBan struct {
+	CIDR      string     `db:"cidr" json:"cidr"`
+	BannedBy  int64      `db:"banned_by" json:"banned_by,string"`
+	Reason    string     `db:"reason" json:"reason"`
+	CreatedAt time.Time  `db:"created_at" json:"created_at"`
+	ExpiresAt *time.Time `db:"expires_at" json:"expires_at,omitempty"`
+}
+
+func (b *IPBan) Expired(now time.Time) bool {
+	return b.ExpiresAt != nil && !b.ExpiresAt.After(now)
+}
+
+type IPBanInput struct {
+	// CIDR is an address ("203.0.113.9", "2001:db8::1") or a range ("203.0.113.0/24").
+	CIDR          string `json:"cidr"`
+	Reason        string `json:"reason"`
+	MaxAgeSeconds int    `json:"max_age_seconds"`
 }
 
 // Report is one user's complaint about a user or a space. RoomID/MessageID are evidence
@@ -134,6 +174,9 @@ type CreateReportInput struct {
 type BanInput struct {
 	Reason        string `json:"reason"`
 	MaxAgeSeconds int    `json:"max_age_seconds"`
+	// BanIPs also bans the public addresses of the account's live sessions, for the same
+	// reason and the same length, so the person cannot simply register again.
+	BanIPs bool `json:"ban_ips"`
 }
 
 // ResolveInput closes a report. Action is one of dismiss, resolve, ban_user (user

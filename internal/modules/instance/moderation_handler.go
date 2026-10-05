@@ -15,13 +15,13 @@ import (
 // moderationError maps the moderation errors; anything unknown falls through to errorFor.
 func moderationError(c fiber.Ctx, err error) error {
 	switch err {
-	case ErrUserNotFound, ErrSpaceNotFound, ErrReportNotFound, ErrNotBanned:
+	case ErrUserNotFound, ErrSpaceNotFound, ErrReportNotFound, ErrNotBanned, ErrIPBanNotFound:
 		return c.Status(http.StatusNotFound).JSON(fiber.Map{"error": err.Error()})
 	case ErrCannotBanSelf, ErrCannotBanRemote, ErrReportSelf:
 		return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": err.Error()})
-	case ErrAlreadyBanned, ErrReportClosed, ErrDuplicateReport:
+	case ErrAlreadyBanned, ErrReportClosed, ErrDuplicateReport, ErrIPBanExists:
 		return c.Status(http.StatusConflict).JSON(fiber.Map{"error": err.Error()})
-	case ErrInvalidBan, ErrInvalidReport, ErrInvalidAction, ErrInvalidQuery, ErrInvalidBadges:
+	case ErrInvalidBan, ErrInvalidReport, ErrInvalidAction, ErrInvalidQuery, ErrInvalidBadges, ErrInvalidCIDR, ErrCIDRTooWide:
 		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	case ErrRecoveryUnavailable, ErrFederationDisabled:
 		return c.Status(http.StatusServiceUnavailable).JSON(fiber.Map{"error": err.Error()})

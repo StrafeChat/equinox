@@ -85,8 +85,8 @@ func SetupAuthRoutes(d Deps) {
 	svc := auth.NewService(d.Config, userRepo, sessionRepo, twoFactorRepo, d.Redis)
 	// Registration needs the instance module to redeem an invite and to hand the first
 	// account its administrator bit. Without this, INVITE_ONLY can only close the door.
+	inst := newInstanceService(d, userRepo, sessionRepo)
 	if setter, ok := svc.(auth.GateSetter); ok {
-		inst := newInstanceService(d, userRepo, sessionRepo)
 		setter.SetInviteGate(inst)
 		setter.SetBanChecker(inst)
 	}
@@ -117,7 +117,10 @@ func SetupAuthRoutes(d Deps) {
 		Expiration: time.Minute,
 	})
 
-	r := d.App.Group("/auth")
+	// A banned network gets a 403 at the door of every auth endpoint - registering and
+	// signing in are the two ways back for a banned person. Nothing else is gated on the
+	// address (see BlockBannedIPs for why).
+	r := d.App.Group("/auth", instance.NewHandler(inst).BlockBannedIPs())
 
 	r.Post("/login", authLimiter, h.Login)
 	r.Post("/register", authLimiter, h.Register)

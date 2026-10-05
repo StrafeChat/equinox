@@ -21,6 +21,7 @@ import (
 	"github.com/StrafeChat/equinox/internal/modules/auth"
 	"github.com/StrafeChat/equinox/internal/modules/permissions"
 	"github.com/StrafeChat/equinox/internal/modules/rooms"
+	"github.com/StrafeChat/equinox/internal/modules/spaces"
 	"github.com/StrafeChat/equinox/internal/nebula"
 	"github.com/StrafeChat/equinox/internal/stargate"
 )
@@ -182,6 +183,12 @@ type SpaceChannelAuth interface {
 	// are not mentionable are skipped unless includeUnmentionable (the sender holds Mention
 	// @everyone, which on Discord also licenses pinging any role).
 	ListSpaceMemberUserIDsByRoles(ctx context.Context, spaceID int64, roleIDs []int64, includeUnmentionable bool) ([]int64, error)
+	// SendPolicy is the space's verification level and automod settings plus the sender's
+	// standing in it, for the gates in automod.go.
+	SendPolicy(ctx context.Context, spaceID, userID int64) (*spaces.SendPolicy, error)
+	// InviteBelongsToSpace: whether an invite code is one of this space's own (the automod
+	// invite-link rule blocks every other).
+	InviteBelongsToSpace(ctx context.Context, code string, spaceID int64) (bool, error)
 }
 
 // Federator relays message events to the other instances whose users share the room.
@@ -542,6 +549,12 @@ func (s *Service) create(ctx context.Context, userID, roomID int64, in *CreateMe
 	if err := s.enforceSlowmode(ctx, userID, roomID, room); err != nil {
 		return nil, err
 	}
+	// Raid protection and automod for a space channel: what the space asks of members
+	// its moderators have not vouched for. Both live in automod.go.
+	policy := s.sendPolicy(ctx, userID, roomID, room)
+	if err := s.enforceVerificationLevel(ctx, userID, policy); err != nil {
+		return nil, err
+	}
 	participants = s.spaceParticipants(ctx, room, participants)
 	e2eeOff := roomE2EEOff(room)
 	var ciphertext, plaintext string
@@ -584,6 +597,10 @@ func (s *Service) create(ctx context.Context, userID, roomID int64, in *CreateMe
 		// Sender lacks the permission: the literal "@everyone"/"@here" text is still
 		// sent as content, it just doesn't notify anyone - matches Discord.
 		mentionEveryone = false
+	}
+	// After the mentions are known (parsed or declared), before anything is written.
+	if err := s.enforceAutomod(ctx, userID, room, policy, plaintext, e2eeOff, mentionUserIDs, mentionRoleIDs); err != nil {
+		return nil, err
 	}
 
 	msgID := id.Next()

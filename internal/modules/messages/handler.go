@@ -74,6 +74,25 @@ func (h *Handler) Create(c fiber.Ctx) error {
 				"retry_after": secs,
 			})
 		}
+		// The space's raid protection / automod said no: the code and detail let the
+		// client phrase it in the user's language.
+		var verr *VerificationError
+		if errors.As(err, &verr) {
+			return c.Status(http.StatusForbidden).JSON(fiber.Map{
+				"error":       verificationMessage(verr),
+				"code":        "verification_level",
+				"requirement": verr.Requirement,
+				"level":       verr.Level,
+			})
+		}
+		var aerr *AutomodError
+		if errors.As(err, &aerr) {
+			return c.Status(http.StatusBadRequest).JSON(fiber.Map{
+				"error": automodMessage(aerr),
+				"code":  "automod_blocked",
+				"rule":  aerr.Rule,
+			})
+		}
 		logger.Err("messages", err, map[string]any{"room_id": roomID})
 		return c.Status(http.StatusInternalServerError).JSON(fiber.Map{"error": "internal error"})
 	}

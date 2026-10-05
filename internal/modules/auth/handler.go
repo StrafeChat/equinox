@@ -172,6 +172,8 @@ func (h *Handler) Register(c fiber.Ctx) error {
 			return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": err.Error(), "code": "invite_invalid"})
 		case ErrEmailInUse:
 			return c.Status(http.StatusConflict).JSON(fiber.Map{"error": "email already in use"})
+		case ErrDisposableEmail:
+			return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": err.Error(), "code": "disposable_email"})
 		case ErrUsernameTaken:
 			return c.Status(http.StatusConflict).JSON(fiber.Map{"error": "username already taken"})
 		case ErrWeakPassword, ErrPasswordTooLong, ErrInvalidUsername:

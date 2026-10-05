@@ -24,6 +24,14 @@ var instanceBansByBucketTable = table.New(table.Metadata{
 	SortKey: []string{"user_id"},
 })
 
+// One partition: every API process reads the whole list into memory (see ipbans.go).
+var instanceIPBansTable = table.New(table.Metadata{
+	Name:    "instance_ip_bans",
+	Columns: []string{"bucket", "cidr", "banned_by", "reason", "created_at", "expires_at"},
+	PartKey: []string{"bucket"},
+	SortKey: []string{"cidr"},
+})
+
 var reportColumns = []string{
 	"id", "reporter_id", "target_type", "target_id", "space_id", "room_id", "message_id",
 	"reason", "details", "status", "created_at", "resolved_by", "resolved_at", "resolution", "resolution_note",
@@ -67,6 +75,11 @@ type ModerationRepository interface {
 	DeleteBan(ctx context.Context, userID int64) error
 	GetBan(ctx context.Context, userID int64) (*Ban, error)
 	ListBans(ctx context.Context) ([]Ban, error)
+
+	// IP bans: CIDR keyed, one partition.
+	CreateIPBan(ctx context.Context, b *IPBan) error
+	DeleteIPBan(ctx context.Context, cidr string) error
+	ListIPBans(ctx context.Context) ([]IPBan, error)
 
 	CreateReport(ctx context.Context, r *Report) error
 	GetReport(ctx context.Context, id int64) (*Report, error)
@@ -131,6 +144,35 @@ func (r *repo) ListBans(ctx context.Context) ([]Ban, error) {
 	q := r.session.Query(stmt, names).WithContext(ctx)
 	defer q.Release()
 	var out []Ban
+	if err := q.Bind(listBucket).SelectRelease(&out); err != nil && err != gocql.ErrNotFound {
+		return nil, err
+	}
+	return out, nil
+}
+
+// --------------------------------------------------------------------------- ip bans ----
+
+func (r *repo) CreateIPBan(ctx context.Context, b *IPBan) error {
+	stmt, names := instanceIPBansTable.Insert()
+	q := r.session.Query(stmt, names).WithContext(ctx)
+	defer q.Release()
+	return q.BindMap(map[string]interface{}{
+		"bucket": listBucket, "cidr": b.CIDR, "banned_by": b.BannedBy, "reason": b.Reason,
+		"created_at": b.CreatedAt, "expires_at": b.ExpiresAt,
+	}).Exec()
+}
+
+func (r *repo) DeleteIPBan(ctx context.Context, cidr string) error {
+	q := r.session.Session.Query("DELETE FROM instance_ip_bans WHERE bucket = ? AND cidr = ?", listBucket, cidr).WithContext(ctx)
+	defer q.Release()
+	return q.Exec()
+}
+
+func (r *repo) ListIPBans(ctx context.Context) ([]IPBan, error) {
+	stmt, names := instanceIPBansTable.Select()
+	q := r.session.Query(stmt, names).WithContext(ctx)
+	defer q.Release()
+	var out []IPBan
 	if err := q.Bind(listBucket).SelectRelease(&out); err != nil && err != gocql.ErrNotFound {
 		return nil, err
 	}

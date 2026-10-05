@@ -21,6 +21,7 @@ var spacesTable = table.New(table.Metadata{
 		"birthday_channel_id", "birthday_message",
 		"preferred_locale", "public_updates_room_id", "max_video_room_users",
 		"everyone_role_id", "widget_enabled", "widget_room_id", "widget_invite_code",
+		"automod_flags", "automod_mention_limit",
 		"created_at", "updated_at",
 	},
 	PartKey: []string{"id"},

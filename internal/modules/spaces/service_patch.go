@@ -14,14 +14,17 @@ import (
 )
 
 var (
-	ErrInvalidSystemRoom  = errors.New("system messages room must be a text room in this space")
-	ErrInvalidAFKRoom     = errors.New("inactive room must be a voice room in this space")
-	ErrInvalidAFKTimeout  = errors.New("inactive timeout must be 1, 5, 15, 30 or 60 minutes")
-	ErrInvalidNotifLevel  = errors.New("default notifications must be 0 (all messages) or 1 (only mentions)")
-	ErrInvalidSystemFlags = errors.New("unknown system message flag")
-	ErrInvalidWidgetRoom  = errors.New("widget invite room must be a text room in this space")
+	ErrInvalidSystemRoom      = errors.New("system messages room must be a text room in this space")
+	ErrInvalidAFKRoom         = errors.New("inactive room must be a voice room in this space")
+	ErrInvalidAFKTimeout      = errors.New("inactive timeout must be 1, 5, 15, 30 or 60 minutes")
+	ErrInvalidNotifLevel      = errors.New("default notifications must be 0 (all messages) or 1 (only mentions)")
+	ErrInvalidSystemFlags     = errors.New("unknown system message flag")
+	ErrInvalidWidgetRoom      = errors.New("widget invite room must be a text room in this space")
 	ErrInvalidBirthdayRoom    = errors.New("birthday channel must be a text room in this space")
 	ErrInvalidBirthdayMessage = errors.New("birthday message must be at most 500 characters")
+	ErrInvalidVerification    = errors.New("verification level must be 0 (none), 1 (verified email), 2 (account older than 5 minutes) or 3 (member for 10 minutes)")
+	ErrInvalidAutomodFlags    = errors.New("unknown automod rule")
+	ErrInvalidMentionLimit    = errors.New("mention limit must be 1-50, or 0 for the default of 5")
 )
 
 const maxBirthdayMessage = 500
@@ -196,11 +199,43 @@ func (s *Service) PatchSpace(ctx context.Context, actorID, spaceID int64, in *Pa
 		}
 	}
 
+	if in.VerificationLevel != nil {
+		lvl := *in.VerificationLevel
+		if lvl < VerificationNone || lvl > MaxVerificationLevel {
+			return nil, ErrInvalidVerification
+		}
+		if lvl != sp.VerificationLevel {
+			set["verification_level"] = lvl
+			diff(changes, "verification_level", sp.VerificationLevel, lvl)
+		}
+	}
+	if in.AutomodFlags != nil {
+		f := *in.AutomodFlags
+		if f < 0 || f&^automodAll != 0 {
+			return nil, ErrInvalidAutomodFlags
+		}
+		if f != sp.AutomodFlags {
+			set["automod_flags"] = f
+			diff(changes, "automod_flags", sp.AutomodFlags, f)
+		}
+	}
+	if in.AutomodMentionLimit != nil {
+		n := *in.AutomodMentionLimit
+		if n < 0 || n > MaxAutomodMentionLimit {
+			return nil, ErrInvalidMentionLimit
+		}
+		if n != sp.AutomodMentionLimit {
+			set["automod_mention_limit"] = n
+			diff(changes, "automod_mention_limit", sp.AutomodMentionLimit, n)
+		}
+	}
+
 	if len(set) == 0 {
 		if in.Name == nil && in.Description == nil && in.SystemRoomID == nil && in.SystemRoomFlags == nil &&
 			in.DefaultMessageNotif == nil && in.AFKRoomID == nil && in.AFKTimeout == nil &&
 			in.WidgetEnabled == nil && in.WidgetRoomID == nil &&
-			in.BirthdayChannelID == nil && in.BirthdayMessage == nil {
+			in.BirthdayChannelID == nil && in.BirthdayMessage == nil &&
+			in.VerificationLevel == nil && in.AutomodFlags == nil && in.AutomodMentionLimit == nil {
 			return nil, ErrNothingToPatch
 		}
 		// Everything supplied already matched: nothing to write, nothing to announce.

@@ -15,13 +15,37 @@ import (
 type fakeModRepo struct {
 	mu         sync.Mutex
 	bans       map[int64]*Ban
+	ipBans     map[string]*IPBan
 	reports    map[int64]*Report
 	audit      []AuditEntry
 	peerPolicy []PeerPolicyEntry
 }
 
 func newFakeModRepo() *fakeModRepo {
-	return &fakeModRepo{bans: map[int64]*Ban{}, reports: map[int64]*Report{}}
+	return &fakeModRepo{bans: map[int64]*Ban{}, ipBans: map[string]*IPBan{}, reports: map[int64]*Report{}}
+}
+
+func (f *fakeModRepo) CreateIPBan(_ context.Context, b *IPBan) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	cp := *b
+	f.ipBans[b.CIDR] = &cp
+	return nil
+}
+func (f *fakeModRepo) DeleteIPBan(_ context.Context, cidr string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	delete(f.ipBans, cidr)
+	return nil
+}
+func (f *fakeModRepo) ListIPBans(_ context.Context) ([]IPBan, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := []IPBan{}
+	for _, b := range f.ipBans {
+		out = append(out, *b)
+	}
+	return out, nil
 }
 
 func (f *fakeModRepo) CreateBan(_ context.Context, b *Ban) error {
