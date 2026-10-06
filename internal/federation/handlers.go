@@ -287,10 +287,13 @@ func (s *Service) messageFromEvent(ctx context.Context, from string, sc *roomSco
 	if err != nil {
 		return nil, ErrInvalidFID
 	}
+	// The emoji the text uses are recorded before the text is read anywhere, so the first
+	// render can already resolve them; mentions come in as <@FID> and leave as local ids.
+	s.recordEmojiRefs(ctx, ev.Emojis)
 	msg := &messages.Message{
 		RoomID:          sc.room.ID,
 		Ciphertext:      ev.Ciphertext,
-		Plaintext:       ev.Plaintext,
+		Plaintext:       s.textFromWire(ctx, ev.Plaintext),
 		MentionEveryone: ev.MentionEveryone,
 		SystemType:      ev.SystemType,
 		SystemPayload:   ev.SystemPayload,
@@ -616,7 +619,8 @@ func (h *Handler) MessageEdit(c fiber.Ctx) error {
 	if msgID == 0 {
 		return c.Status(http.StatusNotFound).JSON(fiber.Map{"error": "message not found"})
 	}
-	if _, err := h.svc.msgSvc.EditFederated(c.Context(), sc.room.ID, msgID, body.Ciphertext, body.Plaintext); err != nil {
+	h.svc.recordEmojiRefs(c.Context(), body.Emojis)
+	if _, err := h.svc.msgSvc.EditFederated(c.Context(), sc.room.ID, msgID, body.Ciphertext, h.svc.textFromWire(c.Context(), body.Plaintext)); err != nil {
 		return fail(c, err, map[string]any{"room_id": sc.room.ID, "message_id": msgID})
 	}
 	return c.SendStatus(http.StatusNoContent)
@@ -792,6 +796,9 @@ func (h *Handler) applyReaction(c fiber.Ctx, remove bool) error {
 	if remove {
 		err = h.svc.msgSvc.RemoveReactionFederated(ctx, sc.room.ID, msgID, uid, body.Emoji)
 	} else {
+		if body.EmojiRef != nil {
+			h.svc.recordEmojiRefs(ctx, []EmojiRef{*body.EmojiRef})
+		}
 		err = h.svc.msgSvc.AddReactionFederated(ctx, sc.room.ID, msgID, uid, body.Emoji)
 	}
 	switch {

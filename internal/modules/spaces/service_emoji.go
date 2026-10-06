@@ -78,6 +78,19 @@ func (s *Service) LookupEmoji(ctx context.Context, emojiID int64) (*SpaceEmojiRe
 	return ref, nil
 }
 
+// RecordForeignEmoji remembers an emoji another instance described - a message or a
+// reaction that reached us used it - so LookupEmoji can render it here. It only ever
+// fills a gap: an id this instance already knows (one of its own spaces' emoji, or a
+// mirrored space's) is left untouched, so a peer can add to what we can show but never
+// change what we have. Stored under space 0, "no space of ours".
+func (s *Service) RecordForeignEmoji(ctx context.Context, ref *SpaceEmojiRef) error {
+	if ref == nil || ref.ID == 0 || ref.URL == "" {
+		return nil
+	}
+	ref.SpaceID = 0
+	return s.repo.InsertEmojiRefIfAbsent(ctx, ref)
+}
+
 // ValidateEmojiName normalises and checks a proposed name.
 func ValidateEmojiName(name string) (string, error) {
 	name = strings.TrimSpace(strings.Trim(strings.TrimSpace(name), ":"))

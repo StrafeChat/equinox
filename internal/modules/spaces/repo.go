@@ -82,6 +82,8 @@ type Repository interface {
 	ListEmojis(ctx context.Context, spaceID int64) ([]SpaceEmoji, error)
 	GetEmoji(ctx context.Context, spaceID, emojiID int64) (*SpaceEmoji, error)
 	GetEmojiByID(ctx context.Context, emojiID int64) (*SpaceEmojiRef, error)
+	// InsertEmojiRefIfAbsent writes a by-id ref only when the id is unknown (LWT).
+	InsertEmojiRefIfAbsent(ctx context.Context, ref *SpaceEmojiRef) error
 	CreateEmoji(ctx context.Context, e *SpaceEmoji) error
 	UpdateEmojiName(ctx context.Context, spaceID, emojiID int64, name string, now time.Time) error
 	DeleteEmoji(ctx context.Context, spaceID, emojiID int64) error
@@ -768,6 +770,16 @@ func (r *repo) GetEmojiByID(ctx context.Context, emojiID int64) (*SpaceEmojiRef,
 		return nil, err
 	}
 	return &e, nil
+}
+
+func (r *repo) InsertEmojiRefIfAbsent(ctx context.Context, ref *SpaceEmojiRef) error {
+	q := r.session.Session.Query(
+		"INSERT INTO space_emoji_by_id (id, space_id, name, url, animated) VALUES (?, ?, ?, ?, ?) IF NOT EXISTS",
+		ref.ID, ref.SpaceID, ref.Name, ref.URL, ref.Animated,
+	).WithContext(ctx)
+	defer q.Release()
+	// The applied flag is not an error either way: a row that exists is the point.
+	return q.Exec()
 }
 
 func (r *repo) CreateEmoji(ctx context.Context, e *SpaceEmoji) error {

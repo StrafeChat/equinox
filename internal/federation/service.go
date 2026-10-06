@@ -433,6 +433,7 @@ func (s *Service) ProfileOf(u *auth.User) Profile {
 		Banner:      u.Banner,
 		Bio:         u.Bio,
 		AboutMe:     u.AboutMe,
+		Pronouns:    u.Pronouns,
 		Bot:         u.Bot,
 	}
 }
@@ -496,6 +497,7 @@ func clampProfile(p Profile) Profile {
 	p.DisplayName = clamp(p.DisplayName, 32)
 	p.Bio = clamp(p.Bio, 190)
 	p.AboutMe = clamp(p.AboutMe, 190)
+	p.Pronouns = clamp(p.Pronouns, 40) // users.maxPronouns
 	p.Avatar = httpOnly(p.Avatar)
 	p.Banner = httpOnly(p.Banner)
 	return p
@@ -531,7 +533,8 @@ func (s *Service) EnsureShadow(ctx context.Context, domain string, p Profile) (*
 		rid := originID
 		u = &auth.User{ID: id.Next(), HomeDomain: domain, RemoteID: &rid, CreatedAt: time.Now().UTC()}
 	} else if u.Username == p.Username && u.DisplayName == p.DisplayName &&
-		u.Avatar == p.Avatar && u.Banner == p.Banner && u.Bio == p.Bio && u.AboutMe == p.AboutMe && u.Bot == p.Bot {
+		u.Avatar == p.Avatar && u.Banner == p.Banner && u.Bio == p.Bio && u.AboutMe == p.AboutMe &&
+		u.Pronouns == p.Pronouns && u.Bot == p.Bot {
 		return u, nil
 	}
 	u.Username = p.Username
@@ -540,6 +543,7 @@ func (s *Service) EnsureShadow(ctx context.Context, domain string, p Profile) (*
 	u.Banner = p.Banner
 	u.Bio = p.Bio
 	u.AboutMe = p.AboutMe
+	u.Pronouns = p.Pronouns
 	u.Bot = p.Bot
 	if u.DisplayName == "" {
 		u.DisplayName = u.Username
@@ -836,7 +840,8 @@ func (s *Service) messageEvent(ctx context.Context, ref RoomRef, m *messages.Mes
 		Room:            ref,
 		Message:         s.messageRef(ctx, m.RoomID, m.ID),
 		Ciphertext:      m.Ciphertext,
-		Plaintext:       m.Plaintext,
+		Plaintext:       s.textToWire(ctx, m.Plaintext),
+		Emojis:          s.emojiRefs(ctx, m.Plaintext),
 		MentionEveryone: m.MentionEveryone,
 		Attachments:     m.Attachments(),
 		SystemType:      m.SystemType,
@@ -897,7 +902,7 @@ func (s *Service) AfterMessageEdited(ctx context.Context, roomID int64, particip
 	if err != nil {
 		return
 	}
-	body := MessageEdit{Room: ref, Message: s.messageRef(ctx, roomID, m.ID), Ciphertext: m.Ciphertext, Plaintext: m.Plaintext}
+	body := MessageEdit{Room: ref, Message: s.messageRef(ctx, roomID, m.ID), Ciphertext: m.Ciphertext, Plaintext: s.textToWire(ctx, m.Plaintext), Emojis: s.emojiRefs(ctx, m.Plaintext)}
 	s.fanOut(ctx, targets, http.MethodPatch, "/rooms/messages", body)
 }
 
@@ -986,7 +991,7 @@ func (s *Service) relayReaction(ctx context.Context, path string, roomID int64, 
 	if u, _ := s.users.GetByID(ctx, userID); u != nil {
 		user = s.FIDOf(u)
 	}
-	body := ReactionEvent{Room: ref, Message: s.messageRef(ctx, roomID, msgID), User: user, Emoji: emoji}
+	body := ReactionEvent{Room: ref, Message: s.messageRef(ctx, roomID, msgID), User: user, Emoji: emoji, EmojiRef: s.emojiRefFor(ctx, emoji)}
 	s.fanOut(ctx, targets, http.MethodPost, path, body)
 }
 

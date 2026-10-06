@@ -213,6 +213,8 @@ type SpaceMessageRequest struct {
 	MentionRoles    []string              `json:"mention_roles,omitempty"`
 	MentionEveryone bool                  `json:"mention_everyone,omitempty"`
 	Attachments     []messages.Attachment `json:"attachments,omitempty"`
+	// Emojis describes the custom emoji the text uses; mentions in it are <@FID> (content.go).
+	Emojis []EmojiRef `json:"emojis,omitempty"`
 }
 
 // SpaceMessageEditRequest: PATCH /spaces/messages.
@@ -222,6 +224,7 @@ type SpaceMessageEditRequest struct {
 	User       string     `json:"user"`
 	Ciphertext string     `json:"ciphertext,omitempty"`
 	Plaintext  string     `json:"plaintext,omitempty"`
+	Emojis     []EmojiRef `json:"emojis,omitempty"`
 }
 
 // SpaceMessageRequestRef: POST /spaces/messages/delete and /spaces/messages/get.
@@ -238,14 +241,40 @@ type SpaceReactionReply struct {
 // SpaceMessagesQuery: POST /spaces/messages/list - a page of a channel's history as the
 // asking member may see it.
 type SpaceMessagesQuery struct {
-	Room   RoomRef `json:"room"`
-	User   string  `json:"user"`
-	Before string  `json:"before,omitempty"`
-	Limit  int     `json:"limit,omitempty"`
+	Room RoomRef `json:"room"`
+	User string  `json:"user"`
+	// At most one of Before / After / Around (origin message ids): the page below a
+	// message, the page above one (oldest-first), or the window around one - the same
+	// three cursors GET /rooms/:id/messages takes.
+	Before string `json:"before,omitempty"`
+	After  string `json:"after,omitempty"`
+	Around string `json:"around,omitempty"`
+	Limit  int    `json:"limit,omitempty"`
 }
 
 type SpaceMessagesReply struct {
 	Messages []MessageEvent `json:"messages"`
+}
+
+// SpaceSearchQuery: POST /spaces/messages/search - search a hosted space's text channels
+// (or one of them, Room) as the asking member may read them. From and Mentions are FIDs.
+type SpaceSearchQuery struct {
+	Space    SpaceRef `json:"space"`
+	Room     *RoomRef `json:"room,omitempty"`
+	User     string   `json:"user"`
+	Query    string   `json:"query,omitempty"`
+	From     string   `json:"from,omitempty"`
+	Mentions string   `json:"mentions,omitempty"`
+	Has      string   `json:"has,omitempty"`
+	Before   string   `json:"before,omitempty"`
+	Limit    int      `json:"limit,omitempty"`
+}
+
+type SpaceSearchReply struct {
+	Messages       []MessageEvent `json:"messages"`
+	NextBefore     string         `json:"next_before,omitempty"`
+	RoomsSearched  int            `json:"rooms_searched"`
+	EncryptedRooms int            `json:"encrypted_rooms"`
 }
 
 // Origin → mirrors.
@@ -1072,7 +1101,8 @@ func (s *Service) CreateRemote(ctx context.Context, origin string, room *rooms.R
 		return nil, err
 	}
 	req := SpaceMessageRequest{
-		Room: ref, User: s.FIDOf(user), Ciphertext: in.Ciphertext, Plaintext: in.Plaintext,
+		Room: ref, User: s.FIDOf(user), Ciphertext: in.Ciphertext, Plaintext: s.textToWire(ctx, in.Plaintext),
+		Emojis:       s.emojiRefs(ctx, in.Plaintext),
 		MentionRoles: in.MentionRoles, MentionEveryone: in.MentionEveryone, Attachments: attachments,
 	}
 	if in.SenderDeviceID != 0 {
@@ -1105,12 +1135,16 @@ func (s *Service) EditRemote(ctx context.Context, origin string, room *rooms.Roo
 	if err != nil {
 		return nil, err
 	}
-	req := SpaceMessageEditRequest{Room: ref, Message: s.messageRef(ctx, room.ID, msgID), User: s.FIDOf(user), Ciphertext: in.Ciphertext, Plaintext: in.Plaintext}
+	req := SpaceMessageEditRequest{
+		Room: ref, Message: s.messageRef(ctx, room.ID, msgID), User: s.FIDOf(user),
+		Ciphertext: in.Ciphertext, Plaintext: s.textToWire(ctx, in.Plaintext), Emojis: s.emojiRefs(ctx, in.Plaintext),
+	}
 	var reply MessageEvent
 	if _, err := s.client.Do(ctx, origin, http.MethodPatch, "/spaces/messages", req, &reply); err != nil {
 		return nil, messageOriginError(err, origin, "/spaces/messages")
 	}
-	updated, err := s.msgSvc.EditFederated(ctx, room.ID, msgID, reply.Ciphertext, reply.Plaintext)
+	s.recordEmojiRefs(ctx, reply.Emojis)
+	updated, err := s.msgSvc.EditFederated(ctx, room.ID, msgID, reply.Ciphertext, s.textFromWire(ctx, reply.Plaintext))
 	if errors.Is(err, messages.ErrMessageNotFound) {
 		// Edited something this instance never stored (pre-join history): hand back the
 		// origin's copy as-is.
@@ -1152,7 +1186,7 @@ func (s *Service) ReactRemote(ctx context.Context, origin string, room *rooms.Ro
 	if remove {
 		path = "/spaces/reactions/delete"
 	}
-	req := ReactionEvent{Room: ref, Message: s.messageRef(ctx, room.ID, msgID), User: s.FIDOf(user), Emoji: emoji}
+	req := ReactionEvent{Room: ref, Message: s.messageRef(ctx, room.ID, msgID), User: s.FIDOf(user), Emoji: emoji, EmojiRef: s.emojiRefFor(ctx, emoji)}
 	var reply SpaceReactionReply
 	if _, err := s.client.Do(ctx, origin, http.MethodPost, path, req, &reply); err != nil {
 		return nil, messageOriginError(err, origin, path)
@@ -1171,6 +1205,26 @@ func (s *Service) ReactRemote(ctx context.Context, origin string, room *rooms.Ro
 }
 
 func (s *Service) ListRemote(ctx context.Context, origin string, room *rooms.Room, userID int64, beforeID *int64, limit int) ([]messages.Message, map[int64][]messages.ReactionSummary, error) {
+	q := SpaceMessagesQuery{Limit: limit}
+	if beforeID != nil {
+		q.Before = id.Format(*beforeID)
+	}
+	return s.historyRemote(ctx, origin, room, userID, q)
+}
+
+// ListAfterRemote / ListAroundRemote: the other two history cursors (jump-to-message and
+// reading downward out of a jumped-to window), served by the origin like ListRemote.
+func (s *Service) ListAfterRemote(ctx context.Context, origin string, room *rooms.Room, userID, afterID int64, limit int) ([]messages.Message, map[int64][]messages.ReactionSummary, error) {
+	return s.historyRemote(ctx, origin, room, userID, SpaceMessagesQuery{After: id.Format(afterID), Limit: limit})
+}
+
+func (s *Service) ListAroundRemote(ctx context.Context, origin string, room *rooms.Room, userID, aroundID int64, limit int) ([]messages.Message, map[int64][]messages.ReactionSummary, error) {
+	return s.historyRemote(ctx, origin, room, userID, SpaceMessagesQuery{Around: id.Format(aroundID), Limit: limit})
+}
+
+// historyRemote asks the origin for a page of a hosted channel as the local member, and
+// keeps a copy of what came back.
+func (s *Service) historyRemote(ctx context.Context, origin string, room *rooms.Room, userID int64, req SpaceMessagesQuery) ([]messages.Message, map[int64][]messages.ReactionSummary, error) {
 	user, err := s.users.GetByID(ctx, userID)
 	if err != nil || user == nil {
 		return nil, nil, messages.ErrNotParticipant
@@ -1179,10 +1233,8 @@ func (s *Service) ListRemote(ctx context.Context, origin string, room *rooms.Roo
 	if err != nil {
 		return nil, nil, err
 	}
-	req := SpaceMessagesQuery{Room: ref, User: s.FIDOf(user), Limit: limit}
-	if beforeID != nil {
-		req.Before = id.Format(*beforeID)
-	}
+	req.Room = ref
+	req.User = s.FIDOf(user)
 	var reply SpaceMessagesReply
 	if _, err := s.client.Do(ctx, origin, http.MethodPost, "/spaces/messages/list", req, &reply); err != nil {
 		return nil, nil, messageOriginError(err, origin, "/spaces/messages/list")
@@ -1450,8 +1502,9 @@ func (h *Handler) SpaceMessageCreate(c fiber.Ctx) error {
 		return spaceFail(c, err, nil)
 	}
 	ctx := WithExcludedPeer(c.Context(), RequesterDomain(c))
+	h.svc.recordEmojiRefs(ctx, body.Emojis)
 	in := &messages.CreateMessageInput{
-		Ciphertext: body.Ciphertext, Plaintext: body.Plaintext, MentionEveryone: body.MentionEveryone,
+		Ciphertext: body.Ciphertext, Plaintext: h.svc.textFromWire(ctx, body.Plaintext), MentionEveryone: body.MentionEveryone,
 	}
 	if body.SenderDeviceID != "" {
 		if did, err := id.Parse(body.SenderDeviceID); err == nil {
@@ -1502,7 +1555,8 @@ func (h *Handler) SpaceMessageEdit(c fiber.Ctx) error {
 		return c.Status(http.StatusNotFound).JSON(fiber.Map{"error": "message not found"})
 	}
 	ctx := WithExcludedPeer(c.Context(), RequesterDomain(c))
-	updated, err := h.svc.msgSvc.Edit(ctx, actor.ID, sc.room.ID, msgID, &messages.EditMessageInput{Ciphertext: body.Ciphertext, Plaintext: body.Plaintext})
+	h.svc.recordEmojiRefs(ctx, body.Emojis)
+	updated, err := h.svc.msgSvc.Edit(ctx, actor.ID, sc.room.ID, msgID, &messages.EditMessageInput{Ciphertext: body.Ciphertext, Plaintext: h.svc.textFromWire(ctx, body.Plaintext)})
 	if err != nil {
 		if errors.Is(err, messages.ErrForbidden) {
 			return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": "cannot edit this message"})
@@ -1555,6 +1609,9 @@ func (h *Handler) spaceReaction(c fiber.Ctx, remove bool) error {
 	if remove {
 		summary, err = h.svc.msgSvc.RemoveReaction(ctx, actor.ID, sc.room.ID, msgID, body.Emoji)
 	} else {
+		if body.EmojiRef != nil {
+			h.svc.recordEmojiRefs(ctx, []EmojiRef{*body.EmojiRef})
+		}
 		summary, err = h.svc.msgSvc.AddReaction(ctx, actor.ID, sc.room.ID, msgID, body.Emoji)
 	}
 	if err != nil {
@@ -1579,18 +1636,43 @@ func (h *Handler) SpaceMessagesList(c fiber.Ctx) error {
 	if err != nil {
 		return spaceFail(c, err, nil)
 	}
-	var before *int64
-	if body.Before != "" {
-		if b, err := id.Parse(body.Before); err == nil {
-			before = &b
-		}
-	}
 	limit := body.Limit
 	if limit <= 0 || limit > maxHistoryPage {
 		limit = 50
 	}
 	ctx := c.Context()
-	msgs, reactions, err := h.svc.msgSvc.ListWithReactions(ctx, actor.ID, sc.room.ID, before, limit)
+	// The cursor ids are the origin's own (channels keep them everywhere), so they are
+	// local ids here.
+	cursor := func(raw string) *int64 {
+		if raw == "" {
+			return nil
+		}
+		v, err := id.Parse(raw)
+		if err != nil {
+			return nil
+		}
+		return &v
+	}
+	var (
+		msgs      []messages.Message
+		reactions map[int64][]messages.ReactionSummary
+	)
+	switch {
+	case body.Around != "":
+		if around := cursor(body.Around); around != nil {
+			msgs, reactions, err = h.svc.msgSvc.ListAroundWithReactions(ctx, actor.ID, sc.room.ID, *around, limit)
+		} else {
+			return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "invalid around cursor"})
+		}
+	case body.After != "":
+		if after := cursor(body.After); after != nil {
+			msgs, reactions, err = h.svc.msgSvc.ListAfterWithReactions(ctx, actor.ID, sc.room.ID, *after, limit)
+		} else {
+			return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "invalid after cursor"})
+		}
+	default:
+		msgs, reactions, err = h.svc.msgSvc.ListWithReactions(ctx, actor.ID, sc.room.ID, cursor(body.Before), limit)
+	}
 	if err != nil {
 		return spaceFail(c, err, map[string]any{"room_id": sc.room.ID})
 	}

@@ -213,7 +213,16 @@ type Federator interface {
 	DeleteRemote(ctx context.Context, origin string, room *rooms.Room, userID, msgID int64) error
 	ReactRemote(ctx context.Context, origin string, room *rooms.Room, userID, msgID int64, emoji string, remove bool) ([]ReactionSummary, error)
 	ListRemote(ctx context.Context, origin string, room *rooms.Room, userID int64, beforeID *int64, limit int) ([]Message, map[int64][]ReactionSummary, error)
+	ListAfterRemote(ctx context.Context, origin string, room *rooms.Room, userID, afterID int64, limit int) ([]Message, map[int64][]ReactionSummary, error)
+	ListAroundRemote(ctx context.Context, origin string, room *rooms.Room, userID, aroundID int64, limit int) ([]Message, map[int64][]ReactionSummary, error)
 	GetRemote(ctx context.Context, origin string, room *rooms.Room, userID, msgID int64) (*Message, []ReactionSummary, error)
+	// SearchRemote / SearchSpaceRemote run a search on the origin as the local member: a
+	// mirror only holds what was relayed since one of its members joined, so searching
+	// its own copy would silently miss everything older.
+	SearchRemote(ctx context.Context, origin string, room *rooms.Room, userID int64, opts *SearchOptions) (*SearchResult, error)
+	SearchSpaceRemote(ctx context.Context, origin string, spaceID, userID int64, opts *SpaceSearchOptions) (*SpaceSearchResult, error)
+	// RemoteSpaceOrigin names the instance hosting a space when it is not this one.
+	RemoteSpaceOrigin(ctx context.Context, spaceID int64) string
 }
 
 // OriginError is the hosting instance's refusal of a forwarded write, passed through to
@@ -758,8 +767,18 @@ func (s *Service) reactionsFor(ctx context.Context, roomID int64, msgs []Message
 // resuming downward infinite scroll out of a jumped-to window. Served from the local store (a
 // mirrored room's relayed copy), so there's no origin round-trip on every scroll step.
 func (s *Service) ListAfterWithReactions(ctx context.Context, userID, roomID, afterID int64, limit int) ([]Message, map[int64][]ReactionSummary, error) {
-	if _, _, err := s.authorize(ctx, userID, roomID, permissions.PermViewRoom, permissions.PermReadMessageHistory); err != nil {
+	room, _, err := s.authorize(ctx, userID, roomID, permissions.PermViewRoom, permissions.PermReadMessageHistory)
+	if err != nil {
 		return nil, nil, err
+	}
+	// A channel hosted elsewhere: the origin has the whole history, this copy only what
+	// was relayed since a local member joined (same fallback rule as ListWithReactions).
+	if origin := s.remoteOrigin(ctx, room); origin != "" {
+		msgs, reactions, rerr := s.federator.ListAfterRemote(ctx, origin, room, userID, afterID, limit)
+		if rerr == nil {
+			return msgs, reactions, nil
+		}
+		logger.Warn("messages", "history after %d for room %d from %s: %v (serving the local copy)", afterID, roomID, origin, rerr)
 	}
 	msgs, err := s.repo.ListAfter(ctx, roomID, afterID, limit)
 	if err != nil {
@@ -774,11 +793,19 @@ func (s *Service) ListAfterWithReactions(ctx context.Context, userID, roomID, af
 // from the local store like ListAfterWithReactions. A deleted/absent target just yields the
 // messages that surround where it was.
 func (s *Service) ListAroundWithReactions(ctx context.Context, userID, roomID, aroundID int64, limit int) ([]Message, map[int64][]ReactionSummary, error) {
-	if _, _, err := s.authorize(ctx, userID, roomID, permissions.PermViewRoom, permissions.PermReadMessageHistory); err != nil {
+	room, _, err := s.authorize(ctx, userID, roomID, permissions.PermViewRoom, permissions.PermReadMessageHistory)
+	if err != nil {
 		return nil, nil, err
 	}
 	if limit <= 0 || limit > 100 {
 		limit = 50
+	}
+	if origin := s.remoteOrigin(ctx, room); origin != "" {
+		msgs, reactions, rerr := s.federator.ListAroundRemote(ctx, origin, room, userID, aroundID, limit)
+		if rerr == nil {
+			return msgs, reactions, nil
+		}
+		logger.Warn("messages", "history around %d for room %d from %s: %v (serving the local copy)", aroundID, roomID, origin, rerr)
 	}
 	half := limit / 2
 	older, err := s.repo.List(ctx, roomID, &aroundID, half) // newest-first, closest to target first

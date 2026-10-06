@@ -21,7 +21,17 @@ type Profile struct {
 	Banner      string `json:"banner,omitempty"`
 	Bio         string `json:"bio,omitempty"`
 	AboutMe     string `json:"about_me,omitempty"`
+	Pronouns    string `json:"pronouns,omitempty"`
 	Bot         bool   `json:"bot,omitempty"`
+}
+
+// EmojiRef describes a custom emoji an event uses, so an instance that has never seen
+// the emoji's space can still render it (see content.go). The id is the emoji's own.
+type EmojiRef struct {
+	ID       string `json:"id"`
+	Name     string `json:"name"`
+	URL      string `json:"url"`
+	Animated bool   `json:"animated,omitempty"`
 }
 
 type RoomRef struct {
@@ -84,10 +94,12 @@ type MessageEvent struct {
 	MentionRoles    []string              `json:"mention_roles,omitempty"` // space channels: the origin's role ids
 	MentionEveryone bool                  `json:"mention_everyone,omitempty"`
 	Attachments     []messages.Attachment `json:"attachments,omitempty"`
-	SystemType      string                `json:"system_type,omitempty"`
-	SystemPayload   string                `json:"system_payload,omitempty"`
-	CreatedAt       time.Time             `json:"created_at"`
-	UpdatedAt       time.Time             `json:"updated_at,omitempty"`
+	// Emojis describes the custom emoji the text uses; mentions in the text are <@FID>.
+	Emojis        []EmojiRef `json:"emojis,omitempty"`
+	SystemType    string     `json:"system_type,omitempty"`
+	SystemPayload string     `json:"system_payload,omitempty"`
+	CreatedAt     time.Time  `json:"created_at"`
+	UpdatedAt     time.Time  `json:"updated_at,omitempty"`
 	// Reactions is set on history read from a space's origin (as the asking user sees
 	// them); never on relays.
 	Reactions []messages.ReactionSummary `json:"reactions,omitempty"`
@@ -99,6 +111,7 @@ type MessageEdit struct {
 	Message    MessageRef `json:"message"`
 	Ciphertext string     `json:"ciphertext,omitempty"`
 	Plaintext  string     `json:"plaintext,omitempty"`
+	Emojis     []EmojiRef `json:"emojis,omitempty"`
 }
 
 // MessageDelete: POST /rooms/messages/delete.
@@ -109,14 +122,14 @@ type MessageDelete struct {
 
 // ReactionEvent: POST /rooms/reactions and POST /rooms/reactions/delete - a user on the
 // sending instance reacted to (or withdrew a reaction from) a message in a shared room.
-// A "custom:<id>" emoji is the origin's custom emoji id, which the receiving client can
-// only render if it knows that emoji - the same as a local reaction with an emoji from a
-// space the viewer is not in.
+// A "custom:<id>" emoji is a custom emoji id; EmojiRef describes it so the receiving
+// instance can render it even when it has never seen the emoji's space (content.go).
 type ReactionEvent struct {
-	Room    RoomRef    `json:"room"`
-	Message MessageRef `json:"message"`
-	User    string     `json:"user"` // FID, must belong to the requesting instance
-	Emoji   string     `json:"emoji"`
+	Room     RoomRef    `json:"room"`
+	Message  MessageRef `json:"message"`
+	User     string     `json:"user"` // FID, must belong to the requesting instance
+	Emoji    string     `json:"emoji"`
+	EmojiRef *EmojiRef  `json:"emoji_ref,omitempty"`
 }
 
 // ProfileUpdate: POST /users/update - a user on the sending instance changed their profile.

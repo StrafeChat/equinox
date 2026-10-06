@@ -55,6 +55,7 @@ func SetupFederationRoutes(d Deps) {
 	g.Post("/spaces/messages/delete", s2s, h.SpaceMessageDelete)
 	g.Post("/spaces/messages/list", s2s, h.SpaceMessagesList)
 	g.Post("/spaces/messages/get", s2s, h.SpaceMessageGet)
+	g.Post("/spaces/messages/search", s2s, h.SpaceMessagesSearch)
 	g.Post("/spaces/reactions", s2s, h.SpaceReactionAdd)
 	g.Post("/spaces/reactions/delete", s2s, h.SpaceReactionRemove)
 	// Management of a space hosted here by a member elsewhere, and a mirror's resync.

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/StrafeChat/equinox/internal/logger"
 	"github.com/StrafeChat/equinox/internal/modules/permissions"
 	"github.com/StrafeChat/equinox/internal/modules/rooms"
 	"github.com/StrafeChat/equinox/internal/safego"
@@ -112,6 +113,15 @@ func (s *Service) SearchMessages(ctx context.Context, userID, roomID int64, opts
 	if !roomE2EEOff(room) {
 		return &SearchResult{Searchable: false}, nil
 	}
+	// A channel hosted elsewhere is searched there: this copy only holds what was relayed
+	// since a local member joined. The origin being down falls back to that copy.
+	if origin := s.remoteOrigin(ctx, room); origin != "" {
+		res, rerr := s.federator.SearchRemote(ctx, origin, room, userID, opts)
+		if rerr == nil {
+			return res, nil
+		}
+		logger.Warn("messages", "search in room %d on %s: %v (searching the local copy)", roomID, origin, rerr)
+	}
 	limit := searchLimit(opts.Limit)
 	q := strings.ToLower(strings.TrimSpace(opts.Query))
 	out, floor, err := s.scanRoom(ctx, roomID, opts, q, opts.BeforeID, limit, searchScanCap)
@@ -208,6 +218,16 @@ func (s *Service) SearchSpaceMessages(ctx context.Context, userID, spaceID int64
 	}
 	if !member {
 		return nil, ErrNotParticipant
+	}
+	// A space hosted elsewhere is searched on its origin (see SearchMessages).
+	if s.federator != nil {
+		if origin := s.federator.RemoteSpaceOrigin(ctx, spaceID); origin != "" {
+			res, rerr := s.federator.SearchSpaceRemote(ctx, origin, spaceID, userID, opts)
+			if rerr == nil {
+				return res, nil
+			}
+			logger.Warn("messages", "search in space %d on %s: %v (searching the local copy)", spaceID, origin, rerr)
+		}
 	}
 	rows, err := s.rooms.ListBySpace(ctx, spaceID)
 	if err != nil {
