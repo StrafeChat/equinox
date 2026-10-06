@@ -88,6 +88,7 @@ func SetupInstanceRoutes(d Deps) {
 	r.Post("/users/:id/ban", h.BanUser)
 	r.Delete("/users/:id/ban", h.UnbanUser)
 	r.Patch("/users/:id/badges", h.SetBadges)
+	r.Patch("/users/:id/email", h.SetEmail)
 	r.Post("/users/:id/recovery_codes", h.RegenerateRecoveryCodes)
 	r.Get("/bans", h.ListBans)
 	// Network bans: enforced on /auth (see instance.Handler.BlockBannedIPs).

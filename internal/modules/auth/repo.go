@@ -57,6 +57,9 @@ type UserRepository interface {
 	// SetEmailVerified records that the account's address was confirmed through a link
 	// sent to it (or disproved - a future address change clears it).
 	SetEmailVerified(ctx context.Context, userID int64, verified bool) error
+	// UpdateEmail moves the account to a new address, claiming it the way Create does
+	// (ErrEmailInUse when another account holds it) and releasing the old one.
+	UpdateEmail(ctx context.Context, userID int64, oldEmail, newEmail string) error
 	// SetPassword replaces the bcrypt hash. Sessions are the caller's business: a reset
 	// revokes them, a routine change may not.
 	SetPassword(ctx context.Context, userID int64, hash string) error
@@ -464,6 +467,30 @@ func (r *scyllaUserRepo) SetEmailVerified(ctx context.Context, userID int64, ver
 	stmt, names := userTable.Update("verified_email", "updated_at")
 	q := r.session.Query(stmt, names).WithContext(ctx)
 	return q.Bind(verified, time.Now().UTC(), userID).ExecRelease()
+}
+
+// UpdateEmail claims the new address first (a lightweight transaction, so two accounts can
+// never end up with it), then rewrites the row and releases the old claim. A failure after
+// the claim gives it back, so a half-done change never leaves a dead address reserved.
+func (r *scyllaUserRepo) UpdateEmail(ctx context.Context, userID int64, oldEmail, newEmail string) error {
+	applied, err := r.claim(ctx,
+		"INSERT INTO users_by_email (email, user_id) VALUES (?, ?) IF NOT EXISTS",
+		newEmail, userID)
+	if err != nil {
+		return err
+	}
+	if !applied {
+		return ErrEmailInUse
+	}
+	stmt, names := userTable.Update("email", "updated_at")
+	if err := r.session.Query(stmt, names).WithContext(ctx).Bind(newEmail, time.Now().UTC(), userID).ExecRelease(); err != nil {
+		r.release(ctx, "DELETE FROM users_by_email WHERE email = ?", newEmail)
+		return err
+	}
+	if oldEmail != "" && oldEmail != newEmail {
+		r.release(ctx, "DELETE FROM users_by_email WHERE email = ?", oldEmail)
+	}
+	return nil
 }
 
 func (r *scyllaUserRepo) SetPassword(ctx context.Context, userID int64, hash string) error {

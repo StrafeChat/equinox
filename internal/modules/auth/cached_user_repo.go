@@ -348,6 +348,14 @@ func (r *CachedUserRepository) SetTOTP(ctx context.Context, userID int64, secret
 	return nil
 }
 
+func (r *CachedUserRepository) UpdateEmail(ctx context.Context, userID int64, oldEmail, newEmail string) error {
+	if err := r.repo.UpdateEmail(ctx, userID, oldEmail, newEmail); err != nil {
+		return err
+	}
+	r.invalidateUser(context.Background(), userID)
+	return nil
+}
+
 func (r *CachedUserRepository) SetEmailVerified(ctx context.Context, userID int64, verified bool) error {
 	if err := r.repo.SetEmailVerified(ctx, userID, verified); err != nil {
 		return err

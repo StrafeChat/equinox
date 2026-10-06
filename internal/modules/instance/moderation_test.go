@@ -211,7 +211,10 @@ func (f *fakeUsers) GetByRemote(context.Context, string, int64) (*auth.User, err
 }
 func (f *fakeUsers) SetTOTP(context.Context, int64, string, bool) error  { return nil }
 func (f *fakeUsers) SetEmailVerified(context.Context, int64, bool) error { return nil }
-func (f *fakeUsers) SetPassword(context.Context, int64, string) error    { return nil }
+func (f *fakeUsers) UpdateEmail(context.Context, int64, string, string) error {
+	return nil
+}
+func (f *fakeUsers) SetPassword(context.Context, int64, string) error { return nil }
 
 type fakeSessions struct{ revoked []int64 }
 

@@ -33,6 +33,7 @@ const (
 	AuditInviteRevoke  = "invite_revoke"
 	AuditUserBadges    = "user_badges"
 	AuditUserRecovery  = "user_recovery_regen"
+	AuditUserEmail     = "user_email"
 	// IP bans have no numeric target: the entry's target type is TargetIP, its target id
 	// 0 and the CIDR leads the reason field ("10.0.0.0/8: spam farm").
 	AuditIPBan   = "ip_ban"
@@ -65,6 +66,9 @@ var (
 	ErrNotBanned           = errors.New("that account is not banned")
 	ErrInvalidBan          = errors.New("ban reason must be at most 500 characters and expiry at most a year")
 	ErrInvalidCIDR         = errors.New("enter an IP address or a CIDR range such as 203.0.113.0/24")
+	ErrInvalidEmail        = errors.New("enter a valid email address")
+	ErrEmailTaken          = errors.New("email already in use")
+	ErrBotAccount          = errors.New("bots have no email address")
 	ErrCIDRTooWide         = errors.New("that range is too wide to ban: use at least a /8 (IPv4) or /32 (IPv6)")
 	ErrIPBanExists         = errors.New("that address or range is already banned")
 	ErrIPBanNotFound       = errors.New("that address or range is not banned")

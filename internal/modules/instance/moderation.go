@@ -3,6 +3,7 @@ package instance
 import (
 	"context"
 	"errors"
+	netmail "net/mail"
 	"regexp"
 	"strconv"
 	"strings"
@@ -181,6 +182,59 @@ func (s *Service) SetUserBadges(ctx context.Context, actorID, userID int64, flag
 		return auth.PublicFlags(updated), nil
 	}
 	return flags, nil
+}
+
+// SetUserEmail moves an account to a new address - the support action for "I lost access
+// to my old mailbox". The address is normalised the way registration normalises it and
+// must be unused. The administrator stands in for the verification link, so the new
+// address counts as verified: an unverified one would lock the person out on an
+// EMAIL_VERIFICATION instance, the opposite of what the admin was doing. Password and
+// sessions are untouched. Both addresses go in the audit record (the dashboard already
+// shows administrators the email).
+func (s *Service) SetUserEmail(ctx context.Context, actorID, userID int64, email string) (*auth.User, error) {
+	if err := s.requireAdmin(ctx, actorID); err != nil {
+		return nil, err
+	}
+	email = strings.ToLower(strings.TrimSpace(email))
+	if email == "" || len(email) > 254 {
+		return nil, ErrInvalidEmail
+	}
+	if addr, err := netmail.ParseAddress(email); err != nil || addr.Address != email {
+		return nil, ErrInvalidEmail
+	}
+	u, err := s.mod.Users.GetByID(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	if u == nil {
+		return nil, ErrUserNotFound
+	}
+	if u.IsRemote() {
+		return nil, ErrCannotBanRemote
+	}
+	if u.Bot {
+		return nil, ErrBotAccount
+	}
+	if u.Email == email {
+		return u, nil
+	}
+	if err := s.mod.Users.UpdateEmail(ctx, userID, u.Email, email); err != nil {
+		if errors.Is(err, auth.ErrEmailInUse) {
+			return nil, ErrEmailTaken
+		}
+		return nil, err
+	}
+	if err := s.mod.Users.SetEmailVerified(ctx, userID, true); err != nil {
+		logger.Err("instance", err, map[string]any{"stage": "email_verified", "user_id": userID})
+	}
+	s.audit(ctx, actorID, AuditUserEmail, TargetUser, userID, u.Email+" -> "+email)
+	updated, err := s.mod.Users.GetByID(ctx, userID)
+	if err != nil || updated == nil {
+		u.Email = email
+		u.VerifiedEmail = true
+		return u, nil
+	}
+	return updated, nil
 }
 
 // RegenerateUserRecoveryCodes issues a fresh set of 2FA recovery codes for a user (an admin

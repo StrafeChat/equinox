@@ -19,9 +19,10 @@ func moderationError(c fiber.Ctx, err error) error {
 		return c.Status(http.StatusNotFound).JSON(fiber.Map{"error": err.Error()})
 	case ErrCannotBanSelf, ErrCannotBanRemote, ErrReportSelf:
 		return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": err.Error()})
-	case ErrAlreadyBanned, ErrReportClosed, ErrDuplicateReport, ErrIPBanExists:
+	case ErrAlreadyBanned, ErrReportClosed, ErrDuplicateReport, ErrIPBanExists, ErrEmailTaken:
 		return c.Status(http.StatusConflict).JSON(fiber.Map{"error": err.Error()})
-	case ErrInvalidBan, ErrInvalidReport, ErrInvalidAction, ErrInvalidQuery, ErrInvalidBadges, ErrInvalidCIDR, ErrCIDRTooWide:
+	case ErrInvalidBan, ErrInvalidReport, ErrInvalidAction, ErrInvalidQuery, ErrInvalidBadges, ErrInvalidCIDR, ErrCIDRTooWide,
+		ErrInvalidEmail, ErrBotAccount:
 		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	case ErrRecoveryUnavailable, ErrFederationDisabled:
 		return c.Status(http.StatusServiceUnavailable).JSON(fiber.Map{"error": err.Error()})
@@ -203,6 +204,29 @@ func (h *Handler) SetBadges(c fiber.Ctx) error {
 		return moderationError(c, err)
 	}
 	return c.JSON(fiber.Map{"public_flags": flags})
+}
+
+// SetEmail PATCH /instance/users/:id/email - admin moves an account to a new address.
+func (h *Handler) SetEmail(c fiber.Ctx) error {
+	user := auth.GetUser(c)
+	if user == nil {
+		return c.Status(http.StatusUnauthorized).JSON(fiber.Map{"error": "unauthorized"})
+	}
+	uid, ok := parseIDParam(c, "id")
+	if !ok {
+		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "invalid user id"})
+	}
+	var in struct {
+		Email string `json:"email"`
+	}
+	if !decodeBody(c, &in) {
+		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "invalid JSON"})
+	}
+	updated, err := h.svc.SetUserEmail(c.Context(), user.ID, uid, in.Email)
+	if err != nil {
+		return moderationError(c, err)
+	}
+	return c.JSON(userAdminJSON(updated))
 }
 
 // RegenerateRecoveryCodes POST /instance/users/:id/recovery_codes - admin regenerates a user's
