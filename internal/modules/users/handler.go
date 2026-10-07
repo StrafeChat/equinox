@@ -75,7 +75,9 @@ func (h *Handler) Me(c fiber.Ctx) error {
 		"birthday":        auth.BirthdayMMDD(user),
 		"public_flags":    auth.PublicFlags(user),
 		"bot":             user.Bot,
-		"presence":        auth.ToPublicPresence(user.Presence, false),
+		// The account's age decides whether a space's verification level lets it talk.
+		"created_at": user.CreatedAt,
+		"presence":   auth.ToPublicPresence(user.Presence, false),
 	})
 }
 

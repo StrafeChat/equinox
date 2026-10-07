@@ -177,6 +177,11 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		"display_name": user.DisplayName,
 		"public_flags": auth.PublicFlags(user),
 		"bot":          user.Bot,
+		// Both are the client's half of a space's verification level: whether the address
+		// is confirmed, and how old the account is. Without them the composer can only
+		// learn it is blocked by being refused a message it already let someone write.
+		"verified_email": user.VerifiedEmail,
+		"created_at":     user.CreatedAt,
 	}
 	if user.Avatar != "" {
 		readyUser["avatar"] = user.Avatar
