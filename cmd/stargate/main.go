@@ -281,6 +281,8 @@ func spaceToReadyMap(s *spaces.Space, snap *spaces.Snapshot) map[string]interfac
 		"preferred_locale":              s.PreferredLocale,
 		"max_video_room_users":          s.MaxVideoRoomUsers,
 		"widget_enabled":                s.WidgetEnabled,
+		"automod_flags":                 s.AutomodFlags,
+		"automod_mention_limit":         s.AutomodMentionLimit,
 		"created_at":                    s.CreatedAt,
 		"updated_at":                    s.UpdatedAt,
 	}
