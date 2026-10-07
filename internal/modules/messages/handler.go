@@ -411,6 +411,13 @@ func messageToJSON(m *Message, reactions []ReactionSummary) fiber.Map {
 		out["system_type"] = m.SystemType
 		out["system_payload"] = m.SystemPayload
 	}
+	if m.PinnedAt != nil && !m.PinnedAt.IsZero() {
+		out["pinned"] = true
+		out["pinned_at"] = m.PinnedAt
+		if m.PinnedBy != 0 {
+			out["pinned_by"] = id.Format(m.PinnedBy)
+		}
+	}
 	if len(reactions) > 0 {
 		out["reactions"] = reactions
 	}

@@ -103,6 +103,9 @@ type MessageEvent struct {
 	// Reactions is set on history read from a space's origin (as the asking user sees
 	// them); never on relays.
 	Reactions []messages.ReactionSummary `json:"reactions,omitempty"`
+	// Pinned state, carried on history and pin lists read from a space's origin.
+	PinnedAt *time.Time `json:"pinned_at,omitempty"`
+	PinnedBy string     `json:"pinned_by,omitempty"` // FID
 }
 
 // MessageEdit: PATCH /rooms/messages.
@@ -130,6 +133,35 @@ type ReactionEvent struct {
 	User     string     `json:"user"` // FID, must belong to the requesting instance
 	Emoji    string     `json:"emoji"`
 	EmojiRef *EmojiRef  `json:"emoji_ref,omitempty"`
+}
+
+// PinEvent: POST /rooms/pins (to a PM's other instances and a channel's mirrors) and
+// POST /spaces/pins (to a channel's origin, by a mirror): User pinned - or, with Remove,
+// unpinned - Message in Room at PinnedAt. The origin answers /spaces/pins with the event as
+// applied (its PinnedAt).
+type PinEvent struct {
+	Room     RoomRef    `json:"room"`
+	Message  MessageRef `json:"message"`
+	User     string     `json:"user"` // FID, must belong to the requesting instance
+	PinnedAt time.Time  `json:"pinned_at"`
+	Remove   bool       `json:"remove,omitempty"`
+}
+
+// PinsQuery / PinsReply: POST /spaces/pins/list - a hosted channel's pin list from its
+// origin, as the asking member sees it, newest pin first.
+type PinsQuery struct {
+	Room RoomRef `json:"room"`
+	User string  `json:"user"` // FID of the member asking
+}
+
+type PinItem struct {
+	PinnedAt time.Time    `json:"pinned_at"`
+	PinnedBy string       `json:"pinned_by,omitempty"` // FID
+	Message  MessageEvent `json:"message"`
+}
+
+type PinsReply struct {
+	Items []PinItem `json:"items"`
 }
 
 // ProfileUpdate: POST /users/update - a user on the sending instance changed their profile.

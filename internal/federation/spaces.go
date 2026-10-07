@@ -1204,6 +1204,68 @@ func (s *Service) ReactRemote(ctx context.Context, origin string, room *rooms.Ro
 	return reply.Reactions, nil
 }
 
+// PinRemote asks a channel's origin to pin or unpin as the local member: the origin checks the
+// permission, posts the notice and tells every other mirror; this instance applies the
+// origin's answer to its own copy.
+func (s *Service) PinRemote(ctx context.Context, origin string, room *rooms.Room, userID, msgID int64, remove bool) error {
+	user, err := s.users.GetByID(ctx, userID)
+	if err != nil || user == nil {
+		return messages.ErrNotParticipant
+	}
+	_, ref, err := s.mirrorScope(ctx, room)
+	if err != nil {
+		return err
+	}
+	req := PinEvent{Room: ref, Message: s.messageRef(ctx, room.ID, msgID), User: s.FIDOf(user), PinnedAt: time.Now().UTC(), Remove: remove}
+	var reply PinEvent
+	if _, err := s.client.Do(ctx, origin, http.MethodPost, "/spaces/pins", req, &reply); err != nil {
+		return messageOriginError(err, origin, "/spaces/pins")
+	}
+	at := reply.PinnedAt
+	if at.IsZero() {
+		at = req.PinnedAt
+	}
+	return s.msgSvc.PinFederated(ctx, room.ID, msgID, userID, at, remove)
+}
+
+// ListPinsRemote reads a hosted channel's pin list from its origin as the local member, and
+// keeps a copy of the messages like history does.
+func (s *Service) ListPinsRemote(ctx context.Context, origin string, room *rooms.Room, userID int64) ([]messages.PinnedMessage, error) {
+	user, err := s.users.GetByID(ctx, userID)
+	if err != nil || user == nil {
+		return nil, messages.ErrNotParticipant
+	}
+	sc, ref, err := s.mirrorScope(ctx, room)
+	if err != nil {
+		return nil, err
+	}
+	var reply PinsReply
+	if _, err := s.client.Do(ctx, origin, http.MethodPost, "/spaces/pins/list", PinsQuery{Room: ref, User: s.FIDOf(user)}, &reply); err != nil {
+		return nil, messageOriginError(err, origin, "/spaces/pins/list")
+	}
+	out := make([]messages.PinnedMessage, 0, len(reply.Items))
+	for _, it := range reply.Items {
+		m, err := s.messageFromEvent(ctx, origin, sc, it.Message)
+		if err != nil {
+			logger.Err("federation", err, map[string]any{"peer": origin, "message": it.Message.Message.OriginMessageID})
+			continue
+		}
+		s.storeHistory(ctx, sc, m)
+		var pinnedBy int64
+		if it.PinnedBy != "" {
+			if uid, err := s.ResolveLocalID(ctx, it.PinnedBy); err == nil {
+				pinnedBy = uid
+			}
+		}
+		out = append(out, messages.PinnedMessage{
+			Pin:       messages.Pin{RoomID: room.ID, MessageID: m.ID, PinnedBy: pinnedBy, PinnedAt: it.PinnedAt},
+			Message:   *m,
+			Reactions: it.Message.Reactions,
+		})
+	}
+	return out, nil
+}
+
 func (s *Service) ListRemote(ctx context.Context, origin string, room *rooms.Room, userID int64, beforeID *int64, limit int) ([]messages.Message, map[int64][]messages.ReactionSummary, error) {
 	q := SpaceMessagesQuery{Limit: limit}
 	if beforeID != nil {
@@ -1359,7 +1421,7 @@ func spaceFail(c fiber.Ctx, err error, fields map[string]any) error {
 	case errors.Is(err, messages.ErrInvalidInput):
 		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "plaintext required when E2EE is off; ciphertext required when E2EE is on"})
 	case errors.Is(err, messages.ErrContentTooLong), errors.Is(err, messages.ErrTooManyMentions), errors.Is(err, messages.ErrTooManyAttachments),
-		errors.Is(err, messages.ErrInvalidReaction), errors.Is(err, messages.ErrTooManyReactions):
+		errors.Is(err, messages.ErrInvalidReaction), errors.Is(err, messages.ErrTooManyReactions), errors.Is(err, messages.ErrTooManyPins):
 		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
 	var slow *messages.SlowmodeError
@@ -1625,6 +1687,65 @@ func (h *Handler) spaceReaction(c fiber.Ctx, remove bool) error {
 
 func (h *Handler) SpaceReactionAdd(c fiber.Ctx) error    { return h.spaceReaction(c, false) }
 func (h *Handler) SpaceReactionRemove(c fiber.Ctx) error { return h.spaceReaction(c, true) }
+
+// SpacePin POST /spaces/pins: a mirror's member pins or unpins in a channel hosted here. The
+// origin checks Manage Messages for them, posts the notice and relays to every other mirror;
+// the reply is the event as applied, so the asking mirror records the same pinned_at.
+func (h *Handler) SpacePin(c fiber.Ctx) error {
+	var body PinEvent
+	if err := json.Unmarshal(c.Body(), &body); err != nil {
+		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "invalid JSON"})
+	}
+	sc, actor, err := h.hostedChannel(c, body.Room, body.User)
+	if err != nil {
+		return spaceFail(c, err, nil)
+	}
+	msgID := h.localMessageID(c, sc.room.ID, body.Message)
+	if msgID == 0 {
+		return c.Status(http.StatusNotFound).JSON(fiber.Map{"error": "message not found"})
+	}
+	ctx := WithExcludedPeer(c.Context(), RequesterDomain(c))
+	reply := PinEvent{Room: body.Room, Message: body.Message, User: body.User, Remove: body.Remove}
+	if body.Remove {
+		err = h.svc.msgSvc.Unpin(ctx, actor.ID, sc.room.ID, msgID)
+	} else {
+		reply.PinnedAt, err = h.svc.msgSvc.Pin(ctx, actor.ID, sc.room.ID, msgID)
+	}
+	if err != nil {
+		if errors.Is(err, messages.ErrForbidden) {
+			return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": "missing permission to pin messages in this channel"})
+		}
+		return spaceFail(c, err, map[string]any{"room_id": sc.room.ID, "message_id": msgID})
+	}
+	return c.JSON(reply)
+}
+
+// SpacePinsList POST /spaces/pins/list - a hosted channel's pin list as the member sees it.
+func (h *Handler) SpacePinsList(c fiber.Ctx) error {
+	var body PinsQuery
+	if err := json.Unmarshal(c.Body(), &body); err != nil {
+		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "invalid JSON"})
+	}
+	sc, actor, err := h.hostedChannel(c, body.Room, body.User)
+	if err != nil {
+		return spaceFail(c, err, nil)
+	}
+	ctx := c.Context()
+	pins, err := h.svc.msgSvc.ListPins(ctx, actor.ID, sc.room.ID)
+	if err != nil {
+		return spaceFail(c, err, map[string]any{"room_id": sc.room.ID})
+	}
+	reply := PinsReply{Items: make([]PinItem, 0, len(pins))}
+	for i := range pins {
+		p := &pins[i]
+		item := PinItem{PinnedAt: p.PinnedAt, Message: h.svc.messageEvent(ctx, body.Room, &p.Message, p.Reactions)}
+		if u, _ := h.svc.users.GetByID(ctx, p.PinnedBy); u != nil {
+			item.PinnedBy = h.svc.FIDOf(u)
+		}
+		reply.Items = append(reply.Items, item)
+	}
+	return c.JSON(reply)
+}
 
 // SpaceMessagesList POST /spaces/messages/list - a page of history as the member sees it.
 func (h *Handler) SpaceMessagesList(c fiber.Ctx) error {

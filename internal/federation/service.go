@@ -849,6 +849,7 @@ func (s *Service) messageEvent(ctx context.Context, ref RoomRef, m *messages.Mes
 		CreatedAt:       m.CreatedAt,
 		UpdatedAt:       m.UpdatedAt,
 		Reactions:       reactions,
+		PinnedAt:        m.PinnedAt,
 	}
 	if m.SenderDeviceID != 0 {
 		ev.SenderDeviceID = id.Format(m.SenderDeviceID)
@@ -874,6 +875,11 @@ func (s *Service) messageEvent(ctx context.Context, ref RoomRef, m *messages.Mes
 	}
 	for _, rid := range m.MentionRoles {
 		ev.MentionRoles = append(ev.MentionRoles, id.Format(rid))
+	}
+	if m.PinnedBy != 0 {
+		if u, _ := s.users.GetByID(ctx, m.PinnedBy); u != nil {
+			ev.PinnedBy = s.FIDOf(u)
+		}
 	}
 	return ev
 }
@@ -1001,6 +1007,27 @@ func (s *Service) AfterReactionAdded(ctx context.Context, roomID int64, particip
 
 func (s *Service) AfterReactionRemoved(ctx context.Context, roomID int64, participants []int64, msgID, userID int64, emoji string) {
 	s.relayReaction(ctx, "/rooms/reactions/delete", roomID, participants, msgID, userID, emoji)
+}
+
+// ---- pins (messages.Federator) ----------------------------------------------------------
+
+// AfterMessagePinned tells the room's other instances about a pin or unpin made here: a PM's
+// other participants' instances, or every mirror of a channel hosted here.
+func (s *Service) AfterMessagePinned(ctx context.Context, roomID int64, participants []int64, msgID, userID int64, at time.Time, remove bool) {
+	targets, _ := s.relayTargets(ctx, roomID, participants)
+	if len(targets) == 0 {
+		return
+	}
+	ref, err := s.roomRef(ctx, roomID)
+	if err != nil {
+		return
+	}
+	user := s.LocalFID(userID)
+	if u, _ := s.users.GetByID(ctx, userID); u != nil {
+		user = s.FIDOf(u)
+	}
+	body := PinEvent{Room: ref, Message: s.messageRef(ctx, roomID, msgID), User: user, PinnedAt: at, Remove: remove}
+	s.fanOut(ctx, targets, http.MethodPost, "/rooms/pins", body)
 }
 
 // ---- presence (stargate.PresenceFederator, users.ProfileFederator) --------------------

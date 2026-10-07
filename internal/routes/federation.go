@@ -44,6 +44,7 @@ func SetupFederationRoutes(d Deps) {
 	g.Post("/rooms/messages", s2s, h.MessageCreate)
 	g.Patch("/rooms/messages", s2s, h.MessageEdit)
 	g.Post("/rooms/messages/delete", s2s, h.MessageDelete)
+	g.Post("/rooms/pins", s2s, h.PinUpdate)
 	// Spaces. Asked of the space's origin by an instance whose user is (joining as) a
 	// member: invite preview, join, leave, invite, and writes/reads in its channels.
 	g.Get("/spaces/invites/:code", s2s, h.SpaceInvitePreview)
@@ -58,6 +59,8 @@ func SetupFederationRoutes(d Deps) {
 	g.Post("/spaces/messages/search", s2s, h.SpaceMessagesSearch)
 	g.Post("/spaces/reactions", s2s, h.SpaceReactionAdd)
 	g.Post("/spaces/reactions/delete", s2s, h.SpaceReactionRemove)
+	g.Post("/spaces/pins", s2s, h.SpacePin)
+	g.Post("/spaces/pins/list", s2s, h.SpacePinsList)
 	// Management of a space hosted here by a member elsewhere, and a mirror's resync.
 	g.Post("/spaces/manage", s2s, h.SpaceManage)
 	g.Post("/spaces/sync", s2s, h.SpaceSync)

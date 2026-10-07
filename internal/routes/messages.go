@@ -43,6 +43,11 @@ func SetupMessagesRoutes(d Deps) {
 	r.Put("/:id/messages/:msg_id/reactions/:emoji", perUserLimiter(60, time.Minute), msgHandler.AddReaction)
 	r.Delete("/:id/messages/:msg_id/reactions/:emoji", perUserLimiter(60, time.Minute), msgHandler.RemoveReaction)
 	r.Get("/:id/messages/:msg_id/reactions/:emoji", perUserLimiter(60, time.Minute), msgHandler.ListReactors)
+	// Pins are shared by everyone in the room (Manage Messages in a space channel, anyone in
+	// a PM or group); the list is read on every room open, so it gets the history budget.
+	r.Get("/:id/pins", perUserLimiter(120, time.Minute), msgHandler.ListPins)
+	r.Put("/:id/messages/:msg_id/pin", perUserLimiter(30, time.Minute), msgHandler.Pin)
+	r.Delete("/:id/messages/:msg_id/pin", perUserLimiter(30, time.Minute), msgHandler.Unpin)
 
 	// Space-wide search lives with the messages handler rather than the spaces one: it is
 	// the same scanner as the per-room search, just fanned out over a space's channels.

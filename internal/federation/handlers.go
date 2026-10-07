@@ -300,6 +300,15 @@ func (s *Service) messageFromEvent(ctx context.Context, from string, sc *roomSco
 		CreatedAt:       ev.CreatedAt.UTC(),
 		UpdatedAt:       ev.UpdatedAt.UTC(),
 	}
+	if ev.PinnedAt != nil && !ev.PinnedAt.IsZero() {
+		at := ev.PinnedAt.UTC()
+		msg.PinnedAt = &at
+		if ev.PinnedBy != "" {
+			if uid, err := s.ResolveLocalID(ctx, ev.PinnedBy); err == nil {
+				msg.PinnedBy = uid
+			}
+		}
+	}
 	// A channel keeps the origin's message ids everywhere (every message in it comes
 	// from the origin), so replies, reactions and order agree without a lookup; a PM
 	// gets a local id like before.
@@ -812,6 +821,38 @@ func (h *Handler) applyReaction(c fiber.Ctx, remove bool) error {
 
 func (h *Handler) ReactionAdd(c fiber.Ctx) error    { return h.applyReaction(c, false) }
 func (h *Handler) ReactionRemove(c fiber.Ctx) error { return h.applyReaction(c, true) }
+
+// PinUpdate serves POST /rooms/pins: one of the requesting instance's users pinned or unpinned
+// a message in a shared room (a PM, or a channel whose origin is the requester).
+func (h *Handler) PinUpdate(c fiber.Ctx) error {
+	var body PinEvent
+	if err := json.Unmarshal(c.Body(), &body); err != nil {
+		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "invalid JSON"})
+	}
+	sc, err := h.roomFor(c, body.Room)
+	if err != nil {
+		return fail(c, err, nil)
+	}
+	if !h.senderAllowed(c, sc, body.User) {
+		return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": "user must belong to the requesting instance"})
+	}
+	ctx := c.Context()
+	uid, err := h.svc.ResolveLocalID(ctx, body.User)
+	if err != nil {
+		return fail(c, err, nil)
+	}
+	if !h.svc.inRoom(ctx, sc, uid) {
+		return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": "user is not in this room"})
+	}
+	msgID := h.localMessageID(c, sc.room.ID, body.Message)
+	if msgID == 0 {
+		return c.Status(http.StatusNotFound).JSON(fiber.Map{"error": "message not found"})
+	}
+	if err := h.svc.msgSvc.PinFederated(ctx, sc.room.ID, msgID, uid, body.PinnedAt, body.Remove); err != nil {
+		return fail(c, err, map[string]any{"room_id": sc.room.ID, "message_id": msgID})
+	}
+	return c.SendStatus(http.StatusNoContent)
+}
 
 // maxRelayedCustomStatus mirrors the local limit (users/schema.go).
 const maxRelayedCustomStatus = 128

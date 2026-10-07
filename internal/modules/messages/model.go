@@ -69,6 +69,10 @@ type Message struct {
 	CreatedAt       time.Time  `db:"created_at" json:"created_at"`
 	UpdatedAt       time.Time  `db:"updated_at" json:"updated_at"`
 	DeletedAt       *time.Time `db:"deleted_at" json:"deleted_at,omitempty"`
+	// PinnedAt/PinnedBy are set while the message is pinned in its room (service_pins.go):
+	// room_pins keeps the room\'s ordered list, these make `pinned` free on every read.
+	PinnedAt *time.Time `db:"pinned_at" json:"pinned_at,omitempty"`
+	PinnedBy int64      `db:"pinned_by" json:"pinned_by,omitempty"`
 }
 
 // Attachments decodes the message's attachment list (nil when there are none).
@@ -181,4 +185,12 @@ type CreateMessageInput struct {
 type EditMessageInput struct {
 	Ciphertext string `json:"ciphertext,omitempty"`
 	Plaintext  string `json:"plaintext,omitempty"`
+}
+
+// Pin is one row of room_pins: a room's pinned messages, newest pin first.
+type Pin struct {
+	RoomID    int64     `db:"room_id"`
+	MessageID int64     `db:"message_id"`
+	PinnedBy  int64     `db:"pinned_by"`
+	PinnedAt  time.Time `db:"pinned_at"`
 }

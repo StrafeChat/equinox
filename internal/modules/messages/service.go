@@ -206,12 +206,16 @@ type Federator interface {
 	AfterMessageDeleted(ctx context.Context, roomID int64, participants []int64, msgID int64)
 	AfterReactionAdded(ctx context.Context, roomID int64, participants []int64, msgID, userID int64, emoji string)
 	AfterReactionRemoved(ctx context.Context, roomID int64, participants []int64, msgID, userID int64, emoji string)
+	// AfterMessagePinned relays a pin (remove=false) or an unpin to the room's other instances.
+	AfterMessagePinned(ctx context.Context, roomID int64, participants []int64, msgID, userID int64, at time.Time, remove bool)
 
 	RemoteOrigin(ctx context.Context, room *rooms.Room) string
 	CreateRemote(ctx context.Context, origin string, room *rooms.Room, userID int64, in *CreateMessageInput, attachments []Attachment) (*Message, error)
 	EditRemote(ctx context.Context, origin string, room *rooms.Room, userID, msgID int64, in *EditMessageInput) (*Message, error)
 	DeleteRemote(ctx context.Context, origin string, room *rooms.Room, userID, msgID int64) error
 	ReactRemote(ctx context.Context, origin string, room *rooms.Room, userID, msgID int64, emoji string, remove bool) ([]ReactionSummary, error)
+	PinRemote(ctx context.Context, origin string, room *rooms.Room, userID, msgID int64, remove bool) error
+	ListPinsRemote(ctx context.Context, origin string, room *rooms.Room, userID int64) ([]PinnedMessage, error)
 	ListRemote(ctx context.Context, origin string, room *rooms.Room, userID int64, beforeID *int64, limit int) ([]Message, map[int64][]ReactionSummary, error)
 	ListAfterRemote(ctx context.Context, origin string, room *rooms.Room, userID, afterID int64, limit int) ([]Message, map[int64][]ReactionSummary, error)
 	ListAroundRemote(ctx context.Context, origin string, room *rooms.Room, userID, aroundID int64, limit int) ([]Message, map[int64][]ReactionSummary, error)
@@ -325,6 +329,9 @@ func (s *Service) DeleteFederated(ctx context.Context, roomID, msgID int64) erro
 	msg, merr := s.repo.GetByID(ctx, roomID, msgID)
 	if err := s.repo.SoftDelete(ctx, roomID, msgID); err != nil {
 		return err
+	}
+	if merr == nil {
+		s.dropPinOnDelete(ctx, roomID, msg, 0)
 	}
 	var newLast *int64
 	lastChanged := false
@@ -899,6 +906,7 @@ func (s *Service) Delete(ctx context.Context, userID, roomID, msgID int64) error
 	if err := s.repo.SoftDelete(ctx, roomID, msgID); err != nil {
 		return err
 	}
+	s.dropPinOnDelete(ctx, roomID, msg, userID)
 	// Space channels have no room_participants rows, so authorize() leaves `participants` empty
 	// for them. Both the read-cursor heal and the mention rollback below fan out per user, so
 	// resolve the real recipient set (the space's members) first - passing the empty slice left
@@ -1208,6 +1216,13 @@ func messageEventPayload(m *Message) map[string]interface{} {
 	if m.SystemType != "" {
 		out["system_type"] = m.SystemType
 		out["system_payload"] = m.SystemPayload
+	}
+	if m.PinnedAt != nil && !m.PinnedAt.IsZero() {
+		out["pinned"] = true
+		out["pinned_at"] = m.PinnedAt
+		if m.PinnedBy != 0 {
+			out["pinned_by"] = id.Format(m.PinnedBy)
+		}
 	}
 	return out
 }

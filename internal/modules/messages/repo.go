@@ -12,7 +12,7 @@ import (
 
 var messagesTable = table.New(table.Metadata{
 	Name:    "messages",
-	Columns: []string{"room_id", "id", "sender_id", "sender_device_id", "ciphertext", "plaintext", "reply_to_id", "mentions", "mention_everyone", "mention_roles", "system_type", "system_payload", "attachments", "created_at", "updated_at", "deleted_at"},
+	Columns: []string{"room_id", "id", "sender_id", "sender_device_id", "ciphertext", "plaintext", "reply_to_id", "mentions", "mention_everyone", "mention_roles", "system_type", "system_payload", "attachments", "created_at", "updated_at", "deleted_at", "pinned_at", "pinned_by"},
 	PartKey: []string{"room_id"},
 	SortKey: []string{"id"},
 })
@@ -47,6 +47,14 @@ type Repository interface {
 	ListReactions(ctx context.Context, roomID, messageID int64) ([]Reaction, error)
 	// ListReactionsForMessages batches the per-message reads a page of history needs.
 	ListReactionsForMessages(ctx context.Context, roomID int64, messageIDs []int64) (map[int64][]Reaction, error)
+
+	// Pins (repo_pins.go): the flag on the message row and room_pins, the room's newest-first
+	// list, are written together; GetByIDs reads the pinned rows in one query.
+	GetByIDs(ctx context.Context, roomID int64, ids []int64) ([]Message, error)
+	Pin(ctx context.Context, roomID, messageID, userID int64, at time.Time) error
+	Unpin(ctx context.Context, roomID, messageID int64, at time.Time) error
+	ListPins(ctx context.Context, roomID int64, limit int) ([]Pin, error)
+	CountPins(ctx context.Context, roomID int64) (int, error)
 }
 
 type repo struct {
