@@ -215,6 +215,11 @@ type FeatureFlags struct {
 	// domain covers its subdomains).
 	BlockDisposableEmail bool
 	BlockedEmailDomains  []string
+	// DiscoverFederation lets this instance's Discover page show spaces listed on the
+	// instances it federates with, and lets those instances read what is listed here.
+	// A space's managers decide per listing (discover.Listing.FederateOptOut); this is the
+	// operator's switch over the whole feature.
+	DiscoverFederation bool
 }
 
 // CaptchaConfig configures the registration challenge. It only matters when
@@ -366,6 +371,7 @@ func Load() (*Config, error) {
 			InstanceAdmins: parseIDList(getEnvArray("INSTANCE_ADMINS", nil)),
 			PMPolicy:       strings.ToLower(strings.TrimSpace(getEnvString("PM_POLICY", "shared"))),
 
+			DiscoverFederation:   getEnvBool("DISCOVER_FEDERATION", true),
 			BlockDisposableEmail: getEnvBool("EMAIL_BLOCK_DISPOSABLE", true),
 			BlockedEmailDomains:  cleanDomains(getEnvArray("EMAIL_BLOCKED_DOMAINS", nil)),
 		},

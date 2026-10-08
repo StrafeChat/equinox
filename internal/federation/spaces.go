@@ -989,6 +989,15 @@ func (s *Service) JoinRemoteSpace(ctx context.Context, domain, code string, user
 	if _, err := s.client.Do(ctx, domain, http.MethodPost, "/spaces/join", req, &snap); err != nil {
 		return nil, spaceOriginError(err, domain, "/spaces/join")
 	}
+	return s.applyJoinSnapshot(ctx, domain, user, &snap)
+}
+
+// applyJoinSnapshot turns an origin's answer to a join into this instance's membership:
+// adding the member to a mirror that already exists, or building the mirror from the
+// snapshot. Shared by the invite join and the Discover (listed-space) join, which differ
+// only in how the origin was asked.
+func (s *Service) applyJoinSnapshot(ctx context.Context, domain string, user *auth.User, snapPtr *SpaceSnapshot) (*spaces.Space, error) {
+	snap := *snapPtr
 	originSpaceID, err := id.Parse(snap.Space.OriginSpaceID)
 	if err != nil || snap.Space.OriginDomain != domain {
 		return nil, spaces.ErrOriginUnavailable

@@ -62,13 +62,47 @@ type Listing struct {
 	ReviewedAt  *time.Time `db:"reviewed_at" json:"reviewed_at,omitempty"`
 	// Note is the administrator's word to the applicant (why it was declined or removed).
 	Note string `db:"note" json:"note,omitempty"`
+	// FederateOptOut: the managers asked to be found on this instance only. Stored as the
+	// exception because sharing is the default, so a listing from before the column existed
+	// (null, i.e. false here) is shared without a backfill. The wire field is the positive
+	// `federate`, which is what people reason about.
+	FederateOptOut bool `db:"federate_opt_out" json:"-"`
+	// Federate is the wire form of the above, the positive that people reason about. Filled
+	// on the way out; a change comes in through ApplyInput, never from here.
+	Federate bool `db:"-" json:"federate"`
 }
 
-// ApplyInput is what an applicant writes for the directory.
+// Federated reports whether this listing may be shown on other instances.
+func (l *Listing) Federated() bool { return !l.FederateOptOut }
+
+// ApplyInput is what an applicant writes for the directory. Federate is optional: left out
+// it keeps whatever the listing already said, and a new listing is shared by default.
 type ApplyInput struct {
-	Tagline string   `json:"tagline"`
-	Tags    []string `json:"tags"`
+	Tagline  string   `json:"tagline"`
+	Tags     []string `json:"tags"`
+	Federate *bool    `json:"federate,omitempty"`
 }
+
+// RemoteListing is a space another instance lists, as last fetched from it. The id is the
+// origin's; this instance may hold no mirror of the space at all.
+type RemoteListing struct {
+	Domain      string    `db:"domain" json:"domain"`
+	SpaceID     int64     `db:"space_id" json:"space_id,string"`
+	Name        string    `db:"name" json:"name"`
+	NameAcronym string    `db:"name_acronym" json:"name_acronym"`
+	Icon        string    `db:"icon" json:"icon,omitempty"`
+	Banner      string    `db:"banner" json:"banner,omitempty"`
+	Description string    `db:"description" json:"description,omitempty"`
+	Tagline     string    `db:"tagline" json:"tagline"`
+	Tags        []string  `db:"tags" json:"tags"`
+	MemberCount int       `db:"member_count" json:"member_count"`
+	OnlineCount int       `db:"online_count" json:"online_count"`
+	FetchedAt   time.Time `db:"fetched_at" json:"fetched_at"`
+}
+
+// MaxRemotePerPeer caps what one instance can put on this one's Discover page, so a peer
+// cannot crowd out everything else by listing thousands of spaces.
+const MaxRemotePerPeer = 100
 
 // UserRef names a person on a card or in the review queue.
 type UserRef struct {
@@ -79,16 +113,18 @@ type UserRef struct {
 	Bot         bool   `json:"bot,omitempty"`
 }
 
-// SpaceCard is a listed space as the directory shows it.
+// SpaceCard is a listed space as the directory shows it. OriginDomain is set only for a
+// space another instance hosts and lists; for those, ID is that instance's id for it.
 type SpaceCard struct {
-	ID          string `json:"id"`
-	Name        string `json:"name"`
-	NameAcronym string `json:"name_acronym"`
-	Icon        string `json:"icon,omitempty"`
-	Banner      string `json:"banner,omitempty"`
-	Description string `json:"description,omitempty"`
-	MemberCount int    `json:"member_count"`
-	OnlineCount int    `json:"online_count"`
+	OriginDomain string `json:"origin_domain,omitempty"`
+	ID           string `json:"id"`
+	Name         string `json:"name"`
+	NameAcronym  string `json:"name_acronym"`
+	Icon         string `json:"icon,omitempty"`
+	Banner       string `json:"banner,omitempty"`
+	Description  string `json:"description,omitempty"`
+	MemberCount  int    `json:"member_count"`
+	OnlineCount  int    `json:"online_count"`
 }
 
 // BotCard is a listed bot: its application's public face and the bot account.

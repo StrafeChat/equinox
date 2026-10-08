@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"net/url"
+	"strings"
 
 	"github.com/gofiber/fiber/v3"
 
@@ -69,16 +71,32 @@ func (h *Handler) directory(c fiber.Ctx, kind string) error {
 }
 
 // JoinSpace POST /discover/spaces/:id/join.
+// JoinSpace POST /discover/spaces/:id/join. The id is this instance's own for a space
+// hosted here, or `id@domain` for one listed by an instance we federate with - the same
+// shape an invite code takes when it crosses instances.
 func (h *Handler) JoinSpace(c fiber.Ctx) error {
 	user, ok := h.actor(c)
 	if !ok {
 		return nil
 	}
-	sid, ok := idParam(c, "space")
-	if !ok {
-		return nil
+	raw, err := url.PathUnescape(c.Params("id"))
+	if err != nil {
+		raw = c.Params("id")
 	}
-	sp, err := h.svc.JoinSpace(c.Context(), user.ID, sid)
+	rawID, domain := raw, ""
+	if at := strings.LastIndexByte(raw, '@'); at >= 0 {
+		rawID, domain = raw[:at], strings.ToLower(strings.TrimSpace(raw[at+1:]))
+	}
+	sid, perr := id.Parse(rawID)
+	if perr != nil {
+		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "invalid space id"})
+	}
+	var sp *spaces.Space
+	if domain == "" {
+		sp, err = h.svc.JoinSpace(c.Context(), user.ID, sid)
+	} else {
+		sp, err = h.svc.JoinRemoteSpace(c.Context(), user.ID, domain, sid)
+	}
 	if err != nil {
 		return errorFor(c, err)
 	}

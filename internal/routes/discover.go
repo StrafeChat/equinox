@@ -1,6 +1,7 @@
 package routes
 
 import (
+	"context"
 	"time"
 
 	"github.com/StrafeChat/equinox/internal/middleware"
@@ -29,7 +30,15 @@ func SetupDiscoverRoutes(d Deps) {
 		spaceSvc.SetFederator(d.Federation)
 	}
 	inst := newInstanceService(d, userRepo, sessionRepo)
-	svc := discover.NewService(discover.NewRepository(d.Scylla), spaceSvc, applications.NewRepository(d.Scylla), userRepo, inst, d.Redis, d.Config.Database.Redis.CachePrefix)
+	svc := discover.NewService(discover.NewRepository(d.Scylla), spaceSvc, applications.NewRepository(d.Scylla), userRepo, inst, d.Redis, d.Config)
+	if d.Federation != nil {
+		// Both directions of the shared directory: this instance asks its peers what they
+		// list (and joins one of those spaces for a local user), and answers the same
+		// question for them.
+		svc.SetFederator(d.Federation)
+		d.Federation.SetDirectory(svc)
+		svc.StartDirectoryRefresh(context.Background())
+	}
 	h := discover.NewHandler(svc)
 
 	g := d.App.Group("/discover", requireAuth)

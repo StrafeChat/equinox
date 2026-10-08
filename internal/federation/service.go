@@ -51,6 +51,9 @@ type Service struct {
 	// voice is the API's voice service (SetVoice); nil in a process without voice, where
 	// relayed calls are acknowledged and ignored.
 	voice *voice.Service
+	// directory is the Discover module (SetDirectory): what this instance lists, and
+	// whether a given space may be joined from a peer's directory page. nil until wired.
+	directory DirectorySource
 
 	// Relays to a peer go out in the order they were made, one at a time: ephemeral ones
 	// (typing, presence, calls) through an in-memory queue per peer, everything else

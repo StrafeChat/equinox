@@ -64,6 +64,9 @@ func SetupFederationRoutes(d Deps) {
 	// Management of a space hosted here by a member elsewhere, and a mirror's resync.
 	g.Post("/spaces/manage", s2s, h.SpaceManage)
 	g.Post("/spaces/sync", s2s, h.SpaceSync)
+	// Discover across instances: what this one lists, and joining one of those listings.
+	g.Get("/discover", s2s, h.Directory)
+	g.Post("/spaces/join_listed", s2s, h.SpaceJoinListed)
 	// Pushed by the origin to every instance mirroring the space.
 	g.Post("/spaces/update", s2s, h.SpaceUpdate)
 	g.Post("/spaces/members", s2s, h.SpaceMembers)

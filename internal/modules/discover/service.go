@@ -11,6 +11,7 @@ import (
 
 	"github.com/redis/go-redis/v9"
 
+	"github.com/StrafeChat/equinox/internal/config"
 	"github.com/StrafeChat/equinox/internal/id"
 	"github.com/StrafeChat/equinox/internal/logger"
 	"github.com/StrafeChat/equinox/internal/modules/applications"
@@ -33,10 +34,18 @@ type Service struct {
 	admin  Admin
 	redis  *redis.Client
 	prefix string
+	cfg    *config.Config
+	// fed is the federation engine (SetFederator); nil on an instance that does not
+	// federate, which keeps every cross-instance path here inert.
+	fed Federator
 }
 
-func NewService(repo Repository, spaceSvc *spaces.Service, apps applications.Repository, users auth.UserRepository, admin Admin, rdb *redis.Client, cachePrefix string) *Service {
-	return &Service{repo: repo, spaces: spaceSvc, apps: apps, users: users, admin: admin, redis: rdb, prefix: cachePrefix}
+func NewService(repo Repository, spaceSvc *spaces.Service, apps applications.Repository, users auth.UserRepository, admin Admin, rdb *redis.Client, cfg *config.Config) *Service {
+	prefix := ""
+	if cfg != nil {
+		prefix = cfg.Database.Redis.CachePrefix
+	}
+	return &Service{repo: repo, spaces: spaceSvc, apps: apps, users: users, admin: admin, redis: rdb, prefix: prefix, cfg: cfg}
 }
 
 // directoryTTL: the space directory is read far more than it changes, and a member count
@@ -118,8 +127,11 @@ func (s *Service) Status(ctx context.Context, actorID int64, kind string, id int
 	if err != nil {
 		return nil, err
 	}
-	if l != nil && l.Tags == nil {
-		l.Tags = []string{}
+	if l != nil {
+		if l.Tags == nil {
+			l.Tags = []string{}
+		}
+		l.Federate = l.Federated()
 	}
 	return l, nil
 }
@@ -147,9 +159,18 @@ func (s *Service) Apply(ctx context.Context, actorID int64, kind string, id int6
 		l.ReviewedBy = existing.ReviewedBy
 		l.ReviewedAt = existing.ReviewedAt
 	}
+	// Sharing with other instances: keep what the listing already said, default to shared
+	// for a new one, and only change it when this request actually asked to.
+	switch {
+	case in.Federate != nil:
+		l.FederateOptOut = !*in.Federate
+	case existing != nil:
+		l.FederateOptOut = existing.FederateOptOut
+	}
 	if err := s.repo.Put(ctx, l); err != nil {
 		return nil, err
 	}
+	l.Federate = l.Federated()
 	s.invalidate(ctx)
 	return l, nil
 }
@@ -283,6 +304,24 @@ func (s *Service) Directory(ctx context.Context, kind, query string) ([]Entry, e
 	entries, err := s.approved(ctx, kind)
 	if err != nil {
 		return nil, err
+	}
+	// Spaces listed by the instances we federate with sit on the same page, sorted in with
+	// ours. They are never part of `approved`, which is what this instance shares onward -
+	// a directory must not re-publish its neighbours' listings.
+	if kind == KindSpace {
+		if remote := s.remoteEntries(ctx); len(remote) > 0 {
+			entries = append(append([]Entry{}, entries...), remote...)
+			sort.SliceStable(entries, func(i, j int) bool {
+				a, b := entries[i], entries[j]
+				if a.Space != nil && b.Space != nil && a.Space.MemberCount != b.Space.MemberCount {
+					return a.Space.MemberCount > b.Space.MemberCount
+				}
+				return strings.ToLower(a.name()) < strings.ToLower(b.name())
+			})
+			if len(entries) > MaxListings {
+				entries = entries[:MaxListings]
+			}
+		}
 	}
 	q := strings.ToLower(strings.TrimSpace(query))
 	if q == "" {
