@@ -8,7 +8,6 @@ import (
 	"github.com/StrafeChat/equinox/internal/id"
 	"github.com/StrafeChat/equinox/internal/logger"
 	"github.com/StrafeChat/equinox/internal/modules/auth"
-	"github.com/StrafeChat/equinox/internal/modules/messages"
 )
 
 // The instance's official account posts moderation outcomes and admin notices to a user as
@@ -128,7 +127,9 @@ func (s *Service) notify(ctx context.Context, userID int64, text string) error {
 	if err != nil {
 		return err
 	}
-	_, err = s.mod.MsgsSvc.Create(ctx, s.systemUserID, room.ID, &messages.CreateMessageInput{Plaintext: text})
+	// Deliver on the recipient's user channel: the room may have just been created and the
+	// recipient has not finished subscribing to the room channel.
+	_, err = s.mod.MsgsSvc.CreateSystemDM(ctx, s.systemUserID, room.ID, text, userID)
 	return err
 }
 

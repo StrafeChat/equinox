@@ -573,7 +573,17 @@ func (s *Service) spaceParticipants(ctx context.Context, room *rooms.Room, parti
 }
 
 func (s *Service) Create(ctx context.Context, userID, roomID int64, in *CreateMessageInput) (*Message, error) {
-	return s.create(ctx, userID, roomID, in, nil)
+	return s.create(ctx, userID, roomID, in, nil, 0)
+}
+
+// CreateSystemDM posts a message from the instance's official account into its one-way DM
+// with a user and delivers the MESSAGE_CREATE on that user's own channel rather than the
+// room channel. The room was just created, so the recipient has not finished subscribing to
+// the room channel yet; their user channel is always subscribed, so this avoids losing the
+// event (which is what left the notice unordered and silent). The official account never
+// connects, so no one else needs the room-channel copy.
+func (s *Service) CreateSystemDM(ctx context.Context, systemID, roomID int64, text string, recipientID int64) (*Message, error) {
+	return s.create(ctx, systemID, roomID, &CreateMessageInput{Plaintext: text}, nil, recipientID)
 }
 
 // CreateFromRemote stores a message a member on another instance sent into a channel of
@@ -584,11 +594,11 @@ func (s *Service) CreateFromRemote(ctx context.Context, userID, roomID int64, in
 	if attachments == nil {
 		attachments = []Attachment{}
 	}
-	return s.create(ctx, userID, roomID, in, attachments)
+	return s.create(ctx, userID, roomID, in, attachments, 0)
 }
 
 // create is Create with the attachments either still to be claimed (nil) or given.
-func (s *Service) create(ctx context.Context, userID, roomID int64, in *CreateMessageInput, given []Attachment) (*Message, error) {
+func (s *Service) create(ctx context.Context, userID, roomID int64, in *CreateMessageInput, given []Attachment, deliverToUser int64) (*Message, error) {
 	if err := validateContent(in.Plaintext, in.Ciphertext); err != nil {
 		return nil, err
 	}
@@ -771,7 +781,11 @@ func (s *Service) create(ctx context.Context, userID, roomID int64, in *CreateMe
 		}
 	}
 	if s.redis != nil && s.cfg != nil {
-		stargate.PublishToSpace(ctx, s.redis, roomID, "MESSAGE_CREATE", s.messageEventPayloadEnriched(ctx, m), s.cfg.Stargate.Region)
+		if deliverToUser != 0 {
+			stargate.PublishToUser(ctx, s.redis, deliverToUser, "MESSAGE_CREATE", s.messageEventPayloadEnriched(ctx, m), s.cfg.Stargate.Region)
+		} else {
+			stargate.PublishToSpace(ctx, s.redis, roomID, "MESSAGE_CREATE", s.messageEventPayloadEnriched(ctx, m), s.cfg.Stargate.Region)
+		}
 	}
 	if s.federator != nil {
 		s.federator.AfterMessageCreated(ctx, roomID, participants, m)
