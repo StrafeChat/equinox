@@ -906,6 +906,24 @@ func (s *Service) DeleteRoom(ctx context.Context, actorID, spaceID, roomID int64
 			})
 		}
 	}
+	// A channel's threads go with it: they live inside it and nothing else can hold them.
+	if target, _ := s.roomRepo.GetByID(ctx, roomID); target != nil && target.Type == rooms.TypeSpaceText {
+		all, err := s.listRooms(ctx, spaceID)
+		if err != nil {
+			return err
+		}
+		for _, child := range all {
+			if child.Type != rooms.TypeThread || child.ParentID == nil || *child.ParentID != roomID {
+				continue
+			}
+			if err := s.roomRepo.DeleteThread(ctx, spaceID, child.ID); err != nil {
+				return err
+			}
+			s.publishSpaceEvent(ctx, spaceID, "THREAD_DELETE", map[string]interface{}{
+				"room_id": id.Format(child.ID), "parent_id": id.Format(roomID),
+			})
+		}
+	}
 	if err := s.roomRepo.DeleteSpaceRoom(ctx, spaceID, roomID); err != nil {
 		return err
 	}
@@ -1042,6 +1060,9 @@ func RoomMap(r *rooms.Room) map[string]interface{} {
 		m["parent_id"] = nil
 	}
 	m["permissions_synced"] = r.PermissionsSynced != nil && *r.PermissionsSynced
+	if r.Type == rooms.TypeThread {
+		m["thread"] = ThreadMap(r)
+	}
 	if r.LastMessageID != nil {
 		m["last_message_id"] = id.Format(*r.LastMessageID)
 	}
@@ -1357,4 +1378,41 @@ func (s *Service) MoveSpaceChannel(ctx context.Context, actorID, spaceID, channe
 	}
 	s.fedRoomsReordered(ctx, spaceID)
 	return nil
+}
+
+// ThreadMap is the `thread` block of a thread room's wire form - Discord's thread_metadata
+// plus the owner: archive and lock state, type, auto-archive timer, who started it and from
+// which message. The counts and the viewer's membership are added by AttachThreadState.
+func ThreadMap(r *rooms.Room) map[string]interface{} {
+	m := map[string]interface{}{
+		"archived":             r.ThreadIsArchived(),
+		"locked":               r.ThreadIsLocked(),
+		"private":              r.ThreadIsPrivate(),
+		"invitable":            r.ThreadIsInvitable(),
+		"auto_archive_minutes": r.ThreadAutoArchiveMin,
+		"owner_id":             id.Format(r.CreatorID),
+		"archived_at":          nil,
+	}
+	if r.ThreadArchivedAt != nil {
+		m["archived_at"] = r.ThreadArchivedAt.UTC()
+	}
+	if r.ThreadLastActiveAt != nil {
+		m["last_active_at"] = r.ThreadLastActiveAt.UTC()
+	}
+	if r.ThreadStarterMessageID != nil {
+		m["starter_message_id"] = id.Format(*r.ThreadStarterMessageID)
+	}
+	return m
+}
+
+// AttachThreadState adds message_count, member_count and the viewer's `joined` to a thread's
+// wire form (a no-op for a room that is not a thread).
+func AttachThreadState(m map[string]interface{}, st ThreadState) {
+	t, _ := m["thread"].(map[string]interface{})
+	if t == nil {
+		return
+	}
+	t["message_count"] = st.MessageCount
+	t["member_count"] = st.MemberCount
+	t["joined"] = st.Joined
 }

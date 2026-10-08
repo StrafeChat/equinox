@@ -54,10 +54,25 @@ type Room struct {
 	// Voice rooms only. UserLimit caps how many people can be connected at once (0 =
 	// unlimited; members with Move Members bypass it, as on Discord). Bitrate is the
 	// audio bitrate clients publish at, in bits per second (0 = DefaultVoiceBitrate).
-	UserLimit int       `db:"user_limit" json:"user_limit,omitempty"`
-	Bitrate   int       `db:"bitrate" json:"bitrate,omitempty"`
-	CreatedAt time.Time `db:"created_at" json:"created_at"`
-	UpdatedAt time.Time `db:"updated_at" json:"updated_at"`
+	UserLimit int `db:"user_limit" json:"user_limit,omitempty"`
+	Bitrate   int `db:"bitrate" json:"bitrate,omitempty"`
+	// Thread state (TypeThread only; see the threads module). A thread is a room inside a
+	// space text channel: ParentID is that channel and CreatorID its owner. A public thread
+	// is visible to whoever can view the channel, a private one to its members
+	// (thread_members) and Manage Threads holders. An archived thread leaves the active list
+	// and takes no writes but a plain message, which unarchives it; a locked one takes nothing
+	// from members without Manage Threads. ThreadStarterMessageID is set when the thread was
+	// started from a message - it is also the thread's own id, as on Discord.
+	ThreadArchived         *bool      `db:"thread_archived" json:"thread_archived,omitempty"`
+	ThreadArchivedAt       *time.Time `db:"thread_archived_at" json:"thread_archived_at,omitempty"`
+	ThreadAutoArchiveMin   int        `db:"thread_auto_archive_minutes" json:"thread_auto_archive_minutes,omitempty"`
+	ThreadLocked           *bool      `db:"thread_locked" json:"thread_locked,omitempty"`
+	ThreadPrivate          *bool      `db:"thread_private" json:"thread_private,omitempty"`
+	ThreadInvitable        *bool      `db:"thread_invitable" json:"thread_invitable,omitempty"`
+	ThreadLastActiveAt     *time.Time `db:"thread_last_active_at" json:"thread_last_active_at,omitempty"`
+	ThreadStarterMessageID *int64     `db:"thread_starter_message_id" json:"thread_starter_message_id,omitempty"`
+	CreatedAt              time.Time  `db:"created_at" json:"created_at"`
+	UpdatedAt              time.Time  `db:"updated_at" json:"updated_at"`
 }
 
 // Voice room setting bounds. Bitrates are Opus-sensible: 8 kbps is barely intelligible,
@@ -174,4 +189,43 @@ type RoomBySpaceRow struct {
 	RoomID    int64     `db:"room_id"`
 	Position  int       `db:"position"`
 	CreatedAt time.Time `db:"created_at"`
+}
+
+// IsThread reports whether the room is a thread (see the threads module).
+func (r *Room) IsThread() bool { return r != nil && r.Type == TypeThread }
+
+func (r *Room) ThreadIsArchived() bool {
+	return r != nil && r.ThreadArchived != nil && *r.ThreadArchived
+}
+func (r *Room) ThreadIsLocked() bool  { return r != nil && r.ThreadLocked != nil && *r.ThreadLocked }
+func (r *Room) ThreadIsPrivate() bool { return r != nil && r.ThreadPrivate != nil && *r.ThreadPrivate }
+
+// ThreadIsInvitable reports whether members may add others to a private thread (default yes).
+func (r *Room) ThreadIsInvitable() bool {
+	return r != nil && (r.ThreadInvitable == nil || *r.ThreadInvitable)
+}
+
+// ThreadMember is a thread_members row.
+type ThreadMember struct {
+	RoomID   int64     `db:"room_id"`
+	UserID   int64     `db:"user_id"`
+	JoinedAt time.Time `db:"joined_at"`
+}
+
+// ThreadArchiveDue is a thread_archive_queue row: when a thread would auto-archive.
+type ThreadArchiveDue struct {
+	Bucket string
+	DueAt  time.Time
+	RoomID int64
+}
+
+// ThreadPatch is a partial update of a thread's settings; nil fields are left alone.
+type ThreadPatch struct {
+	Name               *string
+	Archived           *bool
+	Locked             *bool
+	Invitable          *bool
+	AutoArchiveMinutes *int
+	SlowmodeSeconds    *int
+	LastActiveAt       *time.Time
 }

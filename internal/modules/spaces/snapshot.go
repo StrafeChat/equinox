@@ -11,6 +11,7 @@ import (
 	"github.com/StrafeChat/equinox/internal/id"
 	"github.com/StrafeChat/equinox/internal/logger"
 	"github.com/StrafeChat/equinox/internal/modules/permissions"
+	"github.com/StrafeChat/equinox/internal/modules/rooms"
 	"github.com/StrafeChat/equinox/internal/safego"
 )
 
@@ -21,11 +22,14 @@ type RoomOverrides struct {
 }
 
 // RoomMeta is the little bit of a room the permission resolver needs beyond its overrides:
-// its parent section and whether it is synced to that section (follows the section's overrides
-// instead of its own - Discord's category sync).
+// its parent, whether it is a channel synced to that parent section (follows the section's
+// overrides instead of its own - Discord's category sync), or a thread (always resolves
+// through its parent channel), and whether a thread is private (members only).
 type RoomMeta struct {
 	ParentID int64 `json:"parent_id"`
 	Synced   bool  `json:"synced"`
+	Thread   bool  `json:"thread,omitempty"`
+	Private  bool  `json:"private,omitempty"`
 }
 
 // Snapshot is everything needed to resolve any member's permissions anywhere in a space
@@ -66,8 +70,15 @@ func (snap *Snapshot) EffectiveRoomOverrides(roomID int64) RoomOverrides {
 	if snap == nil {
 		return RoomOverrides{}
 	}
-	if m, ok := snap.Meta[roomID]; ok && m.Synced && m.ParentID != 0 {
-		return snap.Overrides[m.ParentID]
+	if m, ok := snap.Meta[roomID]; ok && m.ParentID != 0 {
+		// A thread has no overrides of its own: it is its channel's, and through the channel a
+		// synced section's (Discord: threads inherit the parent channel's overwrites).
+		if m.Thread {
+			return snap.EffectiveRoomOverrides(m.ParentID)
+		}
+		if m.Synced {
+			return snap.Overrides[m.ParentID]
+		}
 	}
 	return snap.Overrides[roomID]
 }
@@ -104,8 +115,9 @@ func (s *Service) snapshotKey(spaceID int64) string {
 	// The version segment guards against a cache poisoned by a differently-shaped snapshot -
 	// e.g. during a deploy when the API and the gateway (which share this cache) briefly run
 	// different versions. Bump it whenever the Snapshot struct's stored shape changes.
-	// v2 added RoomMeta (parent + sync) for category permission inheritance.
-	return prefix + "space:snapshot:v2:" + id.Format(spaceID)
+	// v2 added RoomMeta (parent + sync) for category permission inheritance; v3 marks threads
+	// (which resolve through their channel) and private threads in it.
+	return prefix + "space:snapshot:v3:" + id.Format(spaceID)
 }
 
 // Snapshot returns the space's full permission snapshot, from Redis when cached.
@@ -201,7 +213,7 @@ func (s *Service) buildSnapshot(ctx context.Context, spaceID int64, only []int64
 			if r.ParentID != nil {
 				parent = *r.ParentID
 			}
-			meta[r.ID] = RoomMeta{ParentID: parent, Synced: r.PermissionsSynced != nil && *r.PermissionsSynced}
+			meta[r.ID] = RoomMeta{ParentID: parent, Synced: r.PermissionsSynced != nil && *r.PermissionsSynced, Thread: r.Type == rooms.TypeThread, Private: r.ThreadIsPrivate()}
 		}
 	}
 	overrideIDs := roomIDs
@@ -209,6 +221,32 @@ func (s *Service) buildSnapshot(ctx context.Context, spaceID int64, only []int64
 		seen := make(map[int64]struct{}, len(roomIDs))
 		for _, rid := range roomIDs {
 			seen[rid] = struct{}{}
+		}
+		// A thread resolves through its channel: pull the channel in (its meta too, since the
+		// channel may itself be synced to a section) so the single-room snapshot can resolve it.
+		var parents []int64
+		for _, m := range meta {
+			if m.Thread && m.ParentID != 0 {
+				if _, ok := seen[m.ParentID]; !ok {
+					seen[m.ParentID] = struct{}{}
+					parents = append(parents, m.ParentID)
+					overrideIDs = append(overrideIDs, m.ParentID)
+				}
+			}
+		}
+		if len(parents) > 0 {
+			if rs, err := s.roomRepo.GetByIDs(ctx, parents); err == nil {
+				for _, r := range rs {
+					if r == nil {
+						continue
+					}
+					var parent int64
+					if r.ParentID != nil {
+						parent = *r.ParentID
+					}
+					meta[r.ID] = RoomMeta{ParentID: parent, Synced: r.PermissionsSynced != nil && *r.PermissionsSynced}
+				}
+			}
 		}
 		for _, m := range meta {
 			if m.Synced && m.ParentID != 0 {

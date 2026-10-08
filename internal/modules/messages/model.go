@@ -73,6 +73,8 @@ type Message struct {
 	// room_pins keeps the room\'s ordered list, these make `pinned` free on every read.
 	PinnedAt *time.Time `db:"pinned_at" json:"pinned_at,omitempty"`
 	PinnedBy int64      `db:"pinned_by" json:"pinned_by,omitempty"`
+	// ThreadID is the thread started from this message - the thread\'s own id (see threads).
+	ThreadID *int64 `db:"thread_id" json:"thread_id,omitempty"`
 }
 
 // Attachments decodes the message's attachment list (nil when there are none).

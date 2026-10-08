@@ -13,18 +13,20 @@ import (
 
 var roomsTable = table.New(table.Metadata{
 	Name:    "rooms",
-	Columns: []string{"id", "type", "space_id", "parent_id", "name", "topic", "slowmode_seconds", "position", "creator_id", "e2ee_enabled", "last_message_id", "user_limit", "bitrate", "permissions_synced", "created_at", "updated_at"},
+	Columns: []string{"id", "type", "space_id", "parent_id", "name", "topic", "slowmode_seconds", "position", "creator_id", "e2ee_enabled", "last_message_id", "user_limit", "bitrate", "permissions_synced", "created_at", "updated_at", "thread_archived", "thread_archived_at", "thread_auto_archive_minutes", "thread_locked", "thread_private", "thread_invitable", "thread_last_active_at", "thread_starter_message_id"},
 	PartKey: []string{"id"},
 })
 
 // insertRoomStmt spells out the INSERT columns (see insertRoomsByUserStmt for why) - the
-// voice settings columns were added after every other column and the positional binds
-// below must match this list exactly.
+// voice settings columns, then permissions_synced, then the thread columns were added after
+// every other column and the positional binds below must match this list exactly.
 var insertRoomStmt, _ = qb.Insert("rooms").
 	Columns(
 		"id", "type", "space_id", "parent_id", "name", "topic", "slowmode_seconds", "position",
 		"creator_id", "e2ee_enabled", "last_message_id", "user_limit", "bitrate", "permissions_synced",
 		"created_at", "updated_at",
+		"thread_archived", "thread_archived_at", "thread_auto_archive_minutes", "thread_locked", "thread_private", "thread_invitable",
+		"thread_last_active_at", "thread_starter_message_id",
 	).ToCql()
 
 var participantsTable = table.New(table.Metadata{
@@ -120,6 +122,24 @@ type Repository interface {
 	UpdateSpaceRoomParentAndPosition(ctx context.Context, spaceID, roomID int64, parentID *int64, position int) error
 	// SetRoomNotifySettings writes this user's mute/notify-mode override for roomID.
 	SetRoomNotifySettings(ctx context.Context, userID, roomID int64, muted bool, mutedUntil *time.Time, notifyMode int) error
+
+	// Threads (repo_threads.go): the thread room itself, its members both ways, its message
+	// counter and the auto-archive queue.
+	CreateThread(ctx context.Context, room *Room) error
+	UpdateThread(ctx context.Context, roomID int64, p ThreadPatch) error
+	DeleteThread(ctx context.Context, spaceID, roomID int64) error
+	AddThreadMember(ctx context.Context, roomID, userID int64, at time.Time) error
+	RemoveThreadMember(ctx context.Context, roomID, userID int64) error
+	IsThreadMember(ctx context.Context, roomID, userID int64) (bool, error)
+	ListThreadMembers(ctx context.Context, roomID int64) ([]ThreadMember, error)
+	ListThreadMemberIDs(ctx context.Context, roomID int64) ([]int64, error)
+	ListUserThreadIDs(ctx context.Context, userID int64) ([]int64, error)
+	CountThreadMembers(ctx context.Context, roomID int64) (int, error)
+	AddThreadMessages(ctx context.Context, roomID int64, delta int64) error
+	ThreadMessageCounts(ctx context.Context, roomIDs []int64) (map[int64]int64, error)
+	EnqueueThreadArchive(ctx context.Context, roomID int64, dueAt time.Time) error
+	ListThreadArchiveDue(ctx context.Context, bucket string, before time.Time) ([]ThreadArchiveDue, error)
+	DeleteThreadArchiveDue(ctx context.Context, d ThreadArchiveDue) error
 }
 
 type repo struct {
@@ -143,7 +163,7 @@ func (r *repo) Create(ctx context.Context, room *Room, participantIDs []int64) e
 	room.UpdatedAt = now
 
 	b := r.session.Batch(gocql.LoggedBatch).WithContext(ctx)
-	b.Query(insertRoomStmt, room.ID, room.Type, room.SpaceID, room.ParentID, room.Name, room.Topic, room.SlowmodeSeconds, room.Position, room.CreatorID, room.E2EEEnabled, room.LastMessageID, room.UserLimit, room.Bitrate, room.PermissionsSynced, room.CreatedAt, room.UpdatedAt)
+	b.Query(insertRoomStmt, room.ID, room.Type, room.SpaceID, room.ParentID, room.Name, room.Topic, room.SlowmodeSeconds, room.Position, room.CreatorID, room.E2EEEnabled, room.LastMessageID, room.UserLimit, room.Bitrate, room.PermissionsSynced, room.CreatedAt, room.UpdatedAt, room.ThreadArchived, room.ThreadArchivedAt, room.ThreadAutoArchiveMin, room.ThreadLocked, room.ThreadPrivate, room.ThreadInvitable, room.ThreadLastActiveAt, room.ThreadStarterMessageID)
 
 	stmt, _ := participantsTable.Insert()
 	for _, uid := range participantIDs {
@@ -503,7 +523,7 @@ func (r *repo) CreateSpaceRoom(ctx context.Context, room *Room) error {
 	room.CreatedAt = now
 	room.UpdatedAt = now
 	b := r.session.Batch(gocql.LoggedBatch).WithContext(ctx)
-	b.Query(insertRoomStmt, room.ID, room.Type, room.SpaceID, room.ParentID, room.Name, room.Topic, room.SlowmodeSeconds, room.Position, room.CreatorID, room.E2EEEnabled, room.LastMessageID, room.UserLimit, room.Bitrate, room.PermissionsSynced, room.CreatedAt, room.UpdatedAt)
+	b.Query(insertRoomStmt, room.ID, room.Type, room.SpaceID, room.ParentID, room.Name, room.Topic, room.SlowmodeSeconds, room.Position, room.CreatorID, room.E2EEEnabled, room.LastMessageID, room.UserLimit, room.Bitrate, room.PermissionsSynced, room.CreatedAt, room.UpdatedAt, room.ThreadArchived, room.ThreadArchivedAt, room.ThreadAutoArchiveMin, room.ThreadLocked, room.ThreadPrivate, room.ThreadInvitable, room.ThreadLastActiveAt, room.ThreadStarterMessageID)
 	stmt, _ := roomsBySpaceTable.Insert()
 	b.Query(stmt, *room.SpaceID, room.ID, room.Position, now)
 	return r.session.ExecuteBatch(b)

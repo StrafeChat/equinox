@@ -27,10 +27,10 @@ func TestInsertRoomsByUserArityMatchesCallers(t *testing.T) {
 }
 
 // Create and CreateSpaceRoom bind the rooms row positionally too; the voice columns
-// (user_limit, bitrate) and then permissions_synced were added after the rest, and both
-// callers pass them.
+// (user_limit, bitrate), then permissions_synced, then the eight thread columns were added
+// after the rest, and both callers pass them.
 func TestInsertRoomArityMatchesCallers(t *testing.T) {
-	const wantValues = 16
+	const wantValues = 24
 	if got := strings.Count(insertRoomStmt, "?"); got != wantValues {
 		t.Fatalf("statement has %d bind markers, callers pass %d: %s", got, wantValues, insertRoomStmt)
 	}

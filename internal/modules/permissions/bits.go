@@ -53,6 +53,24 @@ const (
 	PermAttachFiles int64 = 1 << 23
 )
 
+// Threads (appended after Attach Files; room-scoped, Discord's four). Send Messages does not
+// grant sending in a thread - Send Messages In Threads does; Manage Threads edits, archives,
+// locks and deletes any thread and sees private ones. Threads otherwise inherit the parent
+// channel's permissions and overrides.
+const (
+	PermCreatePublicThreads   int64 = 1 << 24
+	PermCreatePrivateThreads  int64 = 1 << 25
+	PermSendMessagesInThreads int64 = 1 << 26
+	PermManageThreads         int64 = 1 << 27
+)
+
+// AllThreads is every thread bit; DefaultThreads is what @everyone gets: start public
+// threads and talk in threads.
+const (
+	AllThreads     = PermCreatePublicThreads | PermCreatePrivateThreads | PermSendMessagesInThreads | PermManageThreads
+	DefaultThreads = PermCreatePublicThreads | PermSendMessagesInThreads
+)
+
 // AllVoice is every voice bit.
 const AllVoice = PermConnect | PermSpeak | PermVideo | PermMuteMembers | PermDeafenMembers |
 	PermMoveMembers | PermUseVAD | PermPrioritySpeaker
@@ -64,13 +82,13 @@ const DefaultVoice = PermConnect | PermSpeak | PermVideo | PermUseVAD
 // DefaultEveryone is @everyone for new spaces: Discord's defaults for a member with no
 // roles - can view/talk/react/invite and use voice, cannot manage anything or mass-mention.
 const DefaultEveryone = PermViewRoom | PermSendMessages | PermReadMessageHistory |
-	PermAddReactions | PermUseExternalEmojis | PermCreateInvite | PermAttachFiles | DefaultVoice
+	PermAddReactions | PermUseExternalEmojis | PermCreateInvite | PermAttachFiles | DefaultThreads | DefaultVoice
 
 // AllRoom is every room-scoped bit: space owner's implicit permissions in any room, and
 // what Administrator resolves to for EffectiveChannelPermissions.
 const AllRoom = PermViewRoom | PermSendMessages | PermReadMessageHistory |
 	PermAddReactions | PermUseExternalEmojis | PermMentionEveryone | PermManageMessages |
-	PermAttachFiles | AllVoice
+	PermAttachFiles | AllThreads | AllVoice
 
 // AllSpace is every space-scoped bit: space owner's implicit permissions, and what
 // Administrator resolves to for SpacePermissionBase.

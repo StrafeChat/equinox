@@ -30,7 +30,15 @@ func (s *Service) EffectiveChannelPermissions(ctx context.Context, userID, space
 		return permissions.AllRoom, nil
 	}
 	ov := snap.EffectiveRoomOverrides(roomID)
-	return resolveEffectiveRoomPermissions(base, snap.EveryoneRoleID, mem.RoleIDs, userID, ov.Roles, ov.Users), nil
+	perms := resolveEffectiveRoomPermissions(base, snap.EveryoneRoleID, mem.RoleIDs, userID, ov.Roles, ov.Users)
+	// A private thread exists only for its members and Manage Threads holders (Discord's rule);
+	// everyone else gets nothing there, not even View.
+	if m, ok := snap.Meta[roomID]; ok && m.Thread && m.Private && !permissions.Has(perms, permissions.PermManageThreads) {
+		if member, err := s.roomRepo.IsThreadMember(ctx, roomID, userID); err != nil || !member {
+			return 0, nil
+		}
+	}
+	return perms, nil
 }
 
 func resolveEffectiveRoomPermissions(

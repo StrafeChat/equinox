@@ -159,3 +159,115 @@ func (s *Service) backfillAttachOverrides(ctx context.Context, spaceID, roomID i
 	}
 	return n, nil
 }
+
+// Data migration for the thread bits (permissions.AllThreads, 1<<24..1<<27).
+const dataMigrationThreadPermissions = "046_thread_permissions"
+
+// BackfillThreadPermissions gives existing spaces Discord's thread defaults: every role (and
+// every override) that may send messages may also start public threads and talk in them,
+// and every role that may manage messages may manage threads - so moderators of a space
+// created before threads existed can moderate them without a role edit. Exactly once per
+// keyspace; idempotent if re-run (the ORs are no-ops the second time).
+func (s *Service) BackfillThreadPermissions(ctx context.Context) error {
+	claimed, err := s.repo.ClaimDataMigration(ctx, dataMigrationThreadPermissions)
+	if err != nil || !claimed {
+		return err
+	}
+	now := time.Now().UTC()
+	spaceIDs := map[int64]struct{}{}
+	roles := 0
+	err = s.repo.ForEachSpaceRole(ctx, func(spaceID, roleID int64, _ string, perms int64) error {
+		spaceIDs[spaceID] = struct{}{}
+		next := mirrorThreadBits(perms)
+		if next == perms {
+			return nil
+		}
+		if err := s.repo.UpdateSpaceRolePermissions(ctx, spaceID, roleID, next, now); err != nil {
+			return err
+		}
+		roles++
+		return nil
+	})
+	overrides := 0
+	if err == nil {
+	spaces:
+		for spaceID := range spaceIDs {
+			roomRows, lerr := s.roomRepo.ListBySpace(ctx, spaceID)
+			if lerr != nil {
+				err = lerr
+				break
+			}
+			for _, r := range roomRows {
+				n, oerr := s.backfillOverrides(ctx, spaceID, r.RoomID, now, func(allow, deny *int64) bool {
+					a, d := mirrorThreadBits(*allow), mirrorThreadBits(*deny)
+					changed := a != *allow || d != *deny
+					*allow, *deny = a, d
+					return changed
+				})
+				overrides += n
+				if oerr != nil {
+					err = oerr
+					break spaces
+				}
+			}
+		}
+	}
+	if err != nil {
+		if relErr := s.repo.ReleaseDataMigration(ctx, dataMigrationThreadPermissions); relErr != nil {
+			logger.Err("spaces", relErr, map[string]any{"data_migration": dataMigrationThreadPermissions})
+		}
+		return err
+	}
+	for spaceID := range spaceIDs {
+		s.invalidateSnapshot(ctx, spaceID)
+	}
+	logger.Info("spaces", "thread permissions backfilled on %d role(s) and %d override(s) across %d space(s)", roles, overrides, len(spaceIDs))
+	return nil
+}
+
+// mirrorThreadBits derives the thread bits a mask implies: Send Messages brings Create Public
+// Threads and Send Messages In Threads, Manage Messages brings Manage Threads.
+func mirrorThreadBits(mask int64) int64 {
+	if mask&permissions.PermSendMessages != 0 {
+		mask |= permissions.DefaultThreads
+	}
+	if mask&permissions.PermManageMessages != 0 {
+		mask |= permissions.PermManageThreads
+	}
+	return mask
+}
+
+// backfillOverrides applies mirror to every override of one room and stores the ones it
+// changed. Returns how many.
+func (s *Service) backfillOverrides(ctx context.Context, spaceID, roomID int64, now time.Time, mirror func(allow, deny *int64) bool) (int, error) {
+	n := 0
+	roleOvs, err := s.repo.ListRoomRoleOverrides(ctx, spaceID, roomID)
+	if err != nil {
+		return 0, err
+	}
+	for i := range roleOvs {
+		o := roleOvs[i]
+		if mirror(&o.Allow, &o.Deny) {
+			o.UpdatedAt = now
+			if err := s.repo.UpsertRoomRoleOverride(ctx, &o); err != nil {
+				return n, err
+			}
+			n++
+		}
+	}
+	userOvs, err := s.repo.ListRoomUserOverrides(ctx, spaceID, roomID)
+	if err != nil {
+		return n, err
+	}
+	for i := range userOvs {
+		o := userOvs[i]
+		if mirror(&o.Allow, &o.Deny) {
+			o.UpdatedAt = now
+			if err := s.repo.UpsertRoomUserOverride(ctx, &o); err != nil {
+				return n, err
+			}
+			n++
+		}
+	}
+	return n, nil
+}

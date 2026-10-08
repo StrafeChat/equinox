@@ -7,6 +7,7 @@ import (
 	"github.com/StrafeChat/equinox/internal/modules/messages"
 	"github.com/StrafeChat/equinox/internal/modules/rooms"
 	"github.com/StrafeChat/equinox/internal/modules/spaces"
+	"github.com/StrafeChat/equinox/internal/modules/threads"
 	"time"
 )
 
@@ -25,6 +26,15 @@ func SetupMessagesRoutes(d Deps) {
 	}
 	msgHandler := messages.NewHandler(msgSvc)
 	msgSvc.StartOrphanSweeper(context.Background())
+	// Threads: the service that owns them (its routes are mounted below) and the hooks a
+	// message in a thread fires - activity, counts, auto-join.
+	threadSvc := threads.NewService(roomRepo, msgRepo, spaceSvc, userRepo, d.Redis, d.Config, newSystemMessenger(d, roomRepo, msgRepo))
+	if d.Federation != nil {
+		spaceSvc.SetFederator(d.Federation)
+		threadSvc.SetFederation(d.Federation)
+	}
+	msgSvc.SetThreadHooks(threadSvc)
+	registerThreadRoutes(d, requireAuth, threadSvc)
 
 	r := d.App.Group("/rooms", requireAuth)
 	// Uploads are the one message action that costs disk: cap them per account so a flood

@@ -173,10 +173,24 @@ func (h *Handler) GetRooms(c fiber.Ctx) error {
 	if err != nil {
 		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "invalid space id"})
 	}
-	roomList, snap, err := h.svc.ListSpaceRoomsWithOverrides(c.Context(), user.ID, spaceID)
+	if ok, err := h.svc.IsMember(c.Context(), spaceID, user.ID); err != nil {
+		return spaceError(c, err, map[string]any{"space_id": spaceID})
+	} else if !ok {
+		return spaceError(c, ErrNotMember, map[string]any{"space_id": spaceID})
+	}
+	// Only the rooms this member may view - READY's rule - so a private channel, or a private
+	// or archived thread, is never handed to a client that cannot see it.
+	roomList, snap, err := h.svc.VisibleSpaceRooms(c.Context(), user.ID, spaceID)
 	if err != nil {
 		return spaceError(c, err, map[string]any{"space_id": spaceID})
 	}
+	var threadIDs []int64
+	for _, r := range roomList {
+		if r.Type == rooms.TypeThread {
+			threadIDs = append(threadIDs, r.ID)
+		}
+	}
+	threadStates, _ := h.svc.ThreadStates(c.Context(), user.ID, threadIDs)
 	// Per-user read-state: a plain REST refresh used to return none at all for space
 	// channels (only the WS READY payload carried it), unlike GET /rooms for PMs. One
 	// partition read for every room the user has state in, not one read per room.
@@ -192,6 +206,9 @@ func (h *Handler) GetRooms(c fiber.Ctx) error {
 		m := spaceRoomToJSON(r)
 		AttachOverrides(m, snap.RoomOverridesFor(r.ID))
 		AttachFederation(m, feds[r.ID])
+		if r.Type == rooms.TypeThread {
+			AttachThreadState(m, threadStates[r.ID])
+		}
 		row := userRows[r.ID]
 		if row != nil && row.LastReadMessageID != nil {
 			m["last_read_message_id"] = id.Format(*row.LastReadMessageID)

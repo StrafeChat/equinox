@@ -250,7 +250,7 @@ func (s *Service) SearchSpaceMessages(ctx context.Context, userID, spaceID int64
 	var targets []int64
 	encrypted := 0
 	for _, room := range loaded {
-		if room == nil || room.Type != rooms.TypeSpaceText {
+		if room == nil || (room.Type != rooms.TypeSpaceText && room.Type != rooms.TypeThread) {
 			continue
 		}
 		if !roomE2EEOff(room) {

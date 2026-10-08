@@ -864,7 +864,13 @@ func (s *Service) putMirrorRoom(ctx context.Context, spaceID int64, mr MirrorRoo
 		return err
 	}
 	if existing == nil {
-		if err := s.roomRepo.CreateSpaceRoom(ctx, room); err != nil {
+		var err error
+		if room.Type == rooms.TypeThread {
+			err = s.roomRepo.CreateThread(ctx, room)
+		} else {
+			err = s.roomRepo.CreateSpaceRoom(ctx, room)
+		}
+		if err != nil {
 			return err
 		}
 	} else {
@@ -880,6 +886,22 @@ func (s *Service) putMirrorRoom(ctx context.Context, spaceID int64, mr MirrorRoo
 		}
 		if existing.UserLimit != room.UserLimit || existing.Bitrate != room.Bitrate {
 			if err := s.roomRepo.UpdateVoiceSettings(ctx, room.ID, room.UserLimit, room.Bitrate); err != nil {
+				return err
+			}
+		}
+		if room.Type == rooms.TypeThread {
+			patch := rooms.ThreadPatch{Invitable: room.ThreadInvitable, LastActiveAt: room.ThreadLastActiveAt}
+			if room.ThreadArchived != nil && existing.ThreadIsArchived() != *room.ThreadArchived {
+				patch.Archived = room.ThreadArchived
+			}
+			if room.ThreadLocked != nil && existing.ThreadIsLocked() != *room.ThreadLocked {
+				patch.Locked = room.ThreadLocked
+			}
+			if room.ThreadAutoArchiveMin > 0 && room.ThreadAutoArchiveMin != existing.ThreadAutoArchiveMin {
+				a := room.ThreadAutoArchiveMin
+				patch.AutoArchiveMinutes = &a
+			}
+			if err := s.roomRepo.UpdateThread(ctx, room.ID, patch); err != nil {
 				return err
 			}
 		}

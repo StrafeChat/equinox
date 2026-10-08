@@ -53,6 +53,9 @@ func (h *Handler) Create(c fiber.Ctx) error {
 		if err == ErrAttachForbidden {
 			return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": err.Error()})
 		}
+		if err == ErrThreadLocked || err == ErrThreadArchived {
+			return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": err.Error()})
+		}
 		if err == ErrForbidden {
 			return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": "missing permission to send messages in this channel"})
 		}
@@ -150,6 +153,8 @@ func (h *Handler) UploadAttachment(c fiber.Ctx) error {
 			return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": "not a participant"})
 		case ErrAttachForbidden:
 			return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": err.Error()})
+		case ErrThreadLocked, ErrThreadArchived:
+			return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": err.Error()})
 		case ErrForbidden:
 			return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": "missing permission to send messages in this channel"})
 		case ErrRoomNotFound:
@@ -198,6 +203,9 @@ func (h *Handler) Get(c fiber.Ctx) error {
 		}
 		if err == ErrNotParticipant {
 			return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": "not a participant"})
+		}
+		if err == ErrThreadLocked || err == ErrThreadArchived {
+			return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": err.Error()})
 		}
 		if err == ErrForbidden {
 			return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": "missing permission to read this channel"})
@@ -287,6 +295,9 @@ func (h *Handler) List(c fiber.Ctx) error {
 		if err == ErrNotParticipant {
 			return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": "not a participant"})
 		}
+		if err == ErrThreadLocked || err == ErrThreadArchived {
+			return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": err.Error()})
+		}
 		if err == ErrForbidden {
 			return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": "missing permission to read this channel"})
 		}
@@ -328,6 +339,9 @@ func (h *Handler) Edit(c fiber.Ctx) error {
 		if err == ErrMessageNotFound {
 			return c.Status(http.StatusNotFound).JSON(fiber.Map{"error": "message not found"})
 		}
+		if err == ErrThreadLocked || err == ErrThreadArchived {
+			return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": err.Error()})
+		}
 		if err == ErrForbidden {
 			return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": "cannot edit this message"})
 		}
@@ -366,6 +380,9 @@ func (h *Handler) Delete(c fiber.Ctx) error {
 		}
 		if err == ErrMessageNotFound {
 			return c.Status(http.StatusNotFound).JSON(fiber.Map{"error": "message not found"})
+		}
+		if err == ErrThreadLocked || err == ErrThreadArchived {
+			return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": err.Error()})
 		}
 		if err == ErrForbidden {
 			return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": "cannot delete this message"})
@@ -417,6 +434,9 @@ func messageToJSON(m *Message, reactions []ReactionSummary) fiber.Map {
 		if m.PinnedBy != 0 {
 			out["pinned_by"] = id.Format(m.PinnedBy)
 		}
+	}
+	if m.ThreadID != nil {
+		out["thread_id"] = id.Format(*m.ThreadID)
 	}
 	if len(reactions) > 0 {
 		out["reactions"] = reactions

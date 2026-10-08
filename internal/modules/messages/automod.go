@@ -81,7 +81,7 @@ var (
 // sendPolicy is the space's policy for this sender, or nil when nothing applies: not a
 // space channel, nothing switched on, or the sender is exempt.
 func (s *Service) sendPolicy(ctx context.Context, userID, roomID int64, room *rooms.Room) *spaces.SendPolicy {
-	if room.SpaceID == nil || s.spaceAuth == nil || (room.Type != rooms.TypeSpaceText && room.Type != rooms.TypeSpaceVoice) {
+	if room.SpaceID == nil || s.spaceAuth == nil || (room.Type != rooms.TypeSpaceText && room.Type != rooms.TypeSpaceVoice && room.Type != rooms.TypeThread) {
 		return nil
 	}
 	p, err := s.spaceAuth.SendPolicy(ctx, *room.SpaceID, userID)

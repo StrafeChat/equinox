@@ -191,6 +191,19 @@ type SpaceChannelAuth interface {
 	InviteBelongsToSpace(ctx context.Context, code string, spaceID int64) (bool, error)
 }
 
+// ThreadHooks is what a message in a thread tells the threads module: it is active again,
+// its count changed, its sender and the people they mentioned are members now. Set by the
+// routes; nil when threads are not wired (tests).
+type ThreadHooks interface {
+	OnThreadMessage(ctx context.Context, room *rooms.Room, senderID int64, mentioned []int64)
+	OnThreadMessageDeleted(ctx context.Context, room *rooms.Room)
+}
+
+var (
+	ErrThreadLocked   = errors.New("this thread is locked")
+	ErrThreadArchived = errors.New("this thread is archived")
+)
+
 // Federator relays message events to the other instances whose users share the room.
 // Implemented by internal/federation; nil when this instance doesn't federate. The After*
 // hooks are best-effort and must not block the request.
@@ -249,11 +262,15 @@ type Service struct {
 	cfg       *config.Config
 	spaceAuth SpaceChannelAuth
 	federator Federator
+	threads   ThreadHooks
 }
 
 func NewService(repo Repository, roomsRepo rooms.Repository, userRepo auth.UserRepository, redis *redis.Client, cfg *config.Config, spaceAuth SpaceChannelAuth) *Service {
 	return &Service{repo: repo, rooms: roomsRepo, userRepo: userRepo, redis: redis, cfg: cfg, spaceAuth: spaceAuth}
 }
+
+// SetThreadHooks wires the threads module in.
+func (s *Service) SetThreadHooks(h ThreadHooks) { s.threads = h }
 
 // SetFederator wires outbound federation for messages.
 func (s *Service) SetFederator(f Federator) {
@@ -333,6 +350,9 @@ func (s *Service) DeleteFederated(ctx context.Context, roomID, msgID int64) erro
 	if merr == nil {
 		s.dropPinOnDelete(ctx, roomID, msg, 0)
 	}
+	if rerr == nil && room != nil && room.Type == rooms.TypeThread && s.threads != nil {
+		s.threads.OnThreadMessageDeleted(ctx, room)
+	}
 	var newLast *int64
 	lastChanged := false
 	if rerr == nil && room != nil {
@@ -373,12 +393,18 @@ func (s *Service) DeleteFederated(ctx context.Context, roomID, msgID int64) erro
 // and verifies every bit in need is present. No-op for PMs/group PMs and space
 // voice rooms - only space text rooms carry per-channel permission overrides.
 func (s *Service) checkChannelPerms(ctx context.Context, userID, roomID int64, room *rooms.Room, need ...int64) error {
-	if room.SpaceID == nil || room.Type != rooms.TypeSpaceText || s.spaceAuth == nil || len(need) == 0 {
+	if room.SpaceID == nil || (room.Type != rooms.TypeSpaceText && room.Type != rooms.TypeThread) || s.spaceAuth == nil || len(need) == 0 {
 		return nil
 	}
 	perms, err := s.spaceAuth.EffectiveChannelPermissions(ctx, userID, *room.SpaceID, roomID)
 	if err != nil {
 		return err
+	}
+	if room.Type == rooms.TypeThread {
+		need = threadNeeds(need)
+		if err := checkThreadState(room, perms, need); err != nil {
+			return err
+		}
 	}
 	for _, n := range need {
 		// Implicit rule: if user cannot view the channel, all other room permissions are irrelevant.
@@ -391,6 +417,46 @@ func (s *Service) checkChannelPerms(ctx context.Context, userID, roomID int64, r
 			}
 			return ErrForbidden
 		}
+	}
+	return nil
+}
+
+// threadNeeds translates a channel permission list for a thread: sending there is Send
+// Messages In Threads, not Send Messages (Discord's rule); everything else is the same bit.
+func threadNeeds(need []int64) []int64 {
+	out := make([]int64, 0, len(need))
+	for _, n := range need {
+		if n == permissions.PermSendMessages {
+			n = permissions.PermSendMessagesInThreads
+		}
+		out = append(out, n)
+	}
+	return out
+}
+
+// checkThreadState applies a thread's archive and lock to a write: a locked thread takes
+// nothing from members without Manage Threads; an archived (unlocked) one takes a plain
+// message - which unarchives it - but no edits, reactions or pins until it is active again.
+func checkThreadState(room *rooms.Room, perms int64, need []int64) error {
+	write, plainSend := false, true
+	for _, n := range need {
+		switch n {
+		case permissions.PermViewRoom, permissions.PermReadMessageHistory:
+		case permissions.PermSendMessagesInThreads, permissions.PermAttachFiles, permissions.PermMentionEveryone:
+			write = true
+		default:
+			write = true
+			plainSend = false
+		}
+	}
+	if !write || permissions.Has(perms, permissions.PermManageThreads) {
+		return nil
+	}
+	if room.ThreadIsLocked() {
+		return ErrThreadLocked
+	}
+	if room.ThreadIsArchived() && !plainSend {
+		return ErrThreadArchived
 	}
 	return nil
 }
@@ -442,14 +508,14 @@ func (s *Service) authorize(ctx context.Context, userID, roomID int64, need ...i
 // drift out of sync on what "this room's content is plaintext" means.
 func roomE2EEOff(room *rooms.Room) bool {
 	return (room.Type == rooms.TypeGroupPM && room.E2EEEnabled != nil && !*room.E2EEEnabled) ||
-		((room.Type == rooms.TypeSpaceText || room.Type == rooms.TypeSpaceVoice) && (room.E2EEEnabled == nil || !*room.E2EEEnabled))
+		((room.Type == rooms.TypeSpaceText || room.Type == rooms.TypeSpaceVoice || room.Type == rooms.TypeThread) && (room.E2EEEnabled == nil || !*room.E2EEEnabled))
 }
 
 // enforceSlowmode applies a space text room's slowmode to the sender: one message per
 // SlowmodeSeconds, except for members who may manage messages or manage rooms, the two
 // permissions Discord exempts. The window is a Redis key that expires on its own.
 func (s *Service) enforceSlowmode(ctx context.Context, userID, roomID int64, room *rooms.Room) error {
-	if room.SlowmodeSeconds <= 0 || room.SpaceID == nil || room.Type != rooms.TypeSpaceText || s.redis == nil {
+	if room.SlowmodeSeconds <= 0 || room.SpaceID == nil || (room.Type != rooms.TypeSpaceText && room.Type != rooms.TypeThread) || s.redis == nil {
 		return nil
 	}
 	if s.spaceAuth != nil {
@@ -487,6 +553,13 @@ func (s *Service) remoteOrigin(ctx context.Context, room *rooms.Room) string {
 // no room_participants rows).
 func (s *Service) spaceParticipants(ctx context.Context, room *rooms.Room, participants []int64) []int64 {
 	if room.SpaceID != nil && len(participants) == 0 && s.spaceAuth != nil {
+		// A thread fans out to its members only - the people Discord notifies.
+		if room.Type == rooms.TypeThread {
+			if ids, err := s.rooms.ListThreadMemberIDs(ctx, room.ID); err == nil {
+				return ids
+			}
+			return participants
+		}
 		if room.Type == rooms.TypeSpaceText || room.Type == rooms.TypeSpaceVoice {
 			ids, err := s.spaceAuth.ListSpaceMemberUserIDs(ctx, *room.SpaceID)
 			if err == nil && len(ids) > 0 {
@@ -635,6 +708,12 @@ func (s *Service) create(ctx context.Context, userID, roomID int64, in *CreateMe
 	m.SetAttachments(attachments)
 	if err := s.repo.Create(ctx, m); err != nil {
 		return nil, err
+	}
+	if room.Type == rooms.TypeThread && s.threads != nil {
+		// The thread is active again (unarchived if need be), the sender and the people they
+		// mentioned are in it now, and the fan-out below reaches the new members too.
+		s.threads.OnThreadMessage(ctx, room, userID, mentionUserIDs)
+		participants = s.spaceParticipants(ctx, room, nil)
 	}
 	for _, a := range attachments {
 		if aid, perr := id.Parse(a.ID); perr == nil {
@@ -855,6 +934,13 @@ func (s *Service) Edit(ctx context.Context, userID, roomID, msgID int64, in *Edi
 	if msg.DeletedAt != nil && !msg.DeletedAt.IsZero() {
 		return nil, ErrMessageNotFound
 	}
+	// An edit is a write for the thread's archive and lock rules (the bit itself is not what
+	// is being checked here - own messages are always editable).
+	if room.Type == rooms.TypeThread {
+		if err := s.checkChannelPerms(ctx, userID, roomID, room, permissions.PermManageMessages); err == ErrThreadLocked || err == ErrThreadArchived {
+			return nil, err
+		}
+	}
 	// Write to whichever column this room actually uses for content - previously this
 	// always wrote `ciphertext` regardless of the room's E2EE setting, so editing a
 	// message was effectively broken in any plaintext (non-E2EE) room.
@@ -895,7 +981,7 @@ func (s *Service) Delete(ctx context.Context, userID, roomID, msgID int64) error
 		return ErrMessageNotFound
 	}
 	if msg.SenderID != userID {
-		if room.SpaceID != nil && room.Type == rooms.TypeSpaceText {
+		if room.SpaceID != nil && (room.Type == rooms.TypeSpaceText || room.Type == rooms.TypeThread) {
 			if err := s.checkChannelPerms(ctx, userID, roomID, room, permissions.PermManageMessages); err != nil {
 				return err
 			}
@@ -907,6 +993,9 @@ func (s *Service) Delete(ctx context.Context, userID, roomID, msgID int64) error
 		return err
 	}
 	s.dropPinOnDelete(ctx, roomID, msg, userID)
+	if room.Type == rooms.TypeThread && s.threads != nil {
+		s.threads.OnThreadMessageDeleted(ctx, room)
+	}
 	// Space channels have no room_participants rows, so authorize() leaves `participants` empty
 	// for them. Both the read-cursor heal and the mention rollback below fan out per user, so
 	// resolve the real recipient set (the space's members) first - passing the empty slice left
@@ -1223,6 +1312,9 @@ func messageEventPayload(m *Message) map[string]interface{} {
 		if m.PinnedBy != 0 {
 			out["pinned_by"] = id.Format(m.PinnedBy)
 		}
+	}
+	if m.ThreadID != nil {
+		out["thread_id"] = id.Format(*m.ThreadID)
 	}
 	return out
 }

@@ -12,7 +12,7 @@ import (
 
 var messagesTable = table.New(table.Metadata{
 	Name:    "messages",
-	Columns: []string{"room_id", "id", "sender_id", "sender_device_id", "ciphertext", "plaintext", "reply_to_id", "mentions", "mention_everyone", "mention_roles", "system_type", "system_payload", "attachments", "created_at", "updated_at", "deleted_at", "pinned_at", "pinned_by"},
+	Columns: []string{"room_id", "id", "sender_id", "sender_device_id", "ciphertext", "plaintext", "reply_to_id", "mentions", "mention_everyone", "mention_roles", "system_type", "system_payload", "attachments", "created_at", "updated_at", "deleted_at", "pinned_at", "pinned_by", "thread_id"},
 	PartKey: []string{"room_id"},
 	SortKey: []string{"id"},
 })
@@ -55,6 +55,8 @@ type Repository interface {
 	Unpin(ctx context.Context, roomID, messageID int64, at time.Time) error
 	ListPins(ctx context.Context, roomID int64, limit int) ([]Pin, error)
 	CountPins(ctx context.Context, roomID int64) (int, error)
+	// SetThreadID points a message at the thread started from it (nil clears it).
+	SetThreadID(ctx context.Context, roomID, messageID int64, threadID *int64) error
 }
 
 type repo struct {

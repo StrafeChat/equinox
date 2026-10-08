@@ -208,10 +208,17 @@ func (p *readyDataProvider) GetReadyData(ctx context.Context, userID int64) (*st
 				spacesList = append(spacesList, spaceToReadyMap(space, snap))
 				channelIDs = append(channelIDs, id.Format(space.ID))
 				roomIDs := make([]int64, 0, len(roomListForSpace))
+				var threadIDs []int64
 				for _, r := range roomListForSpace {
 					roomIDs = append(roomIDs, r.ID)
+					if r.Type == rooms.TypeThread {
+						threadIDs = append(threadIDs, r.ID)
+					}
 				}
 				roomFeds := p.spaceSvc.RoomFederations(ctx, roomIDs)
+				// Active threads ride in space_rooms (type 6) with their counts and whether this
+				// user joined - Discord's thread sync on READY.
+				threadStates, _ := p.spaceSvc.ThreadStates(ctx, userID, threadIDs)
 				roomMaps := make([]map[string]interface{}, 0, len(roomListForSpace))
 				for _, r := range roomListForSpace {
 					if r.Type == rooms.TypeSpaceVoice {
@@ -219,6 +226,9 @@ func (p *readyDataProvider) GetReadyData(ctx context.Context, userID int64) (*st
 					}
 					m := spaces.AttachOverrides(spaces.RoomMap(r), snap.RoomOverridesFor(r.ID))
 					spaces.AttachFederation(m, roomFeds[r.ID])
+					if r.Type == rooms.TypeThread {
+						spaces.AttachThreadState(m, threadStates[r.ID])
+					}
 					ur := userRows[r.ID]
 					if ur != nil {
 						if ur.LastReadMessageID != nil {

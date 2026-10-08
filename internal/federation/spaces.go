@@ -108,6 +108,22 @@ type SpaceRoomWire struct {
 	Overrides       []SpaceOverrideWire `json:"overrides,omitempty"`
 	CreatedAt       time.Time           `json:"created_at"`
 	UpdatedAt       time.Time           `json:"updated_at"`
+	// Thread is set for a thread room (type 6): its state as the origin holds it. Thread
+	// membership is not mirrored, so a private thread is not visible on a mirror.
+	Thread *ThreadWire `json:"thread,omitempty"`
+}
+
+// ThreadWire is a thread's state on the wire (see rooms.Room's Thread* fields).
+type ThreadWire struct {
+	Archived           bool       `json:"archived"`
+	ArchivedAt         *time.Time `json:"archived_at,omitempty"`
+	AutoArchiveMinutes int        `json:"auto_archive_minutes,omitempty"`
+	Locked             bool       `json:"locked"`
+	Private            bool       `json:"private"`
+	Invitable          bool       `json:"invitable"`
+	LastActiveAt       *time.Time `json:"last_active_at,omitempty"`
+	Owner              string     `json:"owner,omitempty"` // FID
+	StarterMessage     string     `json:"starter_message,omitempty"`
 }
 
 type SpaceMemberWire struct {
@@ -399,6 +415,19 @@ func (s *Service) roomWire(ctx context.Context, room *rooms.Room, ov spaces.Room
 		E2EEEnabled: room.E2EEEnabled != nil && *room.E2EEEnabled,
 		UserLimit:   room.UserLimit, Bitrate: room.Bitrate, CreatedAt: room.CreatedAt, UpdatedAt: room.UpdatedAt,
 	}
+	if room.Type == rooms.TypeThread {
+		tw := &ThreadWire{
+			Archived: room.ThreadIsArchived(), ArchivedAt: room.ThreadArchivedAt, AutoArchiveMinutes: room.ThreadAutoArchiveMin,
+			Locked: room.ThreadIsLocked(), Private: room.ThreadIsPrivate(), Invitable: room.ThreadIsInvitable(), LastActiveAt: room.ThreadLastActiveAt,
+		}
+		if owner, _ := s.users.GetByID(ctx, room.CreatorID); owner != nil {
+			tw.Owner = s.FIDOf(owner)
+		}
+		if room.ThreadStarterMessageID != nil {
+			tw.StarterMessage = id.Format(*room.ThreadStarterMessageID)
+		}
+		w.Thread = tw
+	}
 	for _, o := range ov.Roles {
 		w.Overrides = append(w.Overrides, SpaceOverrideWire{Role: id.Format(o.RoleID), Allow: o.Allow, Deny: o.Deny, CreatedAt: o.CreatedAt, UpdatedAt: o.UpdatedAt})
 	}
@@ -608,9 +637,24 @@ func (s *Service) mirrorRoom(ctx context.Context, origin string, w SpaceRoomWire
 		SlowmodeSeconds: w.SlowmodeSeconds, Position: w.Position, UserLimit: w.UserLimit, Bitrate: w.Bitrate,
 		CreatedAt: w.CreatedAt, UpdatedAt: w.UpdatedAt,
 	}
-	if w.Type == rooms.TypeSpaceText || w.Type == rooms.TypeSpaceVoice {
+	if w.Type == rooms.TypeSpaceText || w.Type == rooms.TypeSpaceVoice || w.Type == rooms.TypeThread {
 		e2ee := w.E2EEEnabled
 		room.E2EEEnabled = &e2ee
+	}
+	if w.Type == rooms.TypeThread && w.Thread != nil {
+		archived, locked, private, invitable := w.Thread.Archived, w.Thread.Locked, w.Thread.Private, w.Thread.Invitable
+		room.ThreadArchived, room.ThreadLocked, room.ThreadPrivate, room.ThreadInvitable = &archived, &locked, &private, &invitable
+		room.ThreadArchivedAt, room.ThreadLastActiveAt, room.ThreadAutoArchiveMin = w.Thread.ArchivedAt, w.Thread.LastActiveAt, w.Thread.AutoArchiveMinutes
+		if w.Thread.Owner != "" {
+			if uid, err := s.ResolveLocalID(ctx, w.Thread.Owner); err == nil {
+				room.CreatorID = uid
+			}
+		}
+		if w.Thread.StarterMessage != "" {
+			if mid, err := id.Parse(w.Thread.StarterMessage); err == nil {
+				room.ThreadStarterMessageID = &mid
+			}
+		}
 	}
 	if w.Parent != "" {
 		if pid, err := id.Parse(w.Parent); err == nil {

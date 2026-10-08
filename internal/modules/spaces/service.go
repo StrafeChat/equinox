@@ -453,29 +453,55 @@ func (s *Service) VisibleSpaceRooms(ctx context.Context, userID, spaceID int64) 
 	if err != nil {
 		return nil, nil, err
 	}
-	if snap.OwnerID == userID {
-		return list, snap, nil
+	privileged := snap.OwnerID == userID
+	var base int64
+	var roleIDs []int64
+	if !privileged {
+		mem, err := s.repo.GetMember(ctx, spaceID, userID)
+		if err != nil {
+			return nil, snap, err
+		}
+		if mem == nil {
+			return nil, snap, nil
+		}
+		roleIDs = mem.RoleIDs
+		base = snap.basePermissions(roleIDs)
+		privileged = permissions.Has(base, permissions.PermAdministrator)
 	}
-	mem, err := s.repo.GetMember(ctx, spaceID, userID)
-	if err != nil {
-		return nil, snap, err
-	}
-	if mem == nil {
-		return nil, snap, nil
-	}
-	base := snap.basePermissions(mem.RoleIDs)
-	if permissions.Has(base, permissions.PermAdministrator) {
-		return list, snap, nil
+	// Threads, the way Discord syncs them: an archived one is never in the live list (it is
+	// fetched on demand), a private one only for its members and Manage Threads holders.
+	joined := map[int64]struct{}{}
+	for _, r := range list {
+		if r.Type == rooms.TypeThread {
+			if ids, err := s.roomRepo.ListUserThreadIDs(ctx, userID); err == nil {
+				for _, tid := range ids {
+					joined[tid] = struct{}{}
+				}
+			}
+			break
+		}
 	}
 	visible := make([]*rooms.Room, 0, len(list))
 	for _, r := range list {
-		// Effective overrides, so a channel synced to a private category inherits its denied
-		// View and is omitted too - not just the category itself.
-		ov := snap.EffectiveRoomOverrides(r.ID)
-		perms := resolveEffectiveRoomPermissions(base, snap.EveryoneRoleID, mem.RoleIDs, userID, ov.Roles, ov.Users)
-		if permissions.Has(perms, permissions.PermViewRoom) {
-			visible = append(visible, r)
+		if r.Type == rooms.TypeThread && r.ThreadIsArchived() {
+			continue
 		}
+		if !privileged {
+			// Effective overrides, so a channel synced to a private category inherits its denied
+			// View and is omitted too - not just the category itself; a thread resolves through
+			// its channel the same way.
+			ov := snap.EffectiveRoomOverrides(r.ID)
+			perms := resolveEffectiveRoomPermissions(base, snap.EveryoneRoleID, roleIDs, userID, ov.Roles, ov.Users)
+			if !permissions.Has(perms, permissions.PermViewRoom) {
+				continue
+			}
+			if r.ThreadIsPrivate() && !permissions.Has(perms, permissions.PermManageThreads) {
+				if _, ok := joined[r.ID]; !ok {
+					continue
+				}
+			}
+		}
+		visible = append(visible, r)
 	}
 	return visible, snap, nil
 }
@@ -982,4 +1008,89 @@ func spaceToEventPayload(s *Space) map[string]interface{} {
 		m["federation"] = s.Federation
 	}
 	return m
+}
+
+// InvalidateSnapshot drops the cached permission snapshot after a change made outside this
+// package (a thread created or deleted changes the room list it is built from).
+func (s *Service) InvalidateSnapshot(ctx context.Context, spaceID int64) {
+	s.invalidateSnapshot(ctx, spaceID)
+}
+
+// Region is the gateway region events are published for.
+func (s *Service) Region() string { return s.stargateRegion() }
+
+// FedRoomChanged tells the instances mirroring a space that one of its rooms changed.
+func (s *Service) FedRoomChanged(ctx context.Context, spaceID, roomID int64, deleted bool) {
+	s.fedRoomChanged(ctx, spaceID, roomID, deleted)
+}
+
+// ViewersOf is who may view a room: (nil, true) when the default @everyone can, so an event
+// may go space-wide; otherwise the ids of the members who can (the owner, Administrators and
+// whoever the overrides let through), for per-member delivery.
+func (s *Service) ViewersOf(ctx context.Context, spaceID, roomID int64) ([]int64, bool) {
+	if s.everyoneCanView(ctx, spaceID, roomID) {
+		return nil, true
+	}
+	snap, err := s.Snapshot(ctx, spaceID)
+	if err != nil {
+		return nil, false
+	}
+	members, err := s.repo.ListMembers(ctx, spaceID)
+	if err != nil {
+		return nil, false
+	}
+	ov := snap.EffectiveRoomOverrides(roomID)
+	var canView []int64
+	for i := range members {
+		m := &members[i]
+		if snap.OwnerID == m.UserID {
+			canView = append(canView, m.UserID)
+			continue
+		}
+		base := snap.basePermissions(m.RoleIDs)
+		if permissions.Has(base, permissions.PermAdministrator) {
+			canView = append(canView, m.UserID)
+			continue
+		}
+		perms := resolveEffectiveRoomPermissions(base, snap.EveryoneRoleID, m.RoleIDs, m.UserID, ov.Roles, ov.Users)
+		if permissions.Has(perms, permissions.PermViewRoom) {
+			canView = append(canView, m.UserID)
+		}
+	}
+	return canView, false
+}
+
+// ThreadState is the per-viewer part of a thread's wire form: Discord's message_count and
+// member_count, and whether the viewer has joined.
+type ThreadState struct {
+	MessageCount int64
+	MemberCount  int
+	Joined       bool
+}
+
+// ThreadStates is the counts and the viewer's membership for a set of threads (userID 0 =
+// no viewer, nothing joined).
+func (s *Service) ThreadStates(ctx context.Context, userID int64, threadIDs []int64) (map[int64]ThreadState, error) {
+	out := make(map[int64]ThreadState, len(threadIDs))
+	if len(threadIDs) == 0 {
+		return out, nil
+	}
+	counts, err := s.roomRepo.ThreadMessageCounts(ctx, threadIDs)
+	if err != nil {
+		return nil, err
+	}
+	joined := map[int64]struct{}{}
+	if userID != 0 {
+		if ids, err := s.roomRepo.ListUserThreadIDs(ctx, userID); err == nil {
+			for _, tid := range ids {
+				joined[tid] = struct{}{}
+			}
+		}
+	}
+	for _, tid := range threadIDs {
+		n, _ := s.roomRepo.CountThreadMembers(ctx, tid)
+		_, j := joined[tid]
+		out[tid] = ThreadState{MessageCount: counts[tid], MemberCount: n, Joined: j}
+	}
+	return out, nil
 }

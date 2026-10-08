@@ -111,6 +111,8 @@ func reactionError(c fiber.Ctx, err error, roomID int64) error {
 	switch err {
 	case ErrNotParticipant:
 		return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": "not a participant"})
+	case ErrThreadLocked, ErrThreadArchived:
+		return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": err.Error()})
 	case ErrForbidden:
 		return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": "missing permission to react in this channel"})
 	case ErrMessageNotFound:

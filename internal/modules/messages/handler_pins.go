@@ -75,6 +75,8 @@ func pinError(c fiber.Ctx, err error, roomID int64, forbidden string) error {
 	switch {
 	case errors.Is(err, ErrNotParticipant):
 		return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": "not a participant"})
+	case errors.Is(err, ErrThreadLocked), errors.Is(err, ErrThreadArchived):
+		return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": err.Error()})
 	case errors.Is(err, ErrForbidden):
 		return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": forbidden})
 	case errors.Is(err, ErrRoomNotFound), errors.Is(err, ErrMessageNotFound):

@@ -69,3 +69,8 @@ func (r *repo) CountPins(ctx context.Context, roomID int64) (int, error) {
 	}
 	return n, nil
 }
+
+// SetThreadID points a message at the thread started from it (nil clears it).
+func (r *repo) SetThreadID(ctx context.Context, roomID, messageID int64, threadID *int64) error {
+	return r.session.Session.Query("UPDATE messages SET thread_id = ? WHERE room_id = ? AND id = ?", threadID, roomID, messageID).WithContext(ctx).Exec()
+}

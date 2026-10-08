@@ -30,6 +30,11 @@ func SetupSpacesRoutes(d Deps) {
 	if err := spaceSvc.BackfillAttachFilesPermission(context.Background()); err != nil {
 		logger.Err("spaces", err, map[string]any{"step": "backfill attach-files permission"})
 	}
+	// Threads are newer still: roles that can send can start and talk in threads, roles that
+	// can manage messages can manage threads (runs once per keyspace).
+	if err := spaceSvc.BackfillThreadPermissions(context.Background()); err != nil {
+		logger.Err("spaces", err, map[string]any{"step": "backfill thread permissions"})
+	}
 	if d.Federation != nil {
 		// Changes to a space hosted here reach the instances mirroring it; a member's
 		// join/leave/invite in a space hosted elsewhere goes to that instance. The engine
