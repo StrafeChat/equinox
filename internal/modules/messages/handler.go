@@ -47,6 +47,9 @@ func (h *Handler) Create(c fiber.Ctx) error {
 		if err == ErrBlocked {
 			return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": err.Error()})
 		}
+		if err == ErrSystemReadOnly {
+			return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": err.Error()})
+		}
 		if err == ErrNotParticipant {
 			return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": "not a participant"})
 		}

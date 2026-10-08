@@ -23,18 +23,23 @@ func newInstanceService(d Deps, userRepo auth.UserRepository, sessionRepo auth.S
 	roomRepo := rooms.NewRepository(d.Scylla)
 	spaceRepo := spaces.NewRepository(d.Scylla)
 	spaceSvc := spaces.NewService(spaceRepo, roomRepo, userRepo, d.Redis, d.Config)
+	msgRepo := messages.NewRepository(d.Scylla)
+	roomsSvc := rooms.NewService(roomRepo, userRepo, d.Redis, d.Config, nil, spaceSvc)
+	msgsSvc := messages.NewService(msgRepo, roomRepo, userRepo, d.Redis, d.Config, spaceSvc)
 	svc.SetModeration(instance.ModerationDeps{
 		Repo:      instance.NewModerationRepository(d.Scylla),
 		Users:     userRepo,
 		Sessions:  sessionRepo,
 		Spaces:    spaceRepo,
-		Messages:  messages.NewRepository(d.Scylla),
+		Messages:  msgRepo,
 		Rooms:     roomRepo,
 		Remover:   spaceSvc,
 		Redis:     d.Redis,
 		Region:    d.Config.Stargate.Region,
 		TwoFactor: auth.NewTwoFactorRepository(d.Scylla),
 		Mailer:    d.Mailer,
+		RoomsSvc:  roomsSvc,
+		MsgsSvc:   msgsSvc,
 	})
 	return svc
 }
@@ -52,6 +57,12 @@ func SetupInstanceRoutes(d Deps) {
 	// retried on the next start rather than stopping the API.
 	if err := svc.SealBootstrapOnExistingInstance(context.Background()); err != nil {
 		logger.Err("instance", err, map[string]any{"stage": "seal_bootstrap"})
+	}
+
+	// Make sure the instance's official account exists (used for moderation outcomes and
+	// admin notices). Best effort: a failure is logged and retried on the next start.
+	if err := svc.ProvisionSystemAccount(context.Background()); err != nil {
+		logger.Err("instance", err, map[string]any{"stage": "provision_system_account"})
 	}
 
 	// Load the admin-managed federation allow/block list into the shared runtime lists (what
@@ -89,6 +100,7 @@ func SetupInstanceRoutes(d Deps) {
 	r.Delete("/users/:id/ban", h.UnbanUser)
 	r.Patch("/users/:id/badges", h.SetBadges)
 	r.Patch("/users/:id/email", h.SetEmail)
+	r.Post("/users/:id/notice", h.SendNotice)
 	r.Post("/users/:id/recovery_codes", h.RegenerateRecoveryCodes)
 	r.Get("/bans", h.ListBans)
 	// Network bans: enforced on /auth (see instance.Handler.BlockBannedIPs).

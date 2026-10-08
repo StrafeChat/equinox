@@ -16,6 +16,9 @@ const listBucket = 0
 // stateKey is the primary key of the single instance_state row.
 const stateKey = "instance"
 
+// systemAccountKey is the single row of instance_system_account (migration 047).
+const systemAccountKey = "system"
+
 var inviteColumns = []string{"code", "created_by", "note", "max_uses", "uses", "expires_at", "created_at"}
 
 var instanceInvitesTable = table.New(table.Metadata{
@@ -52,6 +55,11 @@ type Repository interface {
 	AnyUserExists(ctx context.Context) (bool, error)
 	ClaimDataMigration(ctx context.Context, name string) (bool, error)
 	ReleaseDataMigration(ctx context.Context, name string) error
+
+	// ClaimSystemAccount reserves userID as the instance's official account, once per
+	// keyspace (compare-and-set); GetSystemAccountID reads it back, 0 when unset.
+	ClaimSystemAccount(ctx context.Context, userID int64) (bool, error)
+	GetSystemAccountID(ctx context.Context) (int64, error)
 }
 
 type repo struct {
@@ -194,4 +202,25 @@ func (r *repo) ClaimDataMigration(ctx context.Context, name string) (bool, error
 
 func (r *repo) ReleaseDataMigration(ctx context.Context, name string) error {
 	return r.session.Session.Query("DELETE FROM data_migrations WHERE name = ?", name).WithContext(ctx).Exec()
+}
+
+func (r *repo) ClaimSystemAccount(ctx context.Context, userID int64) (bool, error) {
+	return r.session.
+		Query("INSERT INTO instance_system_account (key, user_id, created_at) VALUES (?, ?, ?) IF NOT EXISTS", nil).
+		WithContext(ctx).
+		Bind(systemAccountKey, userID, time.Now().UTC()).
+		ExecCASRelease()
+}
+
+func (r *repo) GetSystemAccountID(ctx context.Context) (int64, error) {
+	var uid int64
+	err := r.session.Query("SELECT user_id FROM instance_system_account WHERE key = ?", nil).
+		WithContext(ctx).Bind(systemAccountKey).GetRelease(&uid)
+	if err == gocql.ErrNotFound {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	return uid, nil
 }

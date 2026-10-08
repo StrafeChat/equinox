@@ -88,6 +88,7 @@ var (
 	ErrForbidden       = errors.New("forbidden")
 	ErrAttachForbidden = errors.New("missing permission to attach files in this channel")
 	ErrBlocked         = errors.New("you cannot message this user")
+	ErrSystemReadOnly  = errors.New("this is an official conversation and cannot be replied to")
 	ErrInvalidInput    = errors.New("invalid message input")
 	ErrContentTooLong  = errors.New("message is too long")
 	ErrTooManyMentions = errors.New("too many mentions")
@@ -507,7 +508,8 @@ func (s *Service) authorize(ctx context.Context, userID, roomID int64, need ...i
 // E2EE off (must be explicitly turned on). Shared by Create and Edit so the two can't
 // drift out of sync on what "this room's content is plaintext" means.
 func roomE2EEOff(room *rooms.Room) bool {
-	return (room.Type == rooms.TypeGroupPM && room.E2EEEnabled != nil && !*room.E2EEEnabled) ||
+	return (room.Type == rooms.TypePM && room.E2EEEnabled != nil && !*room.E2EEEnabled) ||
+		(room.Type == rooms.TypeGroupPM && room.E2EEEnabled != nil && !*room.E2EEEnabled) ||
 		((room.Type == rooms.TypeSpaceText || room.Type == rooms.TypeSpaceVoice || room.Type == rooms.TypeThread) && (room.E2EEEnabled == nil || !*room.E2EEEnabled))
 }
 
@@ -617,6 +619,11 @@ func (s *Service) create(ctx context.Context, userID, roomID int64, in *CreateMe
 			}
 			if blocked {
 				return nil, ErrBlocked
+			}
+			// An official DM is one-way: the instance account never reads, so a reply would
+			// be a dead letter. Refuse it unless the sender IS the official account.
+			if ou, uerr := s.userRepo.GetByID(ctx, other); uerr == nil && ou != nil && ou.System {
+				return nil, ErrSystemReadOnly
 			}
 		}
 	}

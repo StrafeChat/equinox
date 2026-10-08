@@ -17,8 +17,9 @@ type fakeRepo struct {
 	state   *int64
 	admins  map[int64]bool
 	// usersExist stands in for a keyspace that predates instance invites.
-	usersExist bool
-	claimed    map[string]bool
+	usersExist   bool
+	claimed      map[string]bool
+	systemUserID int64
 }
 
 func newFakeRepo() *fakeRepo {
@@ -122,6 +123,22 @@ func (f *fakeRepo) ClaimDataMigration(_ context.Context, name string) (bool, err
 	}
 	f.claimed[name] = true
 	return true, nil
+}
+
+func (f *fakeRepo) ClaimSystemAccount(_ context.Context, userID int64) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.systemUserID != 0 {
+		return false, nil
+	}
+	f.systemUserID = userID
+	return true, nil
+}
+
+func (f *fakeRepo) GetSystemAccountID(_ context.Context) (int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.systemUserID, nil
 }
 
 func (f *fakeRepo) ReleaseDataMigration(_ context.Context, name string) error {

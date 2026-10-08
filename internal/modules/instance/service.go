@@ -16,6 +16,9 @@ type Service struct {
 	repo Repository
 	// mod is nil until SetModeration runs; every moderation method checks for it.
 	mod *ModerationDeps
+	// systemUserID is the instance's official account (see notices.go). 0 until
+	// ProvisionSystemAccount runs, which disables notices.
+	systemUserID int64
 }
 
 func NewService(cfg *config.Config, repo Repository) *Service {

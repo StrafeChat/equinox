@@ -22,7 +22,7 @@ func moderationError(c fiber.Ctx, err error) error {
 	case ErrAlreadyBanned, ErrReportClosed, ErrDuplicateReport, ErrIPBanExists, ErrEmailTaken:
 		return c.Status(http.StatusConflict).JSON(fiber.Map{"error": err.Error()})
 	case ErrInvalidBan, ErrInvalidReport, ErrInvalidAction, ErrInvalidQuery, ErrInvalidBadges, ErrInvalidCIDR, ErrCIDRTooWide,
-		ErrInvalidEmail, ErrBotAccount:
+		ErrInvalidEmail, ErrBotAccount, ErrInvalidNotice, ErrCannotNotice, ErrNoticesUnavailable:
 		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	case ErrRecoveryUnavailable, ErrFederationDisabled:
 		return c.Status(http.StatusServiceUnavailable).JSON(fiber.Map{"error": err.Error()})
@@ -227,6 +227,29 @@ func (h *Handler) SetEmail(c fiber.Ctx) error {
 		return moderationError(c, err)
 	}
 	return c.JSON(userAdminJSON(updated))
+}
+
+// SendNotice POST /instance/users/:id/notice - admin sends a free-text official message to
+// a user, delivered as a direct message from the instance's official account.
+func (h *Handler) SendNotice(c fiber.Ctx) error {
+	user := auth.GetUser(c)
+	if user == nil {
+		return c.Status(http.StatusUnauthorized).JSON(fiber.Map{"error": "unauthorized"})
+	}
+	uid, ok := parseIDParam(c, "id")
+	if !ok {
+		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "invalid user id"})
+	}
+	var in struct {
+		Message string `json:"message"`
+	}
+	if !decodeBody(c, &in) {
+		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "invalid JSON"})
+	}
+	if err := h.svc.SendUserNotice(c.Context(), user.ID, uid, in.Message); err != nil {
+		return moderationError(c, err)
+	}
+	return c.SendStatus(http.StatusNoContent)
 }
 
 // RegenerateRecoveryCodes POST /instance/users/:id/recovery_codes - admin regenerates a user's

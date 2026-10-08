@@ -48,6 +48,10 @@ type ModerationDeps struct {
 	// delivers them to the user. Either may be nil (2FA store absent / email off).
 	TwoFactor auth.TwoFactorRepository
 	Mailer    mail.Mailer
+	// RoomsSvc and MsgsSvc deliver an official direct message from the instance account
+	// (see notices.go); either nil disables notices.
+	RoomsSvc *rooms.Service
+	MsgsSvc  *messages.Service
 }
 
 func (s *Service) SetModeration(d ModerationDeps) { s.mod = &d }
@@ -348,6 +352,9 @@ func (s *Service) UnbanUser(ctx context.Context, actorID, userID int64) error {
 		return err
 	}
 	s.audit(ctx, actorID, AuditUserUnban, TargetUser, userID, "")
+	// Welcome them back through the official account; they can log in again now, so unlike
+	// a ban DM (SESSION_REVOKED already carries that) this one will actually be seen.
+	s.notifyBestEffort(ctx, userID, "Your ban on "+s.instanceName()+" has been lifted. Welcome back.")
 	return nil
 }
 
@@ -716,6 +723,7 @@ func (s *Service) ResolveReport(ctx context.Context, actorID, reportID int64, in
 		return nil, err
 	}
 	s.audit(ctx, actorID, action, rep.TargetType, rep.TargetID, note)
+	s.notifyReportResolved(ctx, rep)
 	return rep, nil
 }
 

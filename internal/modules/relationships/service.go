@@ -73,8 +73,9 @@ func (s *Service) SendRequestTo(ctx context.Context, actorID int64, target *auth
 	if target.ID == actorID {
 		return ErrSelfRequest
 	}
-	// A bot is added to a space, never to a friends list.
-	if target.Bot {
+	// A bot is added to a space, never to a friends list; the official account is not a
+	// person to befriend either.
+	if target.Bot || target.System {
 		return ErrBotTarget
 	}
 
@@ -303,7 +304,7 @@ func (s *Service) publishRemoveTo(ctx context.Context, toID int64, to *auth.User
 
 // ApplyRemoteRequest records a friend request a remote user sent one of our users.
 func (s *Service) ApplyRemoteRequest(ctx context.Context, actor, target *auth.User) error {
-	if target.Bot {
+	if target.Bot || target.System {
 		return ErrBotTarget
 	}
 	// A blocked sender gets nothing back, not even a refusal; a duplicate is a no-op.

@@ -34,6 +34,7 @@ const (
 	AuditUserBadges    = "user_badges"
 	AuditUserRecovery  = "user_recovery_regen"
 	AuditUserEmail     = "user_email"
+	AuditUserNotice    = "user_notice"
 	// IP bans have no numeric target: the entry's target type is TargetIP, its target id
 	// 0 and the CIDR leads the reason field ("10.0.0.0/8: spam farm").
 	AuditIPBan   = "ip_ban"
@@ -80,6 +81,9 @@ var (
 	ErrInvalidAction       = errors.New("unknown resolution action")
 	ErrInvalidQuery        = errors.New("search for an id, an email, name#0001 or a username")
 	ErrInvalidBadges       = errors.New("unknown badge flag")
+	ErrInvalidNotice       = errors.New("a notice must be between 1 and 2000 characters")
+	ErrCannotNotice        = errors.New("that account cannot receive an official notice")
+	ErrNoticesUnavailable  = errors.New("the official account is not available on this instance")
 )
 
 // Ban keeps an account off the instance: its sessions are revoked when it is written, and

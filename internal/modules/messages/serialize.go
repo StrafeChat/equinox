@@ -34,6 +34,7 @@ func (s *Service) publicUserJSON(u *auth.User) map[string]interface{} {
 		"bio":          u.Bio,
 		"about_me":     u.AboutMe,
 		"bot":          u.Bot,
+		"system":       u.System,
 		"public_flags": auth.PublicFlags(u),
 		"presence":     auth.ToPublicPresence(u.Presence, true),
 	}

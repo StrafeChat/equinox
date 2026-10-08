@@ -101,6 +101,7 @@ type Participant struct {
 	AboutMe     string              `json:"about_me,omitempty"`
 	PublicFlags int                 `json:"public_flags"`
 	Bot         bool                `json:"bot,omitempty"`
+	System      bool                `json:"system,omitempty"`
 	Presence    auth.PublicPresence `json:"presence"`
 	// Federation (only when this instance has a domain): the user's home instance and the
 	// id it knows them by. Clients build the E2EE identity @origin_id:home_domain from these.

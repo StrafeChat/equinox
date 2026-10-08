@@ -193,6 +193,7 @@ func participantOf(u *auth.User, localDomain string) Participant {
 		AboutMe:     u.AboutMe,
 		PublicFlags: auth.PublicFlags(u),
 		Bot:         u.Bot,
+		System:      u.System,
 		Presence:    auth.ToPublicPresence(u.Presence, true),
 	}
 	if localDomain != "" {
@@ -510,6 +511,44 @@ func (s *Service) CreatePM(ctx context.Context, actorID, targetID int64) (*RoomW
 	}
 	if actorID != targetID {
 		s.fedRoomCreated(ctx, rwp)
+	}
+	return rwp, true, nil
+}
+
+// EnsureSystemPM returns the plain-text direct message between the instance's official
+// account (systemID) and a user, creating it if it does not exist. Unlike CreatePM it skips
+// the PM-policy and block checks - the official account may always reach a user - and flags
+// the room plain-text, because that account has no encryption keys. A freshly created room
+// is announced to the user so their client shows it right away.
+func (s *Service) EnsureSystemPM(ctx context.Context, systemID, userID int64) (*RoomWithParticipants, bool, error) {
+	existing, err := s.repo.GetPMRoom(ctx, systemID, userID)
+	if err != nil {
+		return nil, false, err
+	}
+	if existing != nil {
+		ids, _ := s.repo.GetParticipants(ctx, existing.ID)
+		rwp := &RoomWithParticipants{Room: *existing, ParticipantIDs: ids}
+		s.enrich(ctx, rwp)
+		return rwp, false, nil
+	}
+	off := false
+	room := &Room{ID: id.Next(), Type: TypePM, E2EEEnabled: &off}
+	participantIDs := []int64{systemID, userID}
+	if err := s.repo.Create(ctx, room, participantIDs); err != nil {
+		return nil, false, err
+	}
+	rwp := &RoomWithParticipants{Room: *room, ParticipantIDs: participantIDs}
+	s.enrich(ctx, rwp)
+	if s.redis != nil && s.cfg != nil {
+		payload := map[string]interface{}{
+			"id":           id.Format(room.ID),
+			"type":         TypePM,
+			"recipients":   []string{id.Format(systemID), id.Format(userID)},
+			"created_at":   room.CreatedAt,
+			"participants": rwp.Participants,
+			"e2ee_enabled": false,
+		}
+		stargate.PublishToUser(ctx, s.redis, userID, "ROOM_CREATE", payload, s.stargateRegion())
 	}
 	return rwp, true, nil
 }
