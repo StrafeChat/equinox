@@ -15,6 +15,8 @@ import (
 	"github.com/StrafeChat/equinox/internal/id"
 	"github.com/StrafeChat/equinox/internal/logger"
 	"github.com/StrafeChat/equinox/internal/modules/auth"
+
+	"github.com/StrafeChat/equinox/internal/weborigin"
 )
 
 // SessionResolver validates a token hash and returns user + session or error. When it
@@ -67,7 +69,7 @@ func NewServer(cfg ServerConfig) *Server {
 			// that sends no Origin is not a browser (a bot, a native app): it holds its
 			// token explicitly, so there is nothing for the check to protect - browsers
 			// always send Origin on a WebSocket handshake.
-			if origin == "" {
+			if origin == "" || weborigin.IsDesktop(origin) {
 				return true
 			}
 			for _, o := range cfg.AllowedOrigins {

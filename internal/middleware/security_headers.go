@@ -4,6 +4,8 @@ import (
 	"net/http"
 
 	"github.com/gofiber/fiber/v3"
+
+	"github.com/StrafeChat/equinox/internal/weborigin"
 )
 
 func SecurityHeaders() fiber.Handler {
@@ -28,6 +30,8 @@ func CORS(origins []string) fiber.Handler {
 		origin := c.Get("Origin")
 		c.Set("Vary", "Origin")
 		if len(origins) == 0 && origin != "" {
+			c.Set("Access-Control-Allow-Origin", origin)
+		} else if weborigin.IsDesktop(origin) {
 			c.Set("Access-Control-Allow-Origin", origin)
 		} else if len(origins) > 0 {
 			for _, o := range origins {
