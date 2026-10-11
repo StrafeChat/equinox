@@ -164,6 +164,7 @@ func (s *Service) ApplyRemoteCall(ctx context.Context, room *rooms.RoomWithParti
 			return err
 		}
 		s.publishCallLocal(ctx, room, EventCallDelete, map[string]interface{}{"room_id": id.Format(room.ID)})
+		s.pushCall(ctx, room, EventCallDelete, nil, false)
 		return nil
 	case EventCallCreate, EventCallUpdate:
 		if call == nil {
@@ -173,6 +174,7 @@ func (s *Service) ApplyRemoteCall(ctx context.Context, room *rooms.RoomWithParti
 			return err
 		}
 		s.publishCallLocal(ctx, room, event, callData(call, starter, rerung))
+		s.pushCall(ctx, room, event, call, rerung)
 		return nil
 	}
 	return fmt.Errorf("unknown call event %q", event)

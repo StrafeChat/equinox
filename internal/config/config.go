@@ -1,6 +1,9 @@
 package config
 
 import (
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"encoding/base64"
 	"encoding/hex"
 	"errors"
 	netmail "net/mail"
@@ -24,6 +27,7 @@ type Config struct {
 	Voice      VoiceConfig
 	TwoFactor  TwoFactorConfig
 	Mail       MailConfig
+	Push       PushConfig
 	Database   DatabaseConfig
 	Log        LogConfig
 }
@@ -299,6 +303,32 @@ type MailConfig struct {
 	InstanceName string
 }
 
+// PushConfig is Web Push delivery to signed-in devices (internal/modules/push). The
+// instance speaks plain RFC 8030/8291/8292 Web Push to whatever endpoint a device
+// registered - a push gateway for an app build, a UnifiedPush distributor, a browser's push
+// service - so it needs no Google or Apple credentials of its own. Every body is encrypted
+// to the device's key; nobody in the middle sees content.
+type PushConfig struct {
+	// Enabled is the master switch (PUSH_ENABLED, default on). Off: the push routes answer
+	// 404 and nothing is queued or sent.
+	Enabled bool
+	// VAPIDPrivateKey is the instance's RFC 8292 application-server key: base64url of the
+	// raw 32-byte P-256 scalar. Empty = generate one on first start and keep it in the
+	// database, where every API replica finds the same one.
+	VAPIDPrivateKey string
+	// VAPIDSubject is the contact URI push services may use to reach the operator
+	// (mailto: or https:). Defaults to https://<federation domain or WEB_URL host>.
+	VAPIDSubject string
+	// AllowedHosts, when non-empty, limits push endpoints to these hosts and their
+	// subdomains (e.g. push.strafe.chat, ntfy.sh). Empty = any public HTTPS host.
+	AllowedHosts []string
+	// AllowInsecure admits http:// endpoints and private/loopback addresses - development
+	// only, for a gateway or distributor running on the same machine.
+	AllowInsecure bool
+	// Workers is how many delivery goroutines each API process runs.
+	Workers int
+}
+
 type DatabaseConfig struct {
 	Scylla ScyllaConfig
 	Redis  RedisConfig
@@ -399,6 +429,7 @@ func Load() (*Config, error) {
 	cfg.Federation.Enabled = cfg.Federation.Domain != ""
 	cfg.TwoFactor = loadTwoFactorConfig(getEnvString("TOTP_ENCRYPTION_KEY", ""), cfg.App.WebURL)
 	cfg.Mail = loadMailConfig(cfg.App.WebURL, cfg.Federation.Domain)
+	cfg.Push = loadPushConfig(cfg.App.WebURL, cfg.Federation.Domain)
 
 	// The body limit has to fit the largest attachment plus multipart overhead, or uploads
 	// fail with a 413 before the attachment code ever sees them. Deriving it means raising
@@ -511,6 +542,9 @@ func validate(cfg *Config) error {
 		return err
 	}
 	if err := validateMail(cfg.Mail); err != nil {
+		return err
+	}
+	if err := validatePush(cfg.Push); err != nil {
 		return err
 	}
 	return nil
@@ -626,6 +660,59 @@ func validateMail(m MailConfig) error {
 	}
 	if m.LinkBase == "" {
 		return errors.New("WEB_URL is required when SMTP_HOST is set - the links in every email point at the web client")
+	}
+	return nil
+}
+
+// loadPushConfig reads PUSH_*. The VAPID subject falls back to the identity the instance
+// already has (its federation domain, else its web client's host), the same way the mail
+// sender address does, so a deployment fills in nothing to get push.
+func loadPushConfig(webURL, federationDomain string) PushConfig {
+	p := PushConfig{
+		Enabled:         getEnvBool("PUSH_ENABLED", true),
+		VAPIDPrivateKey: strings.TrimSpace(getEnvString("PUSH_VAPID_PRIVATE_KEY", "")),
+		VAPIDSubject:    strings.TrimSpace(getEnvString("PUSH_VAPID_SUBJECT", "")),
+		AllowedHosts:    cleanDomains(getEnvArray("PUSH_ALLOWED_HOSTS", nil)),
+		AllowInsecure:   getEnvBool("PUSH_ALLOW_INSECURE", false),
+		Workers:         getEnvInt("PUSH_WORKERS", 4),
+	}
+	if p.VAPIDSubject == "" {
+		host := federationDomain
+		if host == "" {
+			if u, err := neturl.Parse(webURL); err == nil {
+				host = u.Host
+			}
+		}
+		if host == "" {
+			// Nothing to name the instance by (a bare development setup). Push services
+			// only use the subject to contact an operator; a syntactically valid one keeps
+			// strict services (Apple's web push) from refusing every request.
+			host = "localhost"
+		}
+		p.VAPIDSubject = "https://" + host
+	}
+	return p
+}
+
+// validatePush refuses the settings that would fail on every delivery rather than at boot.
+func validatePush(p PushConfig) error {
+	if !p.Enabled {
+		return nil
+	}
+	if p.VAPIDPrivateKey != "" {
+		raw, err := base64.RawURLEncoding.DecodeString(strings.TrimRight(p.VAPIDPrivateKey, "="))
+		if err == nil && len(raw) == 32 {
+			_, err = ecdsa.ParseRawPrivateKey(elliptic.P256(), raw)
+		}
+		if err != nil || len(raw) != 32 {
+			return errors.New("PUSH_VAPID_PRIVATE_KEY must be base64url of a raw 32-byte P-256 private key (or unset, to have one generated)")
+		}
+	}
+	if !strings.HasPrefix(p.VAPIDSubject, "mailto:") && !strings.HasPrefix(p.VAPIDSubject, "https://") {
+		return errors.New("PUSH_VAPID_SUBJECT must be a mailto: or https: URI (RFC 8292), e.g. mailto:admin@chat.example.com")
+	}
+	if p.Workers < 1 || p.Workers > 64 {
+		return errors.New("PUSH_WORKERS must be 1-64")
 	}
 	return nil
 }

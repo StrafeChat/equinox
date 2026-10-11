@@ -136,6 +136,26 @@ Go identifiers, error strings, docs:
   30 s reconciler). Moderator actions go through `spaces.Service.RecordAudit`. New
   voice behaviour belongs here, gated by a permission bit and enforced at LiveKit where
   it can be, not in the client. [`docs/VOICE.md`](https://github.com/StrafeChat/deploy/blob/main/docs/VOICE.md) has the map.
+- **Push notifications (`internal/modules/push`)** are standard Web Push only: RFC 8291
+  `aes128gcm` bodies encrypted to the device's own key, RFC 8292 VAPID (the instance's key,
+  generated into `push_vapid` when `PUSH_VAPID_PRIVATE_KEY` is unset), POSTed to whatever
+  endpoint the session registered (`PUT /users/@me/push`; one subscription per session,
+  deleted when the session is revoked through `auth.SetSessionRevokedHook`). An instance
+  never holds Google/Apple credentials - the FCM/APNs relay is the app publisher's gateway
+  (`cmd/pushgateway`). Never put content in the clear anywhere on that path, never send a
+  body preview for an end-to-end encrypted room (the server has no plaintext; the push says
+  who wrote where), never log an endpoint beyond its host. Outbound requests go through
+  `internal/safehttp`'s dial-time guard (as unfurl does). `push` is a leaf: messages, rooms
+  and voice call its `Enqueue*` producers (cheap Redis writes onto the `push:jobs` stream),
+  and the workers learn about users/rooms/spaces through `push.Directory` (`push/pushdir`).
+  A new place that creates a message, advances a read cursor or starts/stops ringing must
+  call a producer, and the notify decision must keep mirroring the web client's
+  `lib/notifications.ts`. `deploy/docs/PUSH.md` has the protocol and the operator side.
+- **The push gateway (`cmd/pushgateway`, `internal/pushgateway`)** is a separate stateless
+  binary run by whoever publishes an app build (it holds that build's APNs key and Firebase
+  service account), never by instances. Its only config is `PUSHGW_*`. It must never decrypt
+  or log push bodies, device tokens or sealed endpoints; instances speak plain Web Push to it
+  and its endpoints are sealed (AES-GCM) so an instance never learns a device token.
 - **One-shot data fixes** (`spaces/backfill.go`): claim a name in `data_migrations` with
   `ClaimDataMigration` (a lightweight transaction), do the work, release the claim on
   failure. CQL migrations cannot express "OR a bit into every existing row"; this can.

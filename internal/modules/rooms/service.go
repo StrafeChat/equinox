@@ -16,6 +16,7 @@ import (
 	"github.com/StrafeChat/equinox/internal/id"
 	"github.com/StrafeChat/equinox/internal/modules/auth"
 	"github.com/StrafeChat/equinox/internal/modules/permissions"
+	"github.com/StrafeChat/equinox/internal/modules/push"
 	"github.com/StrafeChat/equinox/internal/safego"
 	"github.com/StrafeChat/equinox/internal/stargate"
 )
@@ -1189,6 +1190,12 @@ func (s *Service) Ack(ctx context.Context, userID, roomID, messageID int64) erro
 		}
 		stargate.PublishToUser(ctx, s.redis, userID, "MESSAGE_ACK", payload, region)
 	}
+	// Read on one device: clear what a closed app is still showing on the others.
+	var spaceID int64
+	if room.SpaceID != nil {
+		spaceID = *room.SpaceID
+	}
+	push.EnqueueRead(ctx, s.redis, userID, roomID, room.Type, spaceID, messageID)
 	return nil
 }
 

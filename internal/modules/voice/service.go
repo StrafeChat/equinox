@@ -18,6 +18,7 @@ import (
 	"github.com/StrafeChat/equinox/internal/logger"
 	"github.com/StrafeChat/equinox/internal/modules/auth"
 	"github.com/StrafeChat/equinox/internal/modules/permissions"
+	"github.com/StrafeChat/equinox/internal/modules/push"
 	"github.com/StrafeChat/equinox/internal/modules/rooms"
 	"github.com/StrafeChat/equinox/internal/modules/spaces"
 	"github.com/StrafeChat/equinox/internal/safego"
@@ -691,9 +692,26 @@ func (s *Service) publishCall(ctx context.Context, room *rooms.RoomWithParticipa
 		data = map[string]interface{}{"room_id": id.Format(room.ID)}
 	}
 	s.publishCallLocal(ctx, room, event, data)
+	s.pushCall(ctx, room, event, call, rerung)
 	if s.hosting(room) {
 		s.fed.AfterCallChanged(ctx, room, event, call, starter, rerung)
 	}
+}
+
+// pushCall mirrors a call event to the devices of this instance's participants with the
+// app closed: an incoming call for whoever started ringing (everyone, for a new call or a
+// re-ring), "stopped ringing" for whoever no longer is. The push module diffs the ringing
+// set itself, so the same event applied twice (a mirror's own update, then the origin's
+// relay of it) announces nothing twice.
+func (s *Service) pushCall(ctx context.Context, room *rooms.RoomWithParticipants, event string, call *Call, rerung bool) {
+	if call == nil || event == EventCallDelete {
+		push.EnqueueCallEnded(ctx, s.redis, room.ID, room.Type)
+		return
+	}
+	push.EnqueueCall(ctx, s.redis, push.Call{
+		RoomID: room.ID, RoomType: room.Type, CallerID: call.StartedBy,
+		Ringing: call.Ringing, RingAll: rerung || event == EventCallCreate,
+	})
 }
 
 func (s *Service) publishCallLocal(ctx context.Context, room *rooms.RoomWithParticipants, event string, data map[string]interface{}) {

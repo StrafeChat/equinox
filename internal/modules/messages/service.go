@@ -309,6 +309,7 @@ func (s *Service) CreateFederated(ctx context.Context, roomID int64, participant
 	if notify := resolveMentionNotifySet(m.SenderID, participants, m.Mentions, m.MentionEveryone); len(notify) > 0 {
 		_ = s.rooms.IncrementMentionCounts(ctx, roomID, notify)
 	}
+	s.pushFederated(ctx, roomID, participants, m)
 	if s.redis != nil && s.cfg != nil {
 		stargate.PublishToSpace(ctx, s.redis, roomID, "MESSAGE_CREATE", s.messageEventPayloadEnriched(ctx, m), s.region())
 	}
@@ -765,6 +766,7 @@ func (s *Service) create(ctx context.Context, userID, roomID int64, in *CreateMe
 				"last_read_message_id": id.Format(msgID),
 			}, s.cfg.Stargate.Region)
 		}
+		s.pushRead(ctx, userID, room, msgID)
 	}
 	// Role mentions (<@&roleId>) were parsed into mentionRoleIDs above but, until this
 	// expansion, were never turned into anyone's mention count - the message rendered the
@@ -780,6 +782,7 @@ func (s *Service) create(ctx context.Context, userID, roomID int64, in *CreateMe
 			// non-fatal: message is stored, mention badges just won't reflect this one
 		}
 	}
+	s.pushMessage(ctx, room, m, participants, notifyUserIDs, mentionEveryone, len(attachments))
 	if s.redis != nil && s.cfg != nil {
 		if deliverToUser != 0 {
 			stargate.PublishToUser(ctx, s.redis, deliverToUser, "MESSAGE_CREATE", s.messageEventPayloadEnriched(ctx, m), s.cfg.Stargate.Region)

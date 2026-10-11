@@ -11,18 +11,18 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
-	"net"
 	"net/http"
 	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 	"unicode/utf8"
 
 	"github.com/redis/go-redis/v9"
 	"golang.org/x/net/html"
+
+	"github.com/StrafeChat/equinox/internal/safehttp"
 )
 
 const (
@@ -77,7 +77,9 @@ type Metadata struct {
 	VideoType string `json:"video_type,omitempty"`
 }
 
-var errBlockedAddress = errors.New("unfurl: address is not public")
+// errBlockedAddress also refuses a redirect to a non-web scheme, alongside the dial-time
+// address check in safehttp.
+var errBlockedAddress = safehttp.ErrBlockedAddress
 
 type Service struct {
 	redis  *redis.Client
@@ -85,7 +87,7 @@ type Service struct {
 }
 
 func NewService(rdb *redis.Client) *Service {
-	dialer := &net.Dialer{Timeout: fetchTimeout, Control: safeDialControl}
+	dialer := safehttp.NewDialer(fetchTimeout)
 	transport := &http.Transport{
 		DialContext:           dialer.DialContext,
 		ForceAttemptHTTP2:     true,
@@ -109,45 +111,6 @@ func NewService(rdb *redis.Client) *Service {
 		},
 	}
 	return &Service{redis: rdb, client: client}
-}
-
-// safeDialControl runs after DNS resolution, immediately before the socket connects - so it
-// also covers redirect targets and DNS-rebinding, which a one-shot pre-flight lookup would
-// miss. It refuses any non-public address.
-func safeDialControl(network, address string, _ syscall.RawConn) error {
-	if network != "tcp" && network != "tcp4" && network != "tcp6" {
-		return errBlockedAddress
-	}
-	host, _, err := net.SplitHostPort(address)
-	if err != nil {
-		return err
-	}
-	ip := net.ParseIP(host)
-	if ip == nil || !isPublicIP(ip) {
-		return errBlockedAddress
-	}
-	return nil
-}
-
-func isPublicIP(ip net.IP) bool {
-	if ip.IsLoopback() || ip.IsPrivate() || ip.IsUnspecified() ||
-		ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() ||
-		ip.IsMulticast() || ip.IsInterfaceLocalMulticast() {
-		return false
-	}
-	// To4() unwraps IPv4-mapped IPv6 (::ffff:a.b.c.d) too, so these checks cover both.
-	if ip4 := ip.To4(); ip4 != nil {
-		if ip4[0] == 100 && ip4[1] >= 64 && ip4[1] <= 127 { // 100.64.0.0/10 (CGNAT)
-			return false
-		}
-		if ip4[0] == 192 && ip4[1] == 0 && ip4[2] == 0 { // 192.0.0.0/24 (IETF)
-			return false
-		}
-		if ip4[0] == 198 && (ip4[1] == 18 || ip4[1] == 19) { // 198.18.0.0/15 (benchmark)
-			return false
-		}
-	}
-	return true
 }
 
 // ParseURL validates that a string is an http(s) URL with a host. Exported for the handler.

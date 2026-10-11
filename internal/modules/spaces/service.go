@@ -17,6 +17,7 @@ import (
 	"github.com/StrafeChat/equinox/internal/id"
 	"github.com/StrafeChat/equinox/internal/modules/auth"
 	"github.com/StrafeChat/equinox/internal/modules/permissions"
+	"github.com/StrafeChat/equinox/internal/modules/push"
 	"github.com/StrafeChat/equinox/internal/modules/rooms"
 	"github.com/StrafeChat/equinox/internal/stargate"
 )
@@ -604,6 +605,8 @@ func (s *Service) AckAll(ctx context.Context, actorID, spaceID int64) error {
 			}
 			stargate.PublishToUser(ctx, s.redis, actorID, "MESSAGE_ACK", payload, s.stargateRegion())
 		}
+		// Clear the room's notification on the user's phones too (only when one was pushed).
+		push.EnqueueRead(ctx, s.redis, actorID, room.ID, room.Type, spaceID, *room.LastMessageID)
 	}
 	return nil
 }

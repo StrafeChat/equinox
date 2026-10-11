@@ -9,6 +9,18 @@ import (
 	"github.com/scylladb/gocqlx/v3/table"
 )
 
+// SessionRevokedHook is told about every revoked session (sign-out, sign-out everywhere,
+// a password reset, an instance ban), after the revocation is stored. The push module
+// sets it to drop the session's push subscription, so a signed-out device stops getting
+// notifications at once. Injected at startup like the middleware resolvers, because push
+// cannot be imported from here (it imports auth).
+type SessionRevokedHook func(ctx context.Context, userID, sessionID int64)
+
+var sessionRevokedHook SessionRevokedHook
+
+// SetSessionRevokedHook installs the hook (nil removes it).
+func SetSessionRevokedHook(h SessionRevokedHook) { sessionRevokedHook = h }
+
 type SessionRepository interface {
 	Create(ctx context.Context, s *Session) error
 	GetByTokenHash(ctx context.Context, tokenHash string) (*Session, error)
@@ -115,7 +127,13 @@ func (r *scyllaSessionRepo) Revoke(ctx context.Context, userID, sessionID int64)
 
 	stmt, names = sessionsByTokenTable.Update("revoked_at")
 	q = r.session.Query(stmt, names).WithContext(ctx)
-	return q.Bind(now, s.TokenHash).ExecRelease()
+	if err := q.Bind(now, s.TokenHash).ExecRelease(); err != nil {
+		return err
+	}
+	if sessionRevokedHook != nil {
+		sessionRevokedHook(ctx, userID, sessionID)
+	}
+	return nil
 }
 
 func (r *scyllaSessionRepo) RevokeAllForUser(ctx context.Context, userID int64) error {
