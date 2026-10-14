@@ -412,7 +412,7 @@ func (s *Service) roomWire(ctx context.Context, room *rooms.Room, ov spaces.Room
 	w := SpaceRoomWire{
 		ID: id.Format(room.ID), Type: room.Type, Parent: fmtOptID(room.ParentID), Name: room.Name, Topic: room.Topic,
 		SlowmodeSeconds: room.SlowmodeSeconds, Position: room.Position,
-		E2EEEnabled: room.E2EEEnabled != nil && *room.E2EEEnabled,
+		E2EEEnabled: room.E2EEOn(),
 		UserLimit:   room.UserLimit, Bitrate: room.Bitrate, CreatedAt: room.CreatedAt, UpdatedAt: room.UpdatedAt,
 	}
 	if room.Type == rooms.TypeThread {

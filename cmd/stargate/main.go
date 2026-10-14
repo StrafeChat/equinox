@@ -113,65 +113,7 @@ func (p *readyDataProvider) GetReadyData(ctx context.Context, userID int64) (*st
 		if r.Type == rooms.TypePM || r.Type == rooms.TypeGroupPM {
 			voiceRoomIDs = append(voiceRoomIDs, r.ID)
 		}
-		m := map[string]interface{}{
-			"id":         id.Format(r.ID),
-			"type":       r.Type,
-			"recipients": recipientIDsToSlice(r.ParticipantIDs),
-			"created_at": r.CreatedAt,
-		}
-		if r.SpaceID != nil {
-			m["space_id"] = id.Format(*r.SpaceID)
-		}
-		if r.ParentID != nil {
-			m["parent_id"] = id.Format(*r.ParentID)
-		}
-		if r.Name != "" {
-			m["name"] = r.Name
-		}
-		if r.Topic != "" {
-			m["topic"] = r.Topic
-		}
-		if r.Position != 0 {
-			m["position"] = r.Position
-		}
-		if r.LastMessageID != nil {
-			m["last_message_id"] = id.Format(*r.LastMessageID)
-		}
-		if r.LastReadMessageID != nil {
-			m["last_read_message_id"] = id.Format(*r.LastReadMessageID)
-		}
-		if r.MentionCount > 0 {
-			m["mention_count"] = r.MentionCount
-		}
-		if r.Muted {
-			m["muted"] = true
-		}
-		if r.MutedUntil != nil {
-			m["muted_until"] = *r.MutedUntil
-		}
-		if r.NotifyMode != 0 {
-			m["notify_mode"] = r.NotifyMode
-		}
-		if !r.UpdatedAt.IsZero() {
-			m["updated_at"] = r.UpdatedAt
-		}
-		if r.Type == rooms.TypeGroupPM {
-			m["creator_id"] = id.Format(r.CreatorID)
-		} else if r.CreatorID != 0 {
-			m["creator_id"] = id.Format(r.CreatorID)
-		}
-		e2eeEnabled := true
-		if r.E2EEEnabled != nil {
-			e2eeEnabled = *r.E2EEEnabled
-		}
-		m["e2ee_enabled"] = e2eeEnabled
-		if len(r.Participants) > 0 {
-			m["participants"] = r.Participants
-		}
-		if r.Federation != nil {
-			m["federation"] = r.Federation
-		}
-		out = append(out, m)
+		out = append(out, readyRoomMap(r))
 		channelIDs = append(channelIDs, id.Format(r.ID))
 	}
 
@@ -321,6 +263,67 @@ func spaceToReadyMap(s *spaces.Space, snap *spaces.Snapshot) map[string]interfac
 		m["roles"] = spaces.RoleMaps(snap.Roles)
 	} else if s.EveryoneRoleID != 0 {
 		m["everyone_role_id"] = id.Format(s.EveryoneRoleID)
+	}
+	return m
+}
+
+// readyRoomMap is the READY payload's form of one of the user's rooms.
+func readyRoomMap(r rooms.RoomWithParticipants) map[string]interface{} {
+	m := map[string]interface{}{
+		"id":         id.Format(r.ID),
+		"type":       r.Type,
+		"recipients": recipientIDsToSlice(r.ParticipantIDs),
+		"created_at": r.CreatedAt,
+	}
+	if r.SpaceID != nil {
+		m["space_id"] = id.Format(*r.SpaceID)
+	}
+	if r.ParentID != nil {
+		m["parent_id"] = id.Format(*r.ParentID)
+	}
+	if r.Name != "" {
+		m["name"] = r.Name
+	}
+	if r.Topic != "" {
+		m["topic"] = r.Topic
+	}
+	if r.Position != 0 {
+		m["position"] = r.Position
+	}
+	if r.LastMessageID != nil {
+		m["last_message_id"] = id.Format(*r.LastMessageID)
+	}
+	if r.LastReadMessageID != nil {
+		m["last_read_message_id"] = id.Format(*r.LastReadMessageID)
+	}
+	if r.MentionCount > 0 {
+		m["mention_count"] = r.MentionCount
+	}
+	if r.Muted {
+		m["muted"] = true
+	}
+	if r.MutedUntil != nil {
+		m["muted_until"] = *r.MutedUntil
+	}
+	if r.NotifyMode != 0 {
+		m["notify_mode"] = r.NotifyMode
+	}
+	if !r.UpdatedAt.IsZero() {
+		m["updated_at"] = r.UpdatedAt
+	}
+	if r.Type == rooms.TypeGroupPM {
+		m["creator_id"] = id.Format(r.CreatorID)
+	} else if r.CreatorID != 0 {
+		m["creator_id"] = id.Format(r.CreatorID)
+	}
+	// A space's rooms (threads the user joined land here too) are plaintext unless turned
+	// on; only PMs and group PMs default to encrypted.
+	m["e2ee_enabled"] = r.E2EEOn()
+	if len(r.Participants) > 0 {
+		m["participants"] = r.Participants
+	}
+	if r.Federation != nil {
+		m["federation"] = r.Federation
 	}
 	return m
 }

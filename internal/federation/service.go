@@ -762,7 +762,7 @@ func (s *Service) AfterRoomCreated(ctx context.Context, rwp *rooms.RoomWithParti
 		Room:         ref,
 		Type:         rwp.Type,
 		Name:         rwp.Name,
-		E2EEEnabled:  rwp.E2EEEnabled == nil || *rwp.E2EEEnabled,
+		E2EEEnabled:  rwp.E2EEOn(),
 		Participants: s.profiles(all, nil),
 	}
 	for _, u := range all {
@@ -808,7 +808,7 @@ func (s *Service) AfterRoomUpdated(ctx context.Context, rwp *rooms.RoomWithParti
 		return
 	}
 	name := rwp.Name
-	e2ee := rwp.E2EEEnabled == nil || *rwp.E2EEEnabled
+	e2ee := rwp.E2EEOn()
 	body := RoomPatch{Room: ref, Name: &name, E2EEEnabled: &e2ee}
 	for domain := range byDomain {
 		s.send(domain, http.MethodPatch, "/rooms", body)

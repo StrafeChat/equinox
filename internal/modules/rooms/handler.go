@@ -518,11 +518,7 @@ func roomToJSON(r RoomWithParticipants) fiber.Map {
 	} else if r.CreatorID != 0 {
 		m["creator_id"] = id.Format(r.CreatorID)
 	}
-	e2eeEnabled := true
-	if r.E2EEEnabled != nil {
-		e2eeEnabled = *r.E2EEEnabled
-	}
-	m["e2ee_enabled"] = e2eeEnabled
+	m["e2ee_enabled"] = r.E2EEOn()
 	if len(r.Participants) > 0 {
 		m["participants"] = r.Participants
 	}

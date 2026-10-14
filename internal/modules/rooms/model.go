@@ -90,6 +90,21 @@ func (r *Room) IsVoice() bool {
 	return r != nil && (r.Type == TypeSpaceVoice || r.Type == TypePM || r.Type == TypeGroupPM)
 }
 
+// E2EEOn reports whether the room's content is end-to-end encrypted, resolving a null
+// e2ee_enabled column to the default for its kind: PMs and group PMs are encrypted unless
+// turned off, and a space's rooms (text, voice, threads) are plaintext unless turned on.
+// Every wire form of e2ee_enabled goes through here so READY, GET /rooms and the room
+// events cannot disagree with messages.roomE2EEOff about which column a send must fill.
+func (r *Room) E2EEOn() bool {
+	if r == nil {
+		return false
+	}
+	if r.E2EEEnabled != nil {
+		return *r.E2EEEnabled
+	}
+	return r.SpaceID == nil
+}
+
 // Participant is a minimal user for room display.
 type Participant struct {
 	ID          string              `json:"id"`

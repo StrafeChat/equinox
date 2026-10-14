@@ -985,7 +985,7 @@ func (s *Service) putMirrorRoom(ctx context.Context, spaceID int64, mr MirrorRoo
 		"name":             updated.Name,
 		"topic":            updated.Topic,
 		"slowmode_seconds": updated.SlowmodeSeconds,
-		"e2ee_enabled":     updated.E2EEEnabled != nil && *updated.E2EEEnabled,
+		"e2ee_enabled":     updated.E2EEOn(),
 		"user_limit":       updated.UserLimit,
 		"bitrate":          updated.Bitrate,
 		"position":         updated.Position,

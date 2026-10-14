@@ -811,7 +811,7 @@ func (s *Service) UpdateRoom(ctx context.Context, actorID, spaceID, roomID int64
 			"name":               updated.Name,
 			"topic":              updated.Topic,
 			"slowmode_seconds":   updated.SlowmodeSeconds,
-			"e2ee_enabled":       updated.E2EEEnabled != nil && *updated.E2EEEnabled,
+			"e2ee_enabled":       updated.E2EEOn(),
 			"user_limit":         updated.UserLimit,
 			"bitrate":            updated.Bitrate,
 			"permissions_synced": updated.PermissionsSynced != nil && *updated.PermissionsSynced,
@@ -1043,7 +1043,7 @@ func RoomMap(r *rooms.Room) map[string]interface{} {
 		"topic":            r.Topic,
 		"slowmode_seconds": r.SlowmodeSeconds,
 		"position":         r.Position,
-		"e2ee_enabled":     r.E2EEEnabled != nil && *r.E2EEEnabled,
+		"e2ee_enabled":     r.E2EEOn(),
 		"created_at":       r.CreatedAt,
 		"updated_at":       r.UpdatedAt,
 	}

@@ -262,11 +262,7 @@ func (s *Service) RoomEventPayload(rwp *RoomWithParticipants) map[string]interfa
 	if rwp.Type == TypeGroupPM || rwp.CreatorID != 0 {
 		payload["creator_id"] = id.Format(rwp.CreatorID)
 	}
-	e2ee := true
-	if rwp.E2EEEnabled != nil {
-		e2ee = *rwp.E2EEEnabled
-	}
-	payload["e2ee_enabled"] = e2ee
+	payload["e2ee_enabled"] = rwp.E2EEOn()
 	if rwp.Federation != nil {
 		payload["federation"] = rwp.Federation
 	}

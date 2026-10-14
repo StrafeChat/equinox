@@ -772,14 +772,19 @@ func (s *Service) create(ctx context.Context, userID, roomID int64, in *CreateMe
 	// expansion, were never turned into anyone's mention count - the message rendered the
 	// role as a highlighted mention, but nobody holding that role ever got a badge for it.
 	notifyUserIDs := mentionUserIDs
+	var fromRoles []int64
 	if len(mentionRoleIDs) > 0 && room.SpaceID != nil && s.spaceAuth != nil {
-		if fromRoles, err := s.spaceAuth.ListSpaceMemberUserIDsByRoles(ctx, *room.SpaceID, mentionRoleIDs, canMassMention); err == nil {
-			notifyUserIDs = append(append([]int64{}, mentionUserIDs...), fromRoles...)
+		if held, err := s.spaceAuth.ListSpaceMemberUserIDsByRoles(ctx, *room.SpaceID, mentionRoleIDs, canMassMention); err == nil {
+			fromRoles = held
+			notifyUserIDs = append(append([]int64{}, mentionUserIDs...), held...)
 		}
 	}
+	var roleMentioned []int64
 	if notify := resolveMentionNotifySet(userID, participants, notifyUserIDs, mentionEveryone); len(notify) > 0 {
 		if err := s.rooms.IncrementMentionCounts(ctx, roomID, notify); err != nil {
 			// non-fatal: message is stored, mention badges just won't reflect this one
+		} else {
+			roleMentioned = roleMentionRecipients(notify, fromRoles)
 		}
 	}
 	s.pushMessage(ctx, room, m, participants, notifyUserIDs, mentionEveryone, len(attachments))
@@ -790,6 +795,8 @@ func (s *Service) create(ctx context.Context, userID, roomID int64, in *CreateMe
 			stargate.PublishToSpace(ctx, s.redis, roomID, "MESSAGE_CREATE", s.messageEventPayloadEnriched(ctx, m), s.cfg.Stargate.Region)
 		}
 	}
+	// Role holders' badges, which their clients cannot work out from MESSAGE_CREATE alone.
+	s.publishRoleMentionCounts(room, msgID, roleMentioned)
 	if s.federator != nil {
 		s.federator.AfterMessageCreated(ctx, roomID, participants, m)
 	}
