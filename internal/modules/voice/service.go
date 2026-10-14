@@ -35,6 +35,7 @@ var (
 	ErrNoCall              = errors.New("no call in this room")
 	ErrInvalidTarget       = errors.New("invalid target room")
 	ErrCannotModerateOwner = errors.New("cannot moderate the space owner")
+	ErrOfficialNoCalls     = errors.New("this is an official conversation and cannot hold a call")
 )
 
 // Gateway event names.
@@ -113,6 +114,24 @@ func (s *Service) PermsFor(ctx context.Context, userID int64, room *rooms.Room) 
 	}, nil
 }
 
+// isOfficialPM reports whether room is a 1:1 PM with the instance's official account. That
+// conversation is one-way (messages.ErrSystemReadOnly refuses replies): nobody is there to
+// answer a call, and the account holds no E2EE keys a call could be encrypted to.
+func (s *Service) isOfficialPM(ctx context.Context, room *rooms.RoomWithParticipants, userID int64) bool {
+	if room.Type != rooms.TypePM || s.users == nil {
+		return false
+	}
+	for _, pid := range room.ParticipantIDs {
+		if pid == userID {
+			continue
+		}
+		if u, err := s.users.GetByID(ctx, pid); err == nil && u != nil && u.System {
+			return true
+		}
+	}
+	return false
+}
+
 // Join issues a token for room and records the user's voice state there. Joining while
 // connected elsewhere leaves that room first (one voice connection per user, like
 // Discord); joining the room one is already in re-issues the token (used after a
@@ -124,6 +143,9 @@ func (s *Service) Join(ctx context.Context, user *auth.User, roomID int64, in Jo
 	}
 	if !room.IsVoice() {
 		return nil, ErrNotVoiceRoom
+	}
+	if s.isOfficialPM(ctx, room, user.ID) {
+		return nil, ErrOfficialNoCalls
 	}
 	perms, err := s.PermsFor(ctx, user.ID, &room.Room)
 	if err != nil {

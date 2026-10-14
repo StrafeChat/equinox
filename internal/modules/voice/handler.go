@@ -50,6 +50,8 @@ func voiceError(c fiber.Ctx, err error, fields map[string]any) error {
 		return c.Status(http.StatusConflict).JSON(fiber.Map{"error": err.Error()})
 	case errors.Is(err, ErrRoomFull):
 		return c.Status(http.StatusConflict).JSON(fiber.Map{"error": err.Error(), "code": "room_full"})
+	case errors.Is(err, ErrOfficialNoCalls):
+		return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": err.Error(), "code": "official_no_calls"})
 	}
 	logger.Err("voice", err, fields)
 	return c.Status(http.StatusInternalServerError).JSON(fiber.Map{"error": "internal error"})
