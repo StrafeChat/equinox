@@ -1,9 +1,14 @@
 package routes
 
 import (
+	"github.com/gofiber/fiber/v3/middleware/limiter"
+	"time"
+
 	"github.com/StrafeChat/equinox/internal/federation"
 	"github.com/StrafeChat/equinox/internal/middleware"
 	"github.com/StrafeChat/equinox/internal/modules/auth"
+	"github.com/StrafeChat/equinox/internal/modules/rooms"
+	"github.com/StrafeChat/equinox/internal/modules/spaces"
 )
 
 // SetupFederationRoutes mounts the instance document and the signed server-to-server API.
@@ -12,12 +17,22 @@ func SetupFederationRoutes(d Deps) {
 	if d.Federation == nil {
 		return
 	}
-	h := federation.NewHandler(d.Federation)
+	// Inbound key queries and claims are gated per requesting user exactly like the
+	// client-facing ones (routes/devices.go): a shared room, or friends who do not block.
+	keyUsers := auth.NewCachedUserRepository(auth.NewUserRepository(d.Scylla), d.Redis, d.Config)
+	keyRooms := rooms.NewRepository(d.Scylla)
+	keySpaces := spaces.NewService(spaces.NewRepository(d.Scylla), keyRooms, keyUsers, d.Redis, d.Config)
+	keyGate := &relationshipChecker{rooms: keyRooms, spaces: keySpaces, users: keyUsers}
+	h := federation.NewHandler(d.Federation).WithKeyGate(keyGate)
+	d.Federation.SetDeviceReachability(keyGate)
 
 	// Discovery: peers and clients read this to find the API/gateway and the signing key.
 	d.App.Get(federation.WellKnownPath, h.Instance)
 
-	g := d.App.Group(federation.BasePath)
+	// The signature check is not a rate limit: before it runs nothing is authenticated,
+	// and a bad signature still costs a lookup. Per address, generous (one peer is one
+	// address with many users behind it).
+	g := d.App.Group(federation.BasePath, limiter.New(limiter.Config{KeyGenerator: clientKey, Max: 1200, Expiration: time.Minute, LimitReached: rateLimited}))
 	g.Get("/instance", h.Instance)
 
 	s2s := d.Federation.RequireInstance()
@@ -76,8 +91,11 @@ func SetupFederationRoutes(d Deps) {
 	g.Post("/spaces/rooms", s2s, h.SpaceRooms)
 	g.Post("/spaces/emoji", s2s, h.SpaceEmoji)
 	g.Post("/spaces/delete", s2s, h.SpaceDelete)
-	g.Post("/keys/query", s2s, h.KeysQuery)
-	g.Post("/keys/claim", s2s, h.KeysClaim)
+	// One peer speaks for many users, so these limits are per instance and generous; they
+	// exist so a hostile peer cannot walk every account's device list or drain one-time-key
+	// pools at line rate.
+	g.Post("/keys/query", s2s, perPeerLimiter(600, time.Minute), h.KeysQuery)
+	g.Post("/keys/claim", s2s, perPeerLimiter(300, time.Minute), h.KeysClaim)
 	g.Post("/to_device", s2s, h.ToDevice)
 
 	// Client-facing (session auth): which instances this one has federated with.

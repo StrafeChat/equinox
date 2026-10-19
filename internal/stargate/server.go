@@ -160,6 +160,13 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		sessionID = session.SessionID
 	}
 
+	// Every socket costs a READY assembly and a fan-out slot; a person has a few devices
+	// and tabs, not hundreds, and nothing else keeps one account from opening thousands.
+	if s.hub.connectionsFor(user.ID) >= maxConnectionsPerUser {
+		s.writeError(w, r, 429, "too many connections for this account")
+		return
+	}
+
 	conn, err := s.upgrade.Upgrade(w, r, nil)
 	if err != nil {
 		logger.Warn("stargate", "upgrade failed: %v", err)
@@ -241,6 +248,9 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	go client.writePump(ctx2)
 	client.readPump(ctx2)
 }
+
+// maxConnectionsPerUser caps one account's simultaneous sockets on a gateway.
+const maxConnectionsPerUser = 25
 
 func (s *Server) writeError(w http.ResponseWriter, r *http.Request, status int, msg string) {
 	w.Header().Set("Content-Type", "application/json")

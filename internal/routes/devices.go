@@ -86,8 +86,15 @@ func SetupDevicesRoutes(d Deps) {
 	spaceRepo := spaces.NewRepository(d.Scylla)
 	spaceSvc := spaces.NewService(spaceRepo, roomRepo, userRepo, d.Redis, d.Config)
 	rel := &relationshipChecker{rooms: roomRepo, spaces: spaceSvc, users: userRepo}
+	devSvc.SetRelationshipChecker(rel)
 
 	devHandler := devices.NewHandler(devSvc, rel)
+	// Creating or deleting a backup version re-checks the account password: a session token
+	// alone could otherwise point every device's room-key uploads at a key pair of the
+	// caller's choosing. backupLimiter below is the brake on guessing it.
+	devHandler.SetReauth(func(ctx context.Context, userID int64, password string) error {
+		return auth.VerifyUserPassword(ctx, userRepo, userID, password)
+	})
 	if d.Federation != nil {
 		// Key queries/claims/to-device for @id:otherdomain users are forwarded there;
 		// reachability checks resolve those ids to the shadow rows the caller shares a
@@ -101,8 +108,9 @@ func SetupDevicesRoutes(d Deps) {
 	// enumerate/drain every user on the platform - unlike /auth's 10/min, this budget is
 	// per-endpoint-class and more generous, since legitimate use is bursty by nature.
 	keysLimiter := limiter.New(limiter.Config{
-		Max:        60,
-		Expiration: time.Minute,
+		KeyGenerator: clientKey,
+		Max:          60,
+		Expiration:   time.Minute,
 	})
 	// Recovery-material endpoints: the wrapped backup key, and the legacy PIN blob. Rate
 	// limiting only protects the *fetch* here (everything after it happens client-side), so
@@ -111,8 +119,9 @@ func SetupDevicesRoutes(d Deps) {
 	// recovery code is 128 bits, so there is nothing to brute-force offline - but a fetch of
 	// key material still has no legitimate reason to be hot.
 	backupLimiter := limiter.New(limiter.Config{
-		Max:        10,
-		Expiration: time.Minute,
+		KeyGenerator: clientKey,
+		Max:          10,
+		Expiration:   time.Minute,
 	})
 
 	r := d.App.Group("/devices", requireAuth)

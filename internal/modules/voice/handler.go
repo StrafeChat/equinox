@@ -41,7 +41,7 @@ func voiceError(c fiber.Ctx, err error, fields map[string]any) error {
 		return c.Status(http.StatusServiceUnavailable).JSON(fiber.Map{"error": err.Error()})
 	case errors.Is(err, rooms.ErrRoomNotFound), errors.Is(err, spaces.ErrSpaceNotFound):
 		return c.Status(http.StatusNotFound).JSON(fiber.Map{"error": err.Error()})
-	case errors.Is(err, rooms.ErrNotParticipant), errors.Is(err, ErrMissingPerm), errors.Is(err, spaces.ErrMissingPerm),
+	case errors.Is(err, rooms.ErrNotParticipant), errors.Is(err, rooms.ErrBlocked), errors.Is(err, ErrMissingPerm), errors.Is(err, spaces.ErrMissingPerm),
 		errors.Is(err, spaces.ErrNotMember), errors.Is(err, ErrCannotModerateOwner):
 		return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": err.Error()})
 	case errors.Is(err, ErrNotVoiceRoom), errors.Is(err, ErrInvalidTarget), errors.Is(err, spaces.ErrNothingToPatch):

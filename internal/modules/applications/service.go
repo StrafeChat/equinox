@@ -28,10 +28,41 @@ type Service struct {
 	// live sockets (the same SESSION_REVOKED path an account ban uses).
 	redis  *redis.Client
 	region string
+	// bans is the instance module's ban lookup. A bot token belongs to an account like a
+	// session does, so an instance ban has to stop it too - and the person who owns the
+	// application does not get to keep acting through their bots once banned.
+	bans auth.BanChecker
+	// iconOK accepts an application icon URL. Everyone who sees the consent page or the
+	// bot's profile loads it, so - as with a person's avatar - it must be an upload on this
+	// instance, never an arbitrary address that would report each viewer to its owner.
+	iconOK func(url string) bool
 }
+
+// SetIconCheck installs the icon URL rule (see iconOK).
+func (s *Service) SetIconCheck(f func(url string) bool) { s.iconOK = f }
 
 func NewService(repo Repository, users auth.UserRepository) *Service {
 	return &Service{repo: repo, users: users}
+}
+
+// SetBanChecker makes instance bans apply to bot tokens (see ResolveBotToken).
+func (s *Service) SetBanChecker(b auth.BanChecker) { s.bans = b }
+
+// credentialBanned reports whether a bot token must be refused: the bot account is banned,
+// or the account owning its application is.
+func (s *Service) credentialBanned(ctx context.Context, botUserID, appID int64) (bool, error) {
+	if s.bans == nil {
+		return false, nil
+	}
+	if banned, _, err := s.bans.BanReason(ctx, botUserID); err != nil || banned {
+		return banned, err
+	}
+	app, err := s.repo.GetByID(ctx, appID)
+	if err != nil || app == nil || app.OwnerID == 0 {
+		return false, err
+	}
+	banned, _, err := s.bans.BanReason(ctx, app.OwnerID)
+	return banned, err
 }
 
 // SetGateway wires the Redis client the gateway listens on, so a reset bot token also
@@ -144,6 +175,9 @@ func (s *Service) Update(ctx context.Context, actorID, appID int64, in UpdateInp
 		a.Description = strings.TrimSpace(*in.Description)
 	}
 	if in.Icon != nil {
+		if *in.Icon != "" && s.iconOK != nil && !s.iconOK(*in.Icon) {
+			return nil, ErrInvalidIcon
+		}
 		a.Icon = *in.Icon
 	}
 	if in.RedirectURIs != nil {
@@ -275,8 +309,11 @@ func (s *Service) ResolveBotToken(ctx context.Context, rawToken string) (*auth.U
 	if h == "" {
 		return nil, nil
 	}
-	botUserID, _, err := s.repo.ResolveBotToken(ctx, h)
+	botUserID, appID, err := s.repo.ResolveBotToken(ctx, h)
 	if err != nil || botUserID == 0 {
+		return nil, err
+	}
+	if banned, err := s.credentialBanned(ctx, botUserID, appID); err != nil || banned {
 		return nil, err
 	}
 	return s.users.GetByID(ctx, botUserID)

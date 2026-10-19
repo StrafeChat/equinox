@@ -1080,20 +1080,47 @@ func (s *Service) AfterRelationshipRemoved(_ context.Context, actor, target *aut
 
 // ---- key routing (devices.KeyRouter) --------------------------------------------------
 
-func (s *Service) QueryRemote(ctx context.Context, domain string, req map[string][]string) (*devices.QueryKeysOutput, error) {
+func (s *Service) QueryRemote(ctx context.Context, domain string, requesterID int64, req map[string][]string) (*devices.QueryKeysOutput, error) {
+	requester, err := s.requesterFID(ctx, requesterID)
+	if err != nil {
+		return nil, err
+	}
 	out := &devices.QueryKeysOutput{DeviceKeys: map[string]map[string]json.RawMessage{}}
-	if _, err := s.client.Do(ctx, domain, http.MethodPost, "/keys/query", KeysQuery{DeviceKeys: req}, out); err != nil {
+	if _, err := s.client.Do(ctx, domain, http.MethodPost, "/keys/query", KeysQuery{Requester: requester, DeviceKeys: req}, out); err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
-func (s *Service) ClaimRemote(ctx context.Context, domain string, req map[string]map[string]string) (*devices.ClaimKeysOutput, error) {
+func (s *Service) ClaimRemote(ctx context.Context, domain string, requesterID int64, req map[string]map[string]string) (*devices.ClaimKeysOutput, error) {
+	requester, err := s.requesterFID(ctx, requesterID)
+	if err != nil {
+		return nil, err
+	}
 	out := &devices.ClaimKeysOutput{OneTimeKeys: map[string]map[string]json.RawMessage{}}
-	if _, err := s.client.Do(ctx, domain, http.MethodPost, "/keys/claim", KeysClaim{OneTimeKeys: req}, out); err != nil {
+	if _, err := s.client.Do(ctx, domain, http.MethodPost, "/keys/claim", KeysClaim{Requester: requester, OneTimeKeys: req}, out); err != nil {
 		return nil, err
 	}
 	return out, nil
+}
+
+// SetDeviceReachability installs the shared-room check the inbound key and to-device
+// handlers apply (routes wire the same checker the client-facing endpoints use).
+func (s *Service) SetDeviceReachability(r devices.RelationshipChecker) {
+	s.devSvc.SetRelationshipChecker(r)
+}
+
+// requesterFID is the federated id of the local user behind a key query or claim, which
+// the peer needs to decide whether its users are reachable from them.
+func (s *Service) requesterFID(ctx context.Context, userID int64) (string, error) {
+	u, err := s.users.GetByID(ctx, userID)
+	if err != nil {
+		return "", err
+	}
+	if u == nil {
+		return "", ErrRemoteUserNotFound
+	}
+	return s.FIDOf(u), nil
 }
 
 func (s *Service) SendToDeviceRemote(ctx context.Context, domain string, senderUserID, senderDeviceID int64, eventType string, msgs map[string]map[string]json.RawMessage) error {

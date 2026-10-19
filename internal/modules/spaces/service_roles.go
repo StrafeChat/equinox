@@ -22,6 +22,8 @@ var (
 	ErrInvalidReorder         = errors.New("invalid room order")
 	ErrInvalidRoleName        = errors.New("role name must be 1-100 characters and not @everyone")
 	ErrInvalidRoomName        = errors.New("room name must be at most 100 characters")
+	ErrTooManyRoles           = errors.New("a space can have at most 250 roles")
+	ErrTooManyRooms           = errors.New("a space can have at most 500 rooms")
 	ErrInvalidTopic           = errors.New("topic must be at most 1024 characters")
 	ErrInvalidUserLimit       = errors.New("user limit must be 0 (unlimited) to 99")
 	ErrInvalidBitrate         = errors.New("bitrate must be 8000-384000 bits per second, or 0 for the default")
@@ -183,6 +185,9 @@ func (s *Service) CreateSpaceRole(ctx context.Context, actorID, spaceID int64, i
 	existing, err := s.repo.ListSpaceRoles(ctx, spaceID)
 	if err != nil {
 		return nil, err
+	}
+	if len(existing) >= MaxRolesPerSpace {
+		return nil, ErrTooManyRoles
 	}
 	maxPos := 0
 	for _, r := range existing {
@@ -496,7 +501,15 @@ func keepManagedRoles(out, current []int64, userID int64, byID map[int64]*SpaceR
 	return out
 }
 
-// ListRoomRoleOverrides returns overrides for a channel. Any member.
+// Caps per space. Every role and room rides in READY, in the permission snapshot and in
+// gateway fan-out; the federation receiver stops syncing above these, so the origin must
+// never get there.
+const (
+	MaxRolesPerSpace = 250
+	MaxRoomsPerSpace = 500
+)
+
+// ListRoomRoleOverrides returns overrides for a channel. Any member who can view it.
 func (s *Service) ListRoomRoleOverrides(ctx context.Context, actorID, spaceID, roomID int64) ([]SpaceRoomRoleOverride, error) {
 	ok, err := s.repo.IsMember(ctx, spaceID, actorID)
 	if err != nil {
@@ -508,10 +521,34 @@ func (s *Service) ListRoomRoleOverrides(ctx context.Context, actorID, spaceID, r
 	if err := s.assertRoomInSpace(ctx, spaceID, roomID); err != nil {
 		return nil, err
 	}
+	if err := s.assertRoomView(ctx, actorID, spaceID, roomID); err != nil {
+		return nil, err
+	}
 	return s.repo.ListRoomRoleOverrides(ctx, spaceID, roomID)
 }
 
-// ListRoomUserOverrides returns user-specific overrides for a channel. Any member.
+// assertRoomView: a room's settings are read and changed only by members who can see it
+// (the owner and Administrators always can). Manage Rooms is a space-wide bit, so without
+// this a holder could list, rename, re-topic or delete a private room hidden from them.
+func (s *Service) assertRoomView(ctx context.Context, actorID, spaceID, roomID int64) error {
+	base, err := s.SpacePermissionBase(ctx, actorID, spaceID)
+	if err != nil {
+		return err
+	}
+	if permissions.Has(base, permissions.PermAdministrator) {
+		return nil
+	}
+	effective, err := s.EffectiveChannelPermissions(ctx, actorID, spaceID, roomID)
+	if err != nil {
+		return err
+	}
+	if !permissions.Has(effective, permissions.PermViewRoom) {
+		return ErrMissingPerm
+	}
+	return nil
+}
+
+// ListRoomUserOverrides returns user-specific overrides for a channel. Any member who can view it.
 func (s *Service) ListRoomUserOverrides(ctx context.Context, actorID, spaceID, roomID int64) ([]SpaceRoomUserOverride, error) {
 	ok, err := s.repo.IsMember(ctx, spaceID, actorID)
 	if err != nil {
@@ -521,6 +558,9 @@ func (s *Service) ListRoomUserOverrides(ctx context.Context, actorID, spaceID, r
 		return nil, ErrNotMember
 	}
 	if err := s.assertRoomInSpace(ctx, spaceID, roomID); err != nil {
+		return nil, err
+	}
+	if err := s.assertRoomView(ctx, actorID, spaceID, roomID); err != nil {
 		return nil, err
 	}
 	return s.repo.ListRoomUserOverrides(ctx, spaceID, roomID)
@@ -548,6 +588,46 @@ func (s *Service) checkOverrideGrant(ctx context.Context, actorID, spaceID, room
 		return 0, 0, ErrPermissionEscalation
 	}
 	return allow, deny, nil
+}
+
+// assertCanClearOverrides is the gate for an operation that removes every override a room
+// has at once (syncing it to its section): the actor must be able to view the room, and each
+// override being removed must pass the grant-subset rule, exactly as deleting it one by one
+// would. Owners and Administrators pass as they do everywhere.
+func (s *Service) assertCanClearOverrides(ctx context.Context, actorID, spaceID, roomID int64) error {
+	base, err := s.SpacePermissionBase(ctx, actorID, spaceID)
+	if err != nil {
+		return err
+	}
+	if permissions.Has(base, permissions.PermAdministrator) {
+		return nil
+	}
+	effective, err := s.EffectiveChannelPermissions(ctx, actorID, spaceID, roomID)
+	if err != nil {
+		return err
+	}
+	if !permissions.Has(effective, permissions.PermViewRoom) {
+		return ErrMissingPerm
+	}
+	roleOv, err := s.repo.ListRoomRoleOverrides(ctx, spaceID, roomID)
+	if err != nil {
+		return err
+	}
+	for i := range roleOv {
+		if (roleOv[i].Allow|roleOv[i].Deny)&permissions.AllRoom&^effective != 0 {
+			return ErrPermissionEscalation
+		}
+	}
+	userOv, err := s.repo.ListRoomUserOverrides(ctx, spaceID, roomID)
+	if err != nil {
+		return err
+	}
+	for i := range userOv {
+		if (userOv[i].Allow|userOv[i].Deny)&permissions.AllRoom&^effective != 0 {
+			return ErrPermissionEscalation
+		}
+	}
+	return nil
 }
 
 // PutRoomRoleOverride sets allow/deny for a role in a room. Requires ManageRoles: as on
@@ -645,7 +725,9 @@ func (s *Service) PutRoomUserOverride(ctx context.Context, actorID, spaceID, roo
 	return nil
 }
 
-// DeleteRoomRoleOverride removes an override row. Requires ManageRoles.
+// DeleteRoomRoleOverride removes an override row. Requires ManageRoles, and - like
+// writing one - only for bits the actor holds in that room: removing a deny grants exactly
+// what writing the matching allow would, so the grant-subset rule applies to both.
 func (s *Service) DeleteRoomRoleOverride(ctx context.Context, actorID, spaceID, roomID, roleID int64) error {
 	if origin, actor, err := s.remoteSpace(ctx, actorID, spaceID); err != nil {
 		return err
@@ -658,6 +740,23 @@ func (s *Service) DeleteRoomRoleOverride(ctx context.Context, actorID, spaceID, 
 	if err := s.assertRoomInSpace(ctx, spaceID, roomID); err != nil {
 		return err
 	}
+	existing, err := s.repo.ListRoomRoleOverrides(ctx, spaceID, roomID)
+	if err != nil {
+		return err
+	}
+	var cur *SpaceRoomRoleOverride
+	for i := range existing {
+		if existing[i].RoleID == roleID {
+			cur = &existing[i]
+			break
+		}
+	}
+	if cur == nil {
+		return nil
+	}
+	if _, _, err := s.checkOverrideGrant(ctx, actorID, spaceID, roomID, cur.Allow, cur.Deny); err != nil {
+		return err
+	}
 	if err := s.repo.DeleteRoomRoleOverride(ctx, spaceID, roomID, roleID); err != nil {
 		return err
 	}
@@ -668,11 +767,15 @@ func (s *Service) DeleteRoomRoleOverride(ctx context.Context, actorID, spaceID, 
 	})
 	s.republishRoomVisibility(ctx, spaceID, s.visibilityAffectedRooms(ctx, spaceID, roomID))
 	s.fedRoomChanged(ctx, spaceID, roomID, false)
-	s.audit(ctx, spaceID, actorID, AuditOverrideDelete, id.Format(roomID)+":role:"+id.Format(roleID), nil, "")
+	s.audit(ctx, spaceID, actorID, AuditOverrideDelete, id.Format(roomID)+":role:"+id.Format(roleID), map[string]change{
+		"allow": {Old: cur.Allow},
+		"deny":  {Old: cur.Deny},
+	}, "")
 	return nil
 }
 
-// DeleteRoomUserOverride removes a user override row. Requires ManageRoles.
+// DeleteRoomUserOverride removes a user override row. Requires ManageRoles and, as for
+// DeleteRoomRoleOverride, only for bits the actor holds in that room.
 func (s *Service) DeleteRoomUserOverride(ctx context.Context, actorID, spaceID, roomID, targetUserID int64) error {
 	if origin, actor, err := s.remoteSpace(ctx, actorID, spaceID); err != nil {
 		return err
@@ -685,6 +788,23 @@ func (s *Service) DeleteRoomUserOverride(ctx context.Context, actorID, spaceID, 
 	if err := s.assertRoomInSpace(ctx, spaceID, roomID); err != nil {
 		return err
 	}
+	existing, err := s.repo.ListRoomUserOverrides(ctx, spaceID, roomID)
+	if err != nil {
+		return err
+	}
+	var cur *SpaceRoomUserOverride
+	for i := range existing {
+		if existing[i].UserID == targetUserID {
+			cur = &existing[i]
+			break
+		}
+	}
+	if cur == nil {
+		return nil
+	}
+	if _, _, err := s.checkOverrideGrant(ctx, actorID, spaceID, roomID, cur.Allow, cur.Deny); err != nil {
+		return err
+	}
 	if err := s.repo.DeleteRoomUserOverride(ctx, spaceID, roomID, targetUserID); err != nil {
 		return err
 	}
@@ -695,7 +815,10 @@ func (s *Service) DeleteRoomUserOverride(ctx context.Context, actorID, spaceID, 
 	})
 	s.republishRoomVisibility(ctx, spaceID, s.visibilityAffectedRooms(ctx, spaceID, roomID))
 	s.fedRoomChanged(ctx, spaceID, roomID, false)
-	s.audit(ctx, spaceID, actorID, AuditOverrideDelete, id.Format(roomID)+":user:"+id.Format(targetUserID), nil, "")
+	s.audit(ctx, spaceID, actorID, AuditOverrideDelete, id.Format(roomID)+":user:"+id.Format(targetUserID), map[string]change{
+		"allow": {Old: cur.Allow},
+		"deny":  {Old: cur.Deny},
+	}, "")
 	return nil
 }
 
@@ -728,6 +851,9 @@ func (s *Service) UpdateRoom(ctx context.Context, actorID, spaceID, roomID int64
 	room, err := s.roomRepo.GetByID(ctx, roomID)
 	if err != nil || room == nil || room.SpaceID == nil || *room.SpaceID != spaceID {
 		return ErrInvalidRoom
+	}
+	if err := s.assertRoomView(ctx, actorID, spaceID, roomID); err != nil {
+		return err
 	}
 
 	// Metadata: start from what's stored and overlay only the fields the request carried.
@@ -793,7 +919,17 @@ func (s *Service) UpdateRoom(ctx context.Context, actorID, spaceID, roomID int64
 	}
 
 	// Category permission sync: follow the parent section's overrides, or stop following them.
+	// Syncing deletes every override the room has, so it is override management: Manage
+	// Roles (not Manage Rooms), View in that room, and nothing removed that the actor could
+	// not have written - the same three rules PutRoomRoleOverride / DeleteRoomRoleOverride
+	// apply. Without them Manage Rooms alone could open a private room it cannot see.
 	if in.PermissionsSynced != nil {
+		if err := s.canManageRoles(ctx, actorID, spaceID); err != nil {
+			return err
+		}
+		if err := s.assertCanClearOverrides(ctx, actorID, spaceID, roomID); err != nil {
+			return err
+		}
 		var parent int64
 		if room.ParentID != nil {
 			parent = *room.ParentID
@@ -824,6 +960,7 @@ func (s *Service) UpdateRoom(ctx context.Context, actorID, spaceID, roomID int64
 		diff(changes, "e2ee_enabled", room.E2EEEnabled != nil && *room.E2EEEnabled, updated.E2EEEnabled != nil && *updated.E2EEEnabled)
 		diff(changes, "user_limit", room.UserLimit, updated.UserLimit)
 		diff(changes, "bitrate", room.Bitrate, updated.Bitrate)
+		diff(changes, "permissions_synced", room.PermissionsSynced != nil && *room.PermissionsSynced, updated.PermissionsSynced != nil && *updated.PermissionsSynced)
 		if len(changes) > 0 {
 			s.audit(ctx, spaceID, actorID, AuditRoomUpdate, id.Format(roomID), changes, "")
 		}
@@ -872,6 +1009,9 @@ func (s *Service) DeleteRoom(ctx context.Context, actorID, spaceID, roomID int64
 		return err
 	}
 	if err := s.assertRoomInSpace(ctx, spaceID, roomID); err != nil {
+		return err
+	}
+	if err := s.assertRoomView(ctx, actorID, spaceID, roomID); err != nil {
 		return err
 	}
 	// Deleting a section orphans its channels - they move to the top level and keep the perms
@@ -968,6 +1108,9 @@ func (s *Service) CreateRoom(ctx context.Context, actorID, spaceID int64, in *Cr
 	rows, err := s.roomRepo.ListBySpace(ctx, spaceID)
 	if err != nil {
 		return nil, err
+	}
+	if len(rows) >= MaxRoomsPerSpace {
+		return nil, ErrTooManyRooms
 	}
 	maxPos := 0
 	for _, row := range rows {

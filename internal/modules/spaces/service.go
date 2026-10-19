@@ -54,6 +54,14 @@ type Service struct {
 	// member actions to the origin; fedInfo is its read-only part (see federation.go).
 	fed     Federator
 	fedInfo FederationInfo
+	// memberRemoved: see SetMemberRemovedHook.
+	memberRemoved func(ctx context.Context, spaceID, userID int64)
+}
+
+// SetMemberRemovedHook is called after every removal of a member (kick, ban, leave); the
+// voice module uses it to end the person's voice connection in that space.
+func (s *Service) SetMemberRemovedHook(h func(ctx context.Context, spaceID, userID int64)) {
+	s.memberRemoved = h
 }
 
 func NewService(repo Repository, roomRepo rooms.Repository, userRepo auth.UserRepository, redis *redis.Client, cfg *config.Config) *Service {
@@ -816,8 +824,32 @@ func (s *Service) BanMember(ctx context.Context, actorID, spaceID, targetUserID 
 	} else if origin != "" {
 		return s.fed.RemoteModerate(ctx, origin, spaceID, actor, "ban", targetUserID, reason)
 	}
+	wasMember := true
 	if err := s.canModerateMember(ctx, spaceID, actorID, targetUserID, permissions.PermBanMembers); err != nil {
-		return err
+		if !errors.Is(err, ErrNotMember) {
+			return err
+		}
+		// Not (or no longer) a member: someone who left after a raid, or was kicked, can
+		// still be banned so a live invite does not let them straight back in. There is no
+		// hierarchy to respect for a person without roles; the actor's own Ban Members (or
+		// Administrator, or ownership) still applies.
+		sp, serr := s.repo.GetByID(ctx, spaceID)
+		if serr != nil {
+			return serr
+		}
+		if sp == nil {
+			return ErrSpaceNotFound
+		}
+		if sp.OwnerID != actorID {
+			base, berr := s.SpacePermissionBase(ctx, actorID, spaceID)
+			if berr != nil {
+				return berr
+			}
+			if !permissions.Has(base, permissions.PermBanMembers) && !permissions.Has(base, permissions.PermAdministrator) {
+				return ErrMissingPerm
+			}
+		}
+		wasMember = false
 	}
 	reason = strings.TrimSpace(reason)
 	if r := []rune(reason); len(r) > MaxBanReasonRunes {
@@ -833,12 +865,16 @@ func (s *Service) BanMember(ctx context.Context, actorID, spaceID, targetUserID 
 	if err := s.repo.CreateBan(ctx, ban); err != nil {
 		return err
 	}
-	if err := s.repo.RemoveMember(ctx, spaceID, targetUserID); err != nil {
-		return err
+	if wasMember {
+		if err := s.repo.RemoveMember(ctx, spaceID, targetUserID); err != nil {
+			return err
+		}
+		s.afterMemberRemoved(ctx, spaceID, targetUserID)
 	}
-	s.afterMemberRemoved(ctx, spaceID, targetUserID)
 	s.audit(ctx, spaceID, actorID, AuditMemberBanAdd, id.Format(targetUserID), nil, reason)
-	s.announceLeave(ctx, spaceID, targetUserID, "banned")
+	if wasMember {
+		s.announceLeave(ctx, spaceID, targetUserID, "banned")
+	}
 	s.fedMemberRemoved(ctx, spaceID, targetUserID, "banned")
 	return nil
 }

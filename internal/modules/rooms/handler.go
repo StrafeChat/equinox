@@ -66,7 +66,7 @@ func (h *Handler) List(c fiber.Ctx) error {
 	if user == nil {
 		return c.Status(http.StatusUnauthorized).JSON(fiber.Map{"error": "unauthorized"})
 	}
-	rooms, err := h.svc.ListRooms(c.Context(), user.ID)
+	rooms, err := h.svc.ListVisibleRooms(c.Context(), user.ID)
 	if err != nil {
 		logger.Err("rooms", err, map[string]any{"user_id": user.ID})
 		return c.Status(http.StatusInternalServerError).JSON(fiber.Map{"error": "internal error"})

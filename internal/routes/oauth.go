@@ -20,6 +20,7 @@ func SetupOAuthRoutes(d Deps) {
 	requireAuth := middleware.RequireAuth(sessionRepo, userRepo)
 
 	svc := oauth.NewService(oauth.NewRepository(d.Scylla), applications.NewRepository(d.Scylla), userRepo)
+	svc.SetBanChecker(newBanChecker(d))
 
 	// The `bot` and `spaces.join` scopes add members to spaces; that is the spaces
 	// service's job, wired the same way SetupSpacesRoutes wires it so the join notice
@@ -41,10 +42,11 @@ func SetupOAuthRoutes(d Deps) {
 
 	// The token endpoint is unauthenticated (the client authenticates in the body) and a
 	// natural brute-force target for client secrets, so it gets a tight budget.
-	tokenLimiter := limiter.New(limiter.Config{Max: 20, Expiration: time.Minute})
+	tokenLimiter := limiter.New(limiter.Config{KeyGenerator: clientKey, Max: 20, Expiration: time.Minute})
 
-	d.App.Get("/oauth2/authorize/info", requireAuth, h.Info)
-	d.App.Post("/oauth2/authorize", requireAuth, h.Authorize)
+	// Consent is a person's: a bot with Manage Space must not be able to install other bots.
+	d.App.Get("/oauth2/authorize/info", requireAuth, noBots, h.Info)
+	d.App.Post("/oauth2/authorize", requireAuth, noBots, h.Authorize)
 	d.App.Post("/oauth2/token", tokenLimiter, h.Token)
 	d.App.Post("/oauth2/token/revoke", tokenLimiter, h.Revoke)
 	// Any OAuth2 token may ask what it is.

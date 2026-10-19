@@ -208,13 +208,25 @@ func (h *Handler) DeleteEmoji(c fiber.Ctx) error {
 	// intended "deleted emoji" behaviour (they fall back to :name:). An image that lives
 	// on another instance's CDN (an emoji of a space hosted there) is theirs to remove.
 	if h.cfg != nil && strings.TrimSpace(h.cfg.Nebula.BaseURL) != "" && ownsBlob(h.cfg.Nebula.BaseURL, h.cfg.Nebula.PublicURL, e.URL) {
-		if key := nebula.KeyFromURL(e.URL); key != "" {
+		if key := nebula.KeyFromURL(e.URL); key != "" && emojiBlobKeyFor(spaceID, emojiID, key) {
 			if err := nebula.Delete(c.Context(), h.cfg.Nebula.BaseURL, h.cfg.Nebula.UploadSecret, key); err != nil {
 				logger.Err("spaces", err, map[string]any{"space_id": spaceID, "key": key})
 			}
 		}
 	}
 	return c.SendStatus(http.StatusNoContent)
+}
+
+// emojiBlobKeyFor reports whether key is the object this instance minted for the emoji
+// ("emojis/<space>/<emoji><ext>", see PostEmoji). The URL on an emoji row can come from a
+// peer, and only a key this instance named is this instance's to delete.
+func emojiBlobKeyFor(spaceID, emojiID int64, key string) bool {
+	prefix := "emojis/" + id.Format(spaceID) + "/" + id.Format(emojiID)
+	if !strings.HasPrefix(key, prefix) {
+		return false
+	}
+	rest := key[len(prefix):]
+	return rest == "" || (strings.HasPrefix(rest, ".") && !strings.ContainsAny(rest[1:], "./"))
 }
 
 // ownsBlob reports whether a URL points at this instance's own CDN.

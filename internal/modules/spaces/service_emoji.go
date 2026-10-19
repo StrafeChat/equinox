@@ -115,6 +115,11 @@ func (s *Service) emojiNameTaken(ctx context.Context, spaceID int64, name string
 
 // CreateEmoji records an already-uploaded image as a custom emoji. The handler uploads
 // to Nebula first (after CanManageEmojis) and passes the resulting URL here.
+// EmojiRefByID looks an emoji up by its global id (nil when none has it).
+func (s *Service) EmojiRefByID(ctx context.Context, emojiID int64) (*SpaceEmojiRef, error) {
+	return s.repo.GetEmojiByID(ctx, emojiID)
+}
+
 func (s *Service) CreateEmoji(ctx context.Context, actorID, spaceID, emojiID int64, name, url string, animated bool) (*SpaceEmoji, error) {
 	if origin, actor, err := s.remoteSpace(ctx, actorID, spaceID); err != nil {
 		return nil, err

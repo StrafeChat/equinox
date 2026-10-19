@@ -19,7 +19,7 @@ func SetupUnfurlRoutes(d Deps) {
 	requireAuth := middleware.RequireAuth(sessionRepo, userRepo)
 
 	h := unfurl.NewHandler(unfurl.NewService(d.Redis))
-	lim := limiter.New(limiter.Config{Max: 60, Expiration: time.Minute})
+	lim := limiter.New(limiter.Config{KeyGenerator: clientKey, Max: 60, Expiration: time.Minute})
 
 	d.App.Get("/unfurl", requireAuth, lim, h.Get)
 }

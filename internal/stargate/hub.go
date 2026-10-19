@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -194,6 +195,71 @@ func (h *Hub) handleRedisMessage(msg *redis.Message) {
 			time.AfterFunc(500*time.Millisecond, func() { h.disconnectUser(uid) })
 		}
 	}
+	// A subscription is authorized once, when it is made; membership is what authorized a
+	// space or room, so losing it must end the subscription too, or a kicked or banned
+	// member keeps streaming the room. The API tells the user themselves about every such
+	// loss on their own channel: SPACE_LEAVE (kick, ban, leave), ROOM_LEAVE (removed from a
+	// group PM) and SPACE_ROOM_DELETE (an override or sync change took their View away).
+	if env.UserID != "" && (env.Type == "SPACE_LEAVE" || env.Type == "ROOM_LEAVE" || env.Type == "SPACE_ROOM_DELETE") {
+		if uid, err := strconv.ParseInt(env.UserID, 10, 64); err == nil {
+			go h.reauthorizeUser(uid)
+		}
+	}
+}
+
+// reauthorizeUser re-runs the authorizer over every "space:" subscription the user's local
+// sockets hold and drops the ones it now refuses. Each distinct id is checked once.
+func (h *Hub) reauthorizeUser(userID int64) {
+	h.regMu.RLock()
+	var targets []*Client
+	for c := range h.clients {
+		if c.userID == userID {
+			targets = append(targets, c)
+		}
+	}
+	h.regMu.RUnlock()
+	if len(targets) == 0 {
+		return
+	}
+	ctx := context.Background()
+	verdict := map[string]bool{}
+	dropped := 0
+	for _, c := range targets {
+		for _, k := range c.listSubs() {
+			typ, id, ok := strings.Cut(k, ":")
+			if !ok || typ != "space" {
+				continue
+			}
+			allowed, seen := verdict[id]
+			if !seen {
+				allowed = h.authorizeSubscribe(ctx, userID, "space", id)
+				verdict[id] = allowed
+			}
+			if allowed {
+				continue
+			}
+			if c.unsubscribe("space", id) {
+				h.unsubscribe(c, "space", id)
+				dropped++
+			}
+		}
+	}
+	if dropped > 0 {
+		logger.Info("stargate", "dropped %d subscription(s) user_id=%d no longer holds", dropped, userID)
+	}
+}
+
+// connectionsFor counts a user's live sockets on this gateway.
+func (h *Hub) connectionsFor(userID int64) int {
+	h.regMu.RLock()
+	defer h.regMu.RUnlock()
+	n := 0
+	for c := range h.clients {
+		if c.userID == userID {
+			n++
+		}
+	}
+	return n
 }
 
 // disconnectUser closes every socket a user holds; readPump's exit does the unregister.

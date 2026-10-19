@@ -20,6 +20,7 @@ var (
 	ErrNotOwner        = errors.New("you do not own this application")
 	ErrTooMany         = errors.New("you have reached the application limit")
 	ErrInvalidName     = errors.New("name must be 1-80 characters")
+	ErrInvalidIcon     = errors.New("icon must be an image uploaded to this instance")
 	ErrInvalidRedirect = errors.New("a redirect uri must be an absolute http(s) url, at most 10 of them")
 	ErrHasBot          = errors.New("this application already has a bot")
 	ErrNoBot           = errors.New("this application has no bot")

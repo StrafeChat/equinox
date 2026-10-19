@@ -25,10 +25,73 @@ import (
 // behind Service.RequireInstance).
 type Handler struct {
 	svc *Service
+	// keyGate decides whether a peer's user may learn a local user's device keys or claim
+	// their one-time keys: the same rule the client-facing key endpoints apply (a shared
+	// room, or friends who do not block each other). Nil admits nobody but the user
+	// themselves - routes wire the real checker in.
+	keyGate devices.RelationshipChecker
 }
 
 func NewHandler(svc *Service) *Handler {
 	return &Handler{svc: svc}
+}
+
+// WithKeyGate sets the reachability check for inbound key queries and claims.
+func (h *Handler) WithKeyGate(g devices.RelationshipChecker) *Handler {
+	h.keyGate = g
+	return h
+}
+
+// keyRequester resolves the user a peer says is asking for keys. They must be one of the
+// peer's own and already known here: a shadow row exists for anyone who shares a room with
+// a local user, and nobody else has a legitimate reason to ask. Writes the refusal itself.
+func (h *Handler) keyRequester(c fiber.Ctx, fid string) (int64, bool) {
+	requester := RequesterDomain(c)
+	if fid == "" {
+		logger.Warn("federation", "%s asked for keys without naming the requesting user (the peer needs upgrading); refused", requester)
+		_ = c.Status(http.StatusForbidden).JSON(fiber.Map{"error": "requester required"})
+		return 0, false
+	}
+	if _, domain, err := ParseFID(fid); err != nil || domain != requester {
+		_ = c.Status(http.StatusForbidden).JSON(fiber.Map{"error": "requester must belong to the requesting instance"})
+		return 0, false
+	}
+	uid, err := h.svc.ResolveLocalID(c.Context(), fid)
+	if err != nil {
+		_ = c.Status(http.StatusForbidden).JSON(fiber.Map{"error": "requester is not known here"})
+		return 0, false
+	}
+	return uid, true
+}
+
+// reachableLocal keeps the requested users this instance hosts whom requesterID may
+// exchange keys with. A user's own devices are always theirs to see.
+func (h *Handler) reachableLocal(ctx context.Context, requesterID int64, fids []string) (map[string]struct{}, error) {
+	out := make(map[string]struct{}, len(fids))
+	for _, fid := range fids {
+		_, domain, err := ParseFID(fid)
+		if err != nil || !h.svc.IsLocalServer(domain) {
+			continue
+		}
+		targetID, err := h.svc.ResolveLocalID(ctx, fid)
+		if err != nil {
+			continue
+		}
+		if targetID != requesterID {
+			if h.keyGate == nil {
+				continue
+			}
+			ok, err := h.keyGate.CanExchangeKeys(ctx, requesterID, targetID)
+			if err != nil {
+				return nil, err
+			}
+			if !ok {
+				continue
+			}
+		}
+		out[fid] = struct{}{}
+	}
+	return out, nil
 }
 
 func fail(c fiber.Ctx, err error, fields map[string]any) error {
@@ -287,6 +350,11 @@ func (s *Service) messageFromEvent(ctx context.Context, from string, sc *roomSco
 	if err != nil {
 		return nil, ErrInvalidFID
 	}
+	// Length before translation: textFromWire resolves each mention's profile, possibly a
+	// signed request to a third instance, and must not run on a body about to be refused.
+	if utf8.RuneCountInString(ev.Plaintext) > messages.MaxPlaintextRunes || len(ev.Ciphertext) > messages.MaxCiphertextBytes {
+		return nil, messages.ErrContentTooLong
+	}
 	// The emoji the text uses are recorded before the text is read anywhere, so the first
 	// render can already resolve them; mentions come in as <@FID> and leave as local ids.
 	s.recordEmojiRefs(ctx, ev.Emojis)
@@ -431,8 +499,10 @@ func (h *Handler) RoomCreate(c fiber.Ctx) error {
 	}
 	var ids []int64
 	seen := map[int64]struct{}{}
-	hasLocal := false
+	local := map[int64]bool{}
+	anyLocal := false
 	creatorID := int64(0)
+	remoteActor := int64(0)
 	for _, p := range body.Participants {
 		u, err := h.svc.resolveProfile(ctx, p, requester)
 		if err != nil {
@@ -444,15 +514,45 @@ func (h *Handler) RoomCreate(c fiber.Ctx) error {
 		}
 		seen[u.ID] = struct{}{}
 		ids = append(ids, u.ID)
+		local[u.ID] = !u.IsRemote()
 		if !u.IsRemote() {
-			hasLocal = true
+			anyLocal = true
+		} else if remoteActor == 0 {
+			remoteActor = u.ID
 		}
 		if body.Creator != "" && p.FID == body.Creator {
 			creatorID = u.ID
 		}
 	}
-	if !hasLocal {
+	if !anyLocal {
 		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "no participants on this instance"})
+	}
+	// The gate a local account passes to start a conversation applies to a peer's user as
+	// well: never across a block, and under PM_POLICY=shared only with friends or people
+	// sharing a space. Blocks are never announced to peers (FEDERATION.md), so the receiving
+	// instance is the one place they can hold. The actor is the room's creator, failing
+	// that the announcing side's user.
+	actor := creatorID
+	if actor == 0 {
+		actor = remoteActor
+	}
+	kept := ids[:0]
+	hasLocal := false
+	for _, uid := range ids {
+		if local[uid] && actor != 0 && uid != actor {
+			if err := h.svc.roomSvc.PMAllowed(ctx, actor, uid); err != nil {
+				logger.Info("federation", "room announce from %s: user %d not reachable by %d (%v)", requester, uid, actor, err)
+				continue
+			}
+		}
+		kept = append(kept, uid)
+		if local[uid] {
+			hasLocal = true
+		}
+	}
+	ids = kept
+	if !hasLocal {
+		return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": rooms.ErrBlocked.Error()})
 	}
 	if body.Type == rooms.TypePM && len(ids) != 2 {
 		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "a PM needs exactly two participants"})
@@ -491,9 +591,20 @@ func (h *Handler) RoomParticipants(c fiber.Ctx) error {
 	if sc.spaceID != 0 {
 		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "a space channel has no participant list"})
 	}
+	// Only a group's creator may add or remove participants, and the creator lives on the
+	// room's origin: that is the one instance entitled to relay a membership change. Any
+	// participant's instance may relay what its users say; none may rewrite who is there.
+	if !sc.fromOrigin {
+		return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": "only the room's origin may change its participants"})
+	}
 	m := sc.mapping
 	requester := RequesterDomain(c)
 	ctx := c.Context()
+	current := make(map[int64]struct{}, len(sc.participants))
+	for _, pid := range sc.participants {
+		current[pid] = struct{}{}
+	}
+	actor := sc.room.CreatorID
 	var target []int64
 	seen := map[int64]struct{}{}
 	for _, p := range body.Participants {
@@ -506,6 +617,14 @@ func (h *Handler) RoomParticipants(c fiber.Ctx) error {
 			continue
 		}
 		seen[u.ID] = struct{}{}
+		// Someone newly added who lives here goes through the same gate a local add does
+		// (blocks, PM_POLICY) - see RoomCreate.
+		if _, already := current[u.ID]; !already && !u.IsRemote() && actor != 0 && u.ID != actor {
+			if err := h.svc.roomSvc.PMAllowed(ctx, actor, u.ID); err != nil {
+				logger.Info("federation", "participant update from %s: user %d not reachable by %d (%v)", requester, u.ID, actor, err)
+				continue
+			}
+		}
 		target = append(target, u.ID)
 	}
 	if len(target) == 0 {
@@ -532,6 +651,14 @@ func (h *Handler) RoomPatch(c fiber.Ctx) error {
 	}
 	if sc.spaceID != 0 {
 		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "space channels change through /spaces/rooms"})
+	}
+	if !sc.fromOrigin {
+		return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": "only the room's origin may change it"})
+	}
+	if body.E2EEEnabled != nil && sc.room.Type != rooms.TypeGroupPM {
+		// Encryption is a group setting its creator may turn off; a 1:1 PM is encrypted for
+		// life, and nothing on the wire changes that.
+		return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": "end-to-end encryption cannot be changed on this room"})
 	}
 	if _, err := h.svc.roomSvc.ApplyRoomPatch(c.Context(), sc.room.ID, body.Name, body.E2EEEnabled); err != nil {
 		return fail(c, err, map[string]any{"room_id": sc.room.ID})
@@ -664,13 +791,23 @@ func (h *Handler) KeysQuery(c fiber.Ctx) error {
 	if err := json.Unmarshal(c.Body(), &body); err != nil {
 		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "invalid JSON"})
 	}
-	local := map[string][]string{}
-	for fid, devs := range body.DeviceKeys {
-		if _, domain, err := ParseFID(fid); err == nil && h.svc.IsLocalServer(domain) {
-			local[fid] = devs
-		}
+	requesterID, ok := h.keyRequester(c, body.Requester)
+	if !ok {
+		return nil
 	}
-	out, err := h.svc.devSvc.QueryKeys(c.Context(), local)
+	fids := make([]string, 0, len(body.DeviceKeys))
+	for fid := range body.DeviceKeys {
+		fids = append(fids, fid)
+	}
+	admitted, err := h.reachableLocal(c.Context(), requesterID, fids)
+	if err != nil {
+		return fail(c, err, nil)
+	}
+	local := map[string][]string{}
+	for fid := range admitted {
+		local[fid] = body.DeviceKeys[fid]
+	}
+	out, err := h.svc.devSvc.QueryKeys(c.Context(), requesterID, local)
 	if err != nil {
 		return fail(c, err, nil)
 	}
@@ -683,13 +820,23 @@ func (h *Handler) KeysClaim(c fiber.Ctx) error {
 	if err := json.Unmarshal(c.Body(), &body); err != nil {
 		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "invalid JSON"})
 	}
-	local := map[string]map[string]string{}
-	for fid, devs := range body.OneTimeKeys {
-		if _, domain, err := ParseFID(fid); err == nil && h.svc.IsLocalServer(domain) {
-			local[fid] = devs
-		}
+	requesterID, ok := h.keyRequester(c, body.Requester)
+	if !ok {
+		return nil
 	}
-	out, err := h.svc.devSvc.ClaimKeys(c.Context(), local)
+	fids := make([]string, 0, len(body.OneTimeKeys))
+	for fid := range body.OneTimeKeys {
+		fids = append(fids, fid)
+	}
+	admitted, err := h.reachableLocal(c.Context(), requesterID, fids)
+	if err != nil {
+		return fail(c, err, nil)
+	}
+	local := map[string]map[string]string{}
+	for fid := range admitted {
+		local[fid] = body.OneTimeKeys[fid]
+	}
+	out, err := h.svc.devSvc.ClaimKeys(c.Context(), requesterID, local)
 	if err != nil {
 		return fail(c, err, nil)
 	}
@@ -717,7 +864,21 @@ func (h *Handler) ToDevice(c fiber.Ctx) error {
 	if body.EventType == "" {
 		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "event_type required"})
 	}
-	if err := h.svc.devSvc.DeliverFromRemote(c.Context(), sender.ID, senderDeviceID, body.Sender.FID, body.EventType, body.Messages); err != nil {
+	// A peer's user may push to-device traffic (Olm sessions, room keys) only to people
+	// they can exchange keys with - the gate the key endpoints apply.
+	recipients := make([]string, 0, len(body.Messages))
+	for k := range body.Messages {
+		recipients = append(recipients, k)
+	}
+	admitted, err := h.reachableLocal(c.Context(), sender.ID, recipients)
+	if err != nil {
+		return fail(c, err, map[string]any{"peer": requester})
+	}
+	filtered := make(map[string]map[string]json.RawMessage, len(admitted))
+	for k := range admitted {
+		filtered[k] = body.Messages[k]
+	}
+	if err := h.svc.devSvc.DeliverFromRemote(c.Context(), sender.ID, senderDeviceID, body.Sender.FID, body.EventType, filtered); err != nil {
 		return fail(c, err, map[string]any{"peer": requester})
 	}
 	return c.SendStatus(http.StatusNoContent)

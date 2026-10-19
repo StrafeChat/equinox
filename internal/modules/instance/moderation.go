@@ -656,8 +656,14 @@ func (s *Service) GetReport(ctx context.Context, actorID, reportID int64) (*Repo
 		d.Room, _ = s.mod.Rooms.GetByID(ctx, *rep.RoomID)
 		if rep.MessageID != nil {
 			if m, err := s.mod.Messages.GetByID(ctx, *rep.RoomID, *rep.MessageID); err == nil && m != nil {
-				d.Message = m
-				d.MessageReadable = m.Plaintext != "" && m.DeletedAt == nil
+				// Evidence against a person has to be that person's message; a reporter
+				// cannot put someone else's words in front of the admin as the accused's.
+				if rep.TargetType == TargetUser && m.SenderID != rep.TargetID {
+					logger.Warn("instance", "report %d cites message %d, which user %d did not write; not shown", rep.ID, m.ID, rep.TargetID)
+				} else {
+					d.Message = m
+					d.MessageReadable = m.Plaintext != "" && m.DeletedAt == nil
+				}
 			}
 		}
 	}

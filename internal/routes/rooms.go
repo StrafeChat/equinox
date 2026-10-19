@@ -22,6 +22,10 @@ func SetupRoomsRoutes(d Deps) {
 	spaceSvc := spaces.NewService(spaceRepo, roomRepo, userRepo, d.Redis, d.Config)
 	roomSvc := rooms.NewService(roomRepo, userRepo, d.Redis, d.Config, onSystemEvent, spaceSvc)
 	roomSvc.SetSharedSpaceChecker(&sharedSpaceChecker{spaces: spaceSvc})
+	// Removal from a group PM hangs the person up and stops ringing them.
+	if ev := newVoiceEvictor(d, roomSvc, spaceSvc, userRepo, onSystemEvent); ev != nil {
+		roomSvc.SetParticipantRemovedHook(ev.OnRoomParticipantRemoved)
+	}
 	roomHandler := rooms.NewHandler(roomSvc)
 	if d.Federation != nil {
 		roomSvc.SetFederator(d.Federation)

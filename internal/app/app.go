@@ -39,6 +39,12 @@ func New(cfg *config.Config) (*App, error) {
 	}
 	fiberCfg := fiber.Config{
 		BodyLimit: int(bodyLimit),
+		// Without these a connection may hold a worker forever: a client that sends a
+		// request header and then nothing, or never reads its response. The read timeout
+		// covers the whole request including a full-size attachment body on a slow link.
+		ReadTimeout:  2 * time.Minute,
+		WriteTimeout: time.Minute,
+		IdleTimeout:  2 * time.Minute,
 		// An error nothing handled must not reach the client as text: a gocql or Redis
 		// message names tables and hosts. Fiber's own *fiber.Error values (404, 405, 413,
 		// ...) are safe and kept as JSON; anything else - including a recovered panic -

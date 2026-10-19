@@ -65,7 +65,15 @@ func (s *Service) textFromWire(ctx context.Context, text string) string {
 	if text == "" || !strings.Contains(text, "<@@") {
 		return text
 	}
+	// Each unknown mention may cost a signed profile fetch from a third instance; a message
+	// gets a handful, and the rest stay as they came (the client renders them as unknown).
+	const maxMentionLookups = 20
+	lookups := 0
 	return wireFIDMentionRe.ReplaceAllStringFunc(text, func(tok string) string {
+		if lookups >= maxMentionLookups {
+			return tok
+		}
+		lookups++
 		m := wireFIDMentionRe.FindStringSubmatch(tok)
 		u, err := s.shadowByFID(ctx, m[1])
 		if err != nil || u == nil {

@@ -41,6 +41,45 @@ type SharedSpaceChecker interface {
 // only friendship opens a conversation under that policy.
 func (s *Service) SetSharedSpaceChecker(c SharedSpaceChecker) { s.sharedSpace = c }
 
+// SetParticipantRemovedHook is called with every (room, user) removed from a group PM,
+// locally or by relay; the voice module uses it to end the person's call connection.
+func (s *Service) SetParticipantRemovedHook(h func(ctx context.Context, roomID, userID int64)) {
+	s.participantRemoved = h
+}
+
+// PMAllowed is checkPMAllowed for callers outside the module: may actorID start (or pull
+// targetID into) a conversation - never across a block, and under PM_POLICY=shared only
+// between friends or people sharing a space.
+func (s *Service) PMAllowed(ctx context.Context, actorID, targetID int64) error {
+	return s.checkPMAllowed(ctx, actorID, targetID)
+}
+
+// BlockedBetween reports whether either user blocks the other.
+func (s *Service) BlockedBetween(ctx context.Context, a, b int64) (bool, error) {
+	ua, err := s.user.GetByID(ctx, a)
+	if err != nil {
+		return false, err
+	}
+	ub, err := s.user.GetByID(ctx, b)
+	if err != nil {
+		return false, err
+	}
+	if ua == nil || ub == nil {
+		return false, nil
+	}
+	for _, v := range ua.Blocks {
+		if v == b {
+			return true, nil
+		}
+	}
+	for _, v := range ub.Blocks {
+		if v == a {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 func containsID(list []int64, id int64) bool {
 	for _, v := range list {
 		if v == id {
@@ -151,6 +190,8 @@ type Service struct {
 	fedInfo       FederationInfo
 	federator     Federator
 	sharedSpace   SharedSpaceChecker
+	// participantRemoved: see SetParticipantRemovedHook.
+	participantRemoved func(ctx context.Context, roomID, userID int64)
 }
 
 func NewService(repo Repository, user auth.UserRepository, redis *redis.Client, cfg *config.Config, onSystemEvent OnRoomSystemEvent, spaceChecker SpaceMemberChecker) *Service {
@@ -370,6 +411,9 @@ func (s *Service) ApplyParticipants(ctx context.Context, roomID int64, target []
 			region := s.stargateRegion()
 			for _, uid := range removed {
 				stargate.PublishToUser(ctx, s.redis, uid, "ROOM_LEAVE", map[string]interface{}{"room_id": id.Format(roomID)}, region)
+				if s.participantRemoved != nil {
+					s.participantRemoved(ctx, roomID, uid)
+				}
 			}
 			if len(removed) > 0 && (room.E2EEEnabled == nil || *room.E2EEEnabled) {
 				rotate := map[string]interface{}{"room_id": id.Format(roomID)}
@@ -384,6 +428,20 @@ func (s *Service) ApplyParticipants(ctx context.Context, roomID int64, target []
 
 // ApplyRoomPatch updates name/E2EE for a mirrored room and notifies local users.
 func (s *Service) ApplyRoomPatch(ctx context.Context, roomID int64, name *string, e2ee *bool) (*RoomWithParticipants, error) {
+	if e2ee != nil {
+		// A relayed change can do no more than a local one: encryption is a group setting
+		// (UpdateRoomE2EEEnabled), and a 1:1 PM is never switched to plaintext from the wire.
+		room, err := s.repo.GetByID(ctx, roomID)
+		if err != nil {
+			return nil, err
+		}
+		if room == nil {
+			return nil, ErrRoomNotFound
+		}
+		if room.Type != TypeGroupPM {
+			return nil, ErrNotGroupRoom
+		}
+	}
 	if name != nil {
 		if err := s.repo.UpdateRoomName(ctx, roomID, *name); err != nil {
 			return nil, err
@@ -772,6 +830,9 @@ func (s *Service) RemoveParticipant(ctx context.Context, actorID, roomID, target
 			stargate.PublishToUser(ctx, s.redis, uid, "ROOM_UPDATE", payload, region)
 		}
 		stargate.PublishToUser(ctx, s.redis, targetID, "ROOM_LEAVE", map[string]interface{}{"room_id": id.Format(roomID)}, region)
+		if s.participantRemoved != nil {
+			s.participantRemoved(ctx, roomID, targetID)
+		}
 		// A Megolm group session has no cryptographic revocation on its own - anyone who
 		// had the session key can still decrypt anything encrypted under it. Removing a
 		// member only matters in practice if the remaining members rotate to a fresh
@@ -914,6 +975,29 @@ const participantFetchConcurrency = 8
 // The room rows come from one batched read; the per-room participant partitions are
 // read concurrently. This used to be two sequential queries per room, which made READY
 // (which calls this) grow linearly with the number of conversations a user has.
+// ListVisibleRooms is ListRooms for GET /rooms: a space room is listed only when the user
+// may view it. A rooms_by_user row says a message once fanned out to them, not that they
+// may see the room - a private channel hidden from a member, or the rooms of a space they
+// have since left, would otherwise be listed with name, topic and activity. (READY does
+// this filtering itself, per space, from the permission snapshot.)
+func (s *Service) ListVisibleRooms(ctx context.Context, userID int64) ([]RoomWithParticipants, error) {
+	all, err := s.ListRooms(ctx, userID)
+	if err != nil || s.spaceChecker == nil {
+		return all, err
+	}
+	out := all[:0]
+	for _, r := range all {
+		if r.SpaceID != nil {
+			perms, err := s.spaceChecker.EffectiveChannelPermissions(ctx, userID, *r.SpaceID, r.ID)
+			if err != nil || !permissions.Has(perms, permissions.PermViewRoom) {
+				continue
+			}
+		}
+		out = append(out, r)
+	}
+	return out, nil
+}
+
 func (s *Service) ListRooms(ctx context.Context, userID int64) ([]RoomWithParticipants, error) {
 	rows, err := s.repo.ListByUser(ctx, userID)
 	if err != nil {

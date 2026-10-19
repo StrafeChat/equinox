@@ -20,6 +20,38 @@ type Resolver struct {
 	sessionRepo auth.SessionRepository
 	userRepo    auth.UserRepository
 	bots        BotTokenResolver
+	// bans and ownerOf make an instance ban reach bot tokens: a banned bot, or a bot whose
+	// application belongs to a banned account, cannot connect. Sessions need neither - a
+	// ban revokes them.
+	bans    auth.BanChecker
+	ownerOf func(ctx context.Context, botID int64) (int64, error)
+}
+
+// WithBanChecker refuses bot tokens of banned bots and of bots owned by banned accounts.
+// ownerOf maps a bot's user id (its application's id) to the owning account; nil skips
+// the owner check.
+func (r *Resolver) WithBanChecker(b auth.BanChecker, ownerOf func(ctx context.Context, botID int64) (int64, error)) *Resolver {
+	r.bans = b
+	r.ownerOf = ownerOf
+	return r
+}
+
+func (r *Resolver) botBanned(ctx context.Context, botID int64) (bool, error) {
+	if r.bans == nil {
+		return false, nil
+	}
+	if banned, _, err := r.bans.BanReason(ctx, botID); err != nil || banned {
+		return banned, err
+	}
+	if r.ownerOf == nil {
+		return false, nil
+	}
+	owner, err := r.ownerOf(ctx, botID)
+	if err != nil || owner == 0 {
+		return false, err
+	}
+	banned, _, err := r.bans.BanReason(ctx, owner)
+	return banned, err
 }
 
 func NewResolver(sessionRepo auth.SessionRepository, userRepo auth.UserRepository) *Resolver {
@@ -70,6 +102,9 @@ func (r *Resolver) ResolveBot(ctx context.Context, tokenHash string) (*auth.User
 	}
 	botID, _, err := r.bots.ResolveBotToken(ctx, tokenHash)
 	if err != nil || botID == 0 {
+		return nil, err
+	}
+	if banned, err := r.botBanned(ctx, botID); err != nil || banned {
 		return nil, err
 	}
 	u, err := r.userRepo.GetByID(ctx, botID)

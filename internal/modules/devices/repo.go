@@ -97,8 +97,10 @@ type Repository interface {
 	DeleteKeyBackup(ctx context.Context, userID int64) error
 
 	CreateBackupVersion(ctx context.Context, v *KeyBackupVersion) error
-	// LatestBackupVersion returns the newest version, or nil when the account has none.
-	LatestBackupVersion(ctx context.Context, userID int64) (*KeyBackupVersion, error)
+	// ListBackupVersions returns up to limit of the account's versions, newest first. The
+	// retention rule (see Service.backupVersions) only ever keeps two, so a small limit
+	// reads everything that matters in one partition read.
+	ListBackupVersions(ctx context.Context, userID int64, limit int) ([]KeyBackupVersion, error)
 	GetBackupVersion(ctx context.Context, userID, version int64) (*KeyBackupVersion, error)
 	DeleteBackupVersion(ctx context.Context, userID, version int64) error
 	// GetBackupSessions looks up the stored copies of specific sessions so a write can
@@ -402,19 +404,21 @@ func (r *repo) CreateBackupVersion(ctx context.Context, v *KeyBackupVersion) err
 	return q.BindStruct(v).ExecRelease()
 }
 
-func (r *repo) LatestBackupVersion(ctx context.Context, userID int64) (*KeyBackupVersion, error) {
+func (r *repo) ListBackupVersions(ctx context.Context, userID int64, limit int) ([]KeyBackupVersion, error) {
+	if limit <= 0 {
+		limit = 1
+	}
 	// The table clusters by version DESC, so the first row is the newest.
-	stmt, names := keyBackupVersionsTable.SelectBuilder().Limit(1).ToCql()
+	stmt, names := keyBackupVersionsTable.SelectBuilder().Limit(uint(limit)).ToCql()
 	q := r.session.Query(stmt, names).WithContext(ctx)
 	defer q.Release()
-	var v KeyBackupVersion
-	if err := q.Bind(userID).GetRelease(&v); err != nil {
-		if err == gocql.ErrNotFound {
-			return nil, nil
-		}
-		return nil, err
+	iter := q.Bind(userID).Iter()
+	out := make([]KeyBackupVersion, 0, limit)
+	var row KeyBackupVersion
+	for iter.StructScan(&row) {
+		out = append(out, row)
 	}
-	return &v, nil
+	return out, iter.Close()
 }
 
 func (r *repo) GetBackupVersion(ctx context.Context, userID, version int64) (*KeyBackupVersion, error) {

@@ -965,7 +965,11 @@ func (s *Service) manageAt(ctx context.Context, sp *spaces.Space, actor *auth.Us
 		eid := id.Next()
 		if p.ID != "" {
 			if v, err := id.Parse(p.ID); err == nil {
-				eid = v
+				// The mirror's choice is honoured only while nothing holds it: emoji ids are
+				// global, and taking an existing one would rewrite another space's emoji.
+				if ref, lerr := svc.EmojiRefByID(ctx, v); lerr == nil && ref == nil {
+					eid = v
+				}
 			}
 		}
 		e, err := svc.CreateEmoji(ctx, actor.ID, spaceID, eid, p.Name, url, p.Animated)

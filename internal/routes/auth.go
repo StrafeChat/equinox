@@ -3,6 +3,8 @@ package routes
 import (
 	"context"
 	"github.com/StrafeChat/equinox/internal/logger"
+	"github.com/gofiber/fiber/v3"
+	"net/http"
 	"time"
 
 	"github.com/StrafeChat/equinox/internal/captcha"
@@ -97,15 +99,17 @@ func SetupAuthRoutes(d Deps) {
 
 	// Rate limit auth endpoints: 10 attempts per minute per IP
 	authLimiter := limiter.New(limiter.Config{
-		Max:        10,
-		Expiration: time.Minute,
+		KeyGenerator: clientKey,
+		Max:          10,
+		Expiration:   time.Minute,
 	})
 
 	// Challenge fetches happen on every registration page load and on every widget reset,
 	// so they get a looser budget than the login/register attempts themselves.
 	challengeLimiter := limiter.New(limiter.Config{
-		Max:        30,
-		Expiration: time.Minute,
+		KeyGenerator: clientKey,
+		Max:          30,
+		Expiration:   time.Minute,
 	})
 
 	// Tighter than authLimiter: this is where a guessed TOTP/recovery code or a forged
@@ -113,8 +117,9 @@ func SetupAuthRoutes(d Deps) {
 	// then the pending login is burned) is the other half of bounding this - the same
 	// belt-and-suspenders shape the devices module uses for its own recovery endpoints.
 	mfaLimiter := limiter.New(limiter.Config{
-		Max:        10,
-		Expiration: time.Minute,
+		KeyGenerator: clientKey,
+		Max:          10,
+		Expiration:   time.Minute,
 	})
 
 	// A banned network gets a 403 at the door of every auth endpoint - registering and
@@ -140,13 +145,27 @@ func SetupAuthRoutes(d Deps) {
 	// Forgot-password is tighter still: each call can cost the relay a delivery, and the
 	// per-address cooldown in the service is the other half of that bound.
 	emailRequestLimiter := limiter.New(limiter.Config{
-		Max:        5,
-		Expiration: 15 * time.Minute,
+		KeyGenerator: clientKey,
+		Max:          5,
+		Expiration:   15 * time.Minute,
 	})
 	r.Post("/email/verify", authLimiter, h.VerifyEmail)
 	r.Post("/password/forgot", emailRequestLimiter, h.ForgotPassword)
 	r.Post("/password/reset", authLimiter, h.ResetPassword)
 
 	r.Post("/logout", requireAuth, h.Logout)
-	r.Post("/logout_all", requireAuth, h.LogoutAll)
+	r.Post("/logout_all", requireAuth, func(c fiber.Ctx) error {
+		// "Sign out everywhere" revokes the sessions, but the gateway learns of a revoked
+		// session only through SESSION_REVOKED: without it a live socket keeps streaming
+		// to a device that was just signed out. Published here because auth cannot import
+		// stargate.
+		user := auth.GetUser(c)
+		if err := h.LogoutAll(c); err != nil {
+			return err
+		}
+		if user != nil && d.Redis != nil && c.Response().StatusCode() == http.StatusOK {
+			stargate.PublishToUser(c.Context(), d.Redis, user.ID, "SESSION_REVOKED", map[string]interface{}{"reason": "signed out everywhere"}, d.Config.Stargate.Region)
+		}
+		return nil
+	})
 }

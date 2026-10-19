@@ -25,7 +25,7 @@ func errorFor(c fiber.Ctx, err error) error {
 		return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": err.Error()})
 	case ErrTooMany, ErrHasBot:
 		return c.Status(http.StatusConflict).JSON(fiber.Map{"error": err.Error()})
-	case ErrInvalidName, ErrInvalidRedirect, ErrInvalidField:
+	case ErrInvalidName, ErrInvalidRedirect, ErrInvalidField, ErrInvalidIcon:
 		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	default:
 		return c.Status(http.StatusInternalServerError).JSON(fiber.Map{"error": "internal error"})

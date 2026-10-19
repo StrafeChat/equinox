@@ -29,11 +29,16 @@ type Service struct {
 	apps      applications.Repository
 	users     auth.UserRepository
 	installer Installer
+	// bans: an access token acts for its user, so an instance ban on that user ends it.
+	bans auth.BanChecker
 }
 
 func NewService(repo Repository, apps applications.Repository, users auth.UserRepository) *Service {
 	return &Service{repo: repo, apps: apps, users: users}
 }
+
+// SetBanChecker makes instance bans apply to OAuth2 access tokens (see ResolveToken).
+func (s *Service) SetBanChecker(b auth.BanChecker) { s.bans = b }
 
 // SetInstaller wires the spaces service in; without it the `bot` and `spaces.join` scopes
 // are refused as invalid_scope.
@@ -361,6 +366,11 @@ func (s *Service) ResolveToken(ctx context.Context, rawToken string) (*auth.User
 	}
 	if time.Now().UTC().After(row.ExpiresAt) {
 		return nil, nil, nil
+	}
+	if s.bans != nil {
+		if banned, _, err := s.bans.BanReason(ctx, row.UserID); err != nil || banned {
+			return nil, nil, err
+		}
 	}
 	u, err := s.users.GetByID(ctx, row.UserID)
 	if err != nil || u == nil {

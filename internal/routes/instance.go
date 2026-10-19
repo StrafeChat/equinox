@@ -18,6 +18,14 @@ import (
 // newInstanceService builds the instance module with moderation wired in. Both the
 // instance routes and auth (which needs the ban check at login) call this, so the two
 // see the same dependencies.
+// newBanChecker is the instance-ban lookup alone, for the credential resolvers (bot and
+// OAuth2 tokens) that need nothing else of the instance module.
+func newBanChecker(d Deps) auth.BanChecker {
+	svc := instance.NewService(d.Config, instance.NewRepository(d.Scylla))
+	svc.SetModeration(instance.ModerationDeps{Repo: instance.NewModerationRepository(d.Scylla)})
+	return svc
+}
+
 func newInstanceService(d Deps, userRepo auth.UserRepository, sessionRepo auth.SessionRepository) *instance.Service {
 	svc := instance.NewService(d.Config, instance.NewRepository(d.Scylla))
 	roomRepo := rooms.NewRepository(d.Scylla)
@@ -73,16 +81,18 @@ func SetupInstanceRoutes(d Deps) {
 	// page - so it is the one that needs a budget. Ten codes a minute per address is
 	// generous for a person typing one and useless for guessing a 10-character code.
 	checkLimiter := limiter.New(limiter.Config{
-		Max:        10,
-		Expiration: time.Minute,
+		KeyGenerator: clientKey,
+		Max:          10,
+		Expiration:   time.Minute,
 	})
 	d.App.Get("/instance/invites/:code/check", checkLimiter, h.CheckInvite)
 
 	// Reports come from ordinary accounts. A handful a minute is plenty for a person and
 	// stops one account burying the queue.
 	reportLimiter := limiter.New(limiter.Config{
-		Max:        5,
-		Expiration: time.Minute,
+		KeyGenerator: clientKey,
+		Max:          5,
+		Expiration:   time.Minute,
 	})
 	d.App.Post("/reports", requireAuth, reportLimiter, h.CreateReport)
 

@@ -147,6 +147,20 @@ func (s *Service) Join(ctx context.Context, user *auth.User, roomID int64, in Jo
 	if s.isOfficialPM(ctx, room, user.ID) {
 		return nil, ErrOfficialNoCalls
 	}
+	// A call across a block is refused like a message across one: the blocked side must
+	// not be able to ring, or even be listed as connected to, the person who blocked them.
+	if room.Type == rooms.TypePM {
+		for _, pid := range room.ParticipantIDs {
+			if pid == user.ID {
+				continue
+			}
+			if blocked, err := s.rooms.BlockedBetween(ctx, user.ID, pid); err != nil {
+				return nil, err
+			} else if blocked {
+				return nil, rooms.ErrBlocked
+			}
+		}
+	}
 	perms, err := s.PermsFor(ctx, user.ID, &room.Room)
 	if err != nil {
 		return nil, err
@@ -207,6 +221,13 @@ func (s *Service) Join(ctx context.Context, user *auth.User, roomID int64, in Jo
 		st.Mute, st.Deaf, st.JoinedAt = prev.Mute, prev.Deaf, prev.JoinedAt
 		st.SelfVideo, st.SelfStream = false, false
 		_ = s.lk.RemoveParticipant(ctx, RoomName(roomID), prev.Identity())
+	} else if room.SpaceID != nil {
+		// A server mute or deafen outlives the connection it was applied in: it is the
+		// moderator's to lift, not the member's to escape by disconnecting and rejoining
+		// (or by hopping through another voice room).
+		if mute, deaf, err := s.store.ModFlags(ctx, *room.SpaceID, user.ID); err == nil {
+			st.Mute, st.Deaf = mute, deaf
+		}
 	}
 	if err := s.store.PutState(ctx, st); err != nil {
 		return nil, err
@@ -242,6 +263,49 @@ func (s *Service) Join(ctx context.Context, user *auth.User, roomID int64, in Jo
 		Bitrate:  bitrate,
 		Call:     call.View(),
 	}, nil
+}
+
+// OnSpaceMemberRemoved is what the spaces module calls once a member row is gone (kick,
+// ban, leave): their voice connection in that space ends - they are no longer entitled to
+// hear it, nor to receive the media keys the remaining members rotate to - and the server
+// mute/deafen the space kept on them is forgotten.
+func (s *Service) OnSpaceMemberRemoved(ctx context.Context, spaceID, userID int64) {
+	defer func() {
+		if err := s.store.SetModFlags(ctx, spaceID, userID, false, false); err != nil {
+			logger.Warn("voice", "clear server mute for %d: %v", userID, err)
+		}
+	}()
+	cur, ok, err := s.store.UserRoom(ctx, userID)
+	if err != nil || !ok {
+		return
+	}
+	st, err := s.store.GetState(ctx, cur, userID)
+	if err != nil || st == nil || st.SpaceID != spaceID {
+		return
+	}
+	if err := s.leave(ctx, userID, cur, true); err != nil {
+		logger.Err("voice", err, map[string]any{"user_id": userID, "room_id": cur, "stage": "member removed"})
+	}
+}
+
+// OnRoomParticipantRemoved is what the rooms module calls when someone is removed from a
+// group PM: they are hung up if they were in its call, and stop ringing if they were.
+func (s *Service) OnRoomParticipantRemoved(ctx context.Context, roomID, userID int64) {
+	if cur, ok, err := s.store.UserRoom(ctx, userID); err == nil && ok && cur == roomID {
+		if err := s.leave(ctx, userID, roomID, true); err != nil {
+			logger.Err("voice", err, map[string]any{"user_id": userID, "room_id": roomID, "stage": "participant removed"})
+		}
+	}
+	call, _ := s.store.GetCall(ctx, roomID)
+	if call == nil || !call.stopRinging(userID) {
+		return
+	}
+	if err := s.store.PutCall(ctx, call); err != nil {
+		return
+	}
+	if room, err := s.rooms.LoadRoom(ctx, roomID); err == nil {
+		s.publishCall(ctx, room, EventCallUpdate, call, nil, false)
+	}
 }
 
 func displayName(u *auth.User) string {
@@ -411,6 +475,9 @@ func (s *Service) Moderate(ctx context.Context, actor *auth.User, spaceID, targe
 		if err := s.store.PutState(ctx, st); err != nil {
 			return err
 		}
+		if err := s.store.SetModFlags(ctx, spaceID, targetID, st.Mute, st.Deaf); err != nil {
+			logger.Warn("voice", "persist server mute for %d: %v", targetID, err)
+		}
 		if err := s.lk.SetPermission(ctx, roomName, st.Identity(), !st.Deaf, sourcesFor(targetPerms.Speak, targetPerms.Video, st.Mute)); err != nil {
 			logger.Warn("voice", "set permission for %s: %v", st.Identity(), err)
 		}
@@ -431,6 +498,9 @@ func (s *Service) Moderate(ctx context.Context, actor *auth.User, spaceID, targe
 		st.Deaf = *in.Deaf
 		if err := s.store.PutState(ctx, st); err != nil {
 			return err
+		}
+		if err := s.store.SetModFlags(ctx, spaceID, targetID, st.Mute, st.Deaf); err != nil {
+			logger.Warn("voice", "persist server deafen for %d: %v", targetID, err)
 		}
 		if err := s.lk.SetPermission(ctx, roomName, st.Identity(), !st.Deaf, sourcesFor(targetPerms.Speak, targetPerms.Video, st.Mute)); err != nil {
 			logger.Warn("voice", "set permission for %s: %v", st.Identity(), err)
@@ -568,9 +638,13 @@ func (s *Service) joinCall(ctx context.Context, room *rooms.RoomWithParticipants
 		}
 		call = &Call{RoomID: room.ID, StartedBy: user.ID, StartedAt: time.Now().UTC()}
 		for _, pid := range room.ParticipantIDs {
-			if pid != user.ID {
-				call.Ringing = append(call.Ringing, pid)
+			if pid == user.ID {
+				continue
 			}
+			if blocked, _ := s.rooms.BlockedBetween(ctx, user.ID, pid); blocked {
+				continue
+			}
+			call.Ringing = append(call.Ringing, pid)
 		}
 		if err := s.store.PutCall(ctx, call); err != nil {
 			logger.Err("voice", err, map[string]any{"room_id": room.ID})
@@ -650,6 +724,9 @@ func (s *Service) Ring(ctx context.Context, user *auth.User, roomID int64, userI
 			continue
 		}
 		if _, ok := connected[uid]; ok || uid == user.ID || call.isRinging(uid) {
+			continue
+		}
+		if blocked, _ := s.rooms.BlockedBetween(ctx, user.ID, uid); blocked {
 			continue
 		}
 		call.Ringing = append(call.Ringing, uid)
@@ -853,7 +930,16 @@ func (s *Service) HandleWebhook(ctx context.Context, ev *livekit.WebhookEvent) {
 		}
 		st, err := s.store.GetState(ctx, roomID, uid)
 		if err != nil || st == nil || st.SessionID != session {
-			return // an older connection of theirs; nothing to do
+			if err == nil && ev.Event == webhook.EventParticipantJoined {
+				// Connected with no state here, or an older session's: someone a moderator
+				// disconnected (or who was replaced by their own rejoin) coming back on a
+				// token that is still valid. The state is the authority - remove them.
+				logger.Info("voice", "removing participant %s without a state from room %d", ev.Participant.Identity, roomID)
+				if rerr := s.lk.RemoveParticipant(ctx, ev.Room.Name, ev.Participant.Identity); rerr != nil {
+					logger.Warn("voice", "remove ghost %s: %v", ev.Participant.Identity, rerr)
+				}
+			}
+			return
 		}
 		switch ev.Event {
 		case webhook.EventParticipantLeft:
@@ -925,16 +1011,32 @@ func (s *Service) reconcile(ctx context.Context) {
 		if err != nil {
 			continue
 		}
-		if len(states) == 0 {
-			_ = s.redis.SRem(ctx, s.store.roomsKey(), id.Format(roomID)).Err()
-			continue
-		}
 		if room, err := s.rooms.LoadRoom(ctx, roomID); err == nil && s.remoteOrigin(room) != "" {
 			continue // another instance's LiveKit backs these; it tells us when they end
 		}
 		present, err := s.lk.ListIdentities(ctx, RoomName(roomID))
 		if err != nil {
 			logger.Warn("voice", "reconcile: list participants for %d: %v", roomID, err)
+			continue
+		}
+		// The other direction: a LiveKit participant no state accounts for is someone who
+		// was disconnected or replaced and reconnected on a token that is still valid. The
+		// state is the authority, so a ghost lasts at most one sweep.
+		known := make(map[string]struct{}, len(states))
+		for i := range states {
+			known[states[i].Identity()] = struct{}{}
+		}
+		for ident := range present {
+			if _, ok := known[ident]; ok {
+				continue
+			}
+			logger.Info("voice", "reconcile: removing ghost participant %s room=%d", ident, roomID)
+			if err := s.lk.RemoveParticipant(ctx, RoomName(roomID), ident); err != nil {
+				logger.Warn("voice", "reconcile: remove ghost %s: %v", ident, err)
+			}
+		}
+		if len(states) == 0 {
+			_ = s.redis.SRem(ctx, s.store.roomsKey(), id.Format(roomID)).Err()
 			continue
 		}
 		for i := range states {

@@ -297,6 +297,22 @@ func (s *Service) CreateFederated(ctx context.Context, roomID int64, participant
 		m.Mentions = m.Mentions[:MaxMentionsPerMessage]
 	}
 	m.RoomID = roomID
+	m.SetAttachments(s.dropOwnCDN(m.Attachments()))
+	// A relayed PM crosses a block exactly where a local send would be refused. The
+	// sending instance never learns of the block (FEDERATION.md), so it is dropped here.
+	if m.SenderID != 0 && len(participants) == 2 {
+		if room, err := s.rooms.GetByID(ctx, roomID); err == nil && room != nil && room.Type == rooms.TypePM {
+			other := participants[0]
+			if other == m.SenderID {
+				other = participants[1]
+			}
+			if other != m.SenderID {
+				if blocked, _ := s.blockedBetween(ctx, m.SenderID, other); blocked {
+					return nil
+				}
+			}
+		}
+	}
 	if err := s.repo.Insert(ctx, m); err != nil {
 		return err
 	}
@@ -592,10 +608,30 @@ func (s *Service) CreateSystemDM(ctx context.Context, systemID, roomID int64, te
 // attachments already resolved (they were uploaded to the sender's own instance, so
 // there is nothing here to claim).
 func (s *Service) CreateFromRemote(ctx context.Context, userID, roomID int64, in *CreateMessageInput, attachments []Attachment) (*Message, error) {
+	attachments = s.dropOwnCDN(attachments)
 	if attachments == nil {
 		attachments = []Attachment{}
 	}
 	return s.create(ctx, userID, roomID, in, attachments, 0)
+}
+
+// dropOwnCDN removes, from attachments another instance relayed, any URL that points into
+// this instance's own object store. A remote sender's files live on their instance, so such
+// a URL can only be a copy of some local object's address - and must not become a reference
+// this instance later treats as that message's own (see cleanupAttachments).
+func (s *Service) dropOwnCDN(list []Attachment) []Attachment {
+	if len(list) == 0 {
+		return list
+	}
+	out := list[:0:0]
+	for _, a := range list {
+		if s.ownsAttachment(a.URL) {
+			logger.Warn("messages", "dropping relayed attachment %q: it points into this instance's own store", a.URL)
+			continue
+		}
+		out = append(out, a)
+	}
+	return out
 }
 
 // create is Create with the attachments either still to be claimed (nil) or given.
@@ -643,7 +679,7 @@ func (s *Service) create(ctx context.Context, userID, roomID int64, in *CreateMe
 	// the attachment metadata itself lives inside it.
 	attachments := given
 	if attachments == nil {
-		attachments, err = s.claimAttachments(ctx, userID, roomID, in.Attachments)
+		attachments, err = s.claimAttachments(ctx, userID, roomID, in.Attachments, !roomE2EEOff(room))
 		if err != nil {
 			return nil, err
 		}
@@ -1182,8 +1218,15 @@ func (s *Service) UploadAttachment(ctx context.Context, userID, roomID int64, in
 	if in.Size > s.MaxAttachmentBytes() {
 		return nil, ErrAttachmentTooLarge
 	}
-	if _, _, err := s.authorize(ctx, userID, roomID, permissions.PermSendMessages, permissions.PermAttachFiles); err != nil {
+	room, _, err := s.authorize(ctx, userID, roomID, permissions.PermSendMessages, permissions.PermAttachFiles)
+	if err != nil {
 		return nil, err
+	}
+	// The server, not the form field, decides which rooms are encrypted: a file in an
+	// end-to-end encrypted room is uploaded as ciphertext (its key and name travel inside
+	// the message), and a plaintext room's file is not.
+	if in.Encrypted != !roomE2EEOff(room) {
+		return nil, ErrInvalidInput
 	}
 
 	attID := id.Next()
@@ -1234,7 +1277,7 @@ func (s *Service) UploadAttachment(ctx context.Context, userID, roomID int64, in
 
 // claimAttachments validates that every referenced upload belongs to this sender in this
 // room and hasn't been used by another message yet, returning their wire forms.
-func (s *Service) claimAttachments(ctx context.Context, userID, roomID int64, ids []string) ([]Attachment, error) {
+func (s *Service) claimAttachments(ctx context.Context, userID, roomID int64, ids []string, wantEncrypted bool) ([]Attachment, error) {
 	if len(ids) == 0 {
 		return nil, nil
 	}
@@ -1256,7 +1299,7 @@ func (s *Service) claimAttachments(ctx context.Context, userID, roomID int64, id
 		if err != nil {
 			return nil, err
 		}
-		if row == nil || row.UploaderID != userID || row.MessageID != nil {
+		if row == nil || row.UploaderID != userID || row.MessageID != nil || row.Encrypted != wantEncrypted {
 			return nil, ErrAttachmentNotFound
 		}
 		out = append(out, row.ToAttachment())
@@ -1272,8 +1315,18 @@ func (s *Service) cleanupAttachments(ctx context.Context, roomID int64, list []A
 		return
 	}
 	for _, a := range list {
-		if aid, err := id.Parse(a.ID); err == nil {
-			_ = s.repo.DeleteAttachment(ctx, roomID, aid)
+		aid, err := id.Parse(a.ID)
+		if err != nil {
+			continue
+		}
+		// Only a blob this instance registered for this very attachment is ours to delete.
+		// The URL on the message is not enough: a message relayed from another instance
+		// carries whatever URLs its sender's instance put there, and one that happened to
+		// point into our own CDN would otherwise name somebody else's avatar or upload.
+		row, rerr := s.repo.GetAttachment(ctx, roomID, aid)
+		_ = s.repo.DeleteAttachment(ctx, roomID, aid)
+		if rerr != nil || row == nil || row.URL != a.URL {
+			continue
 		}
 		if !s.UploadsConfigured() || !s.ownsAttachment(a.URL) {
 			continue

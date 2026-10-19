@@ -68,6 +68,7 @@ func HTTPError(err error) (status int, message string, ok bool) {
 		errors.Is(err, ErrInvalidReorder), errors.Is(err, ErrOwnerCannotLeave), errors.Is(err, ErrInvalidSpaceName),
 		errors.Is(err, ErrNothingToPatch), errors.Is(err, ErrInvalidRoleName), errors.Is(err, ErrCannotChangeOwnerRoles),
 		errors.Is(err, ErrInvalidRoomName), errors.Is(err, ErrInvalidTopic), errors.Is(err, ErrInvalidDescription),
+		errors.Is(err, ErrTooManyRoles), errors.Is(err, ErrTooManyRooms),
 		errors.Is(err, ErrInvalidSystemRoom), errors.Is(err, ErrInvalidAFKRoom), errors.Is(err, ErrInvalidAFKTimeout),
 		errors.Is(err, ErrInvalidNotifLevel), errors.Is(err, ErrInvalidSystemFlags), errors.Is(err, ErrInvalidWidgetRoom),
 		errors.Is(err, ErrInvalidInvite), errors.Is(err, ErrInvalidUserLimit), errors.Is(err, ErrInvalidBitrate),

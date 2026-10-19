@@ -49,7 +49,17 @@ type Client struct {
 	// token bucket for op 2 sends; only touched from readPump.
 	sendTokens   int
 	sendRefilled time.Time
+	// token bucket for op 1 subscribes that need authorizing; only touched from readPump.
+	subTokens   int
+	subRefilled time.Time
 }
+
+// Each new subscription costs the authorizer several reads, so a client gets a burst and
+// a steady trickle after it; re-subscribing to channels it already holds is free.
+const (
+	subBurst          = 60
+	subRefillInterval = 100 * time.Millisecond
+)
 
 func newClient(hub *Hub, conn Conn, userID, sessionID int64) *Client {
 	return &Client{
@@ -77,6 +87,26 @@ func (c *Client) subscribe(typ, id string) bool {
 		return false
 	}
 	c.subs[k] = struct{}{}
+	return true
+}
+
+// allowSubscribe is allowSend's bucket for subscriptions that reach the authorizer.
+func (c *Client) allowSubscribe() bool {
+	now := time.Now()
+	if c.subRefilled.IsZero() {
+		c.subTokens, c.subRefilled = subBurst, now
+	}
+	if refill := int(now.Sub(c.subRefilled) / subRefillInterval); refill > 0 {
+		c.subTokens += refill
+		if c.subTokens > subBurst {
+			c.subTokens = subBurst
+		}
+		c.subRefilled = now
+	}
+	if c.subTokens <= 0 {
+		return false
+	}
+	c.subTokens--
 	return true
 }
 
@@ -182,7 +212,9 @@ func (c *Client) handleSubscribe(d interface{}) {
 	// their whole room/space list on every local list update, and a channel already
 	// granted this session doesn't need re-authorizing on every duplicate request.
 	if sid, ok := m["space_id"].(string); ok && sid != "" && !c.hasSub("space", sid) {
-		if !c.hub.authorizeSubscribe(context.Background(), c.userID, "space", sid) {
+		if !c.allowSubscribe() {
+			c.sendError(4029, "rate limited")
+		} else if !c.hub.authorizeSubscribe(context.Background(), c.userID, "space", sid) {
 			c.sendError(4403, "not authorized to subscribe to this channel")
 		} else if c.subscribe("space", sid) {
 			c.hub.subscribe(c, "space", sid)

@@ -106,8 +106,9 @@ func SetupUsersRoutes(d Deps) {
 	// that. Same budget as the login-time MFA routes; enable gets it too, since it accepts
 	// a six-digit code.
 	twoFactorLimiter := limiter.New(limiter.Config{
-		Max:        10,
-		Expiration: time.Minute,
+		KeyGenerator: clientKey,
+		Max:          10,
+		Expiration:   time.Minute,
 	})
 	me.Get("/2fa", authHandler.TwoFactorStatus)
 	me.Post("/2fa/totp/setup", authHandler.SetupTOTP)
@@ -122,8 +123,9 @@ func SetupUsersRoutes(d Deps) {
 	// budget as the unauthenticated forgot-password route, on top of the per-account
 	// one-a-minute cooldown in the service.
 	emailRequestLimiter := limiter.New(limiter.Config{
-		Max:        5,
-		Expiration: 15 * time.Minute,
+		KeyGenerator: clientKey,
+		Max:          5,
+		Expiration:   15 * time.Minute,
 	})
 	me.Post("/email/verification", emailRequestLimiter, authHandler.SendVerificationEmail)
 

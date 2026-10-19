@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"github.com/StrafeChat/equinox/internal/modules/instance"
 	"log"
 	"net/http"
 	"os"
@@ -18,6 +19,7 @@ import (
 	"github.com/StrafeChat/equinox/internal/logger"
 	"github.com/StrafeChat/equinox/internal/modules/applications"
 	"github.com/StrafeChat/equinox/internal/modules/auth"
+	"github.com/StrafeChat/equinox/internal/modules/permissions"
 	"github.com/StrafeChat/equinox/internal/modules/relationships"
 	"github.com/StrafeChat/equinox/internal/modules/rooms"
 	"github.com/StrafeChat/equinox/internal/modules/spaces"
@@ -109,13 +111,23 @@ func (p *readyDataProvider) GetReadyData(ctx context.Context, userID int64) (*st
 	out := make([]map[string]interface{}, 0, len(roomList))
 	// Every "space" channel the user may subscribe to (see stargate.ReadyData.ChannelIDs).
 	channelIDs := make([]string, 0, len(roomList))
+	// A space's rooms and threads wait for the per-space visibility check below: a
+	// rooms_by_user row exists for every member a message fanned out to, whether or not
+	// they may view the room, so the row alone cannot admit a room to READY (or, for a bot,
+	// to its auto-subscriptions).
+	var spaceRows []rooms.RoomWithParticipants
 	for _, r := range roomList {
+		if r.SpaceID != nil {
+			spaceRows = append(spaceRows, r)
+			continue
+		}
 		if r.Type == rooms.TypePM || r.Type == rooms.TypeGroupPM {
 			voiceRoomIDs = append(voiceRoomIDs, r.ID)
 		}
 		out = append(out, readyRoomMap(r))
 		channelIDs = append(channelIDs, id.Format(r.ID))
 	}
+	visible := map[int64]struct{}{}
 
 	// Spaces and space rooms. Like Discord's GUILD_CREATE, each space carries its roles
 	// and each room its permission overrides, so the client can compute permissions
@@ -153,6 +165,7 @@ func (p *readyDataProvider) GetReadyData(ctx context.Context, userID int64) (*st
 				var threadIDs []int64
 				for _, r := range roomListForSpace {
 					roomIDs = append(roomIDs, r.ID)
+					visible[r.ID] = struct{}{}
 					if r.Type == rooms.TypeThread {
 						threadIDs = append(threadIDs, r.ID)
 					}
@@ -191,6 +204,18 @@ func (p *readyDataProvider) GetReadyData(ctx context.Context, userID int64) (*st
 		}
 	}
 
+	for _, r := range spaceRows {
+		if _, ok := visible[r.ID]; !ok && p.spaceSvc != nil {
+			// Not in the active, viewable set. An archived thread the user joined is still
+			// theirs to see; a channel they lost View on, or a room of a space they left, is not.
+			if r.Type != rooms.TypeThread || !p.canView(ctx, userID, r) {
+				continue
+			}
+		}
+		out = append(out, readyRoomMap(r))
+		channelIDs = append(channelIDs, id.Format(r.ID))
+	}
+
 	data := &stargate.ReadyData{Rooms: out, Relationships: relList, Spaces: spacesList, SpaceRooms: spaceRoomsMap, ChannelIDs: channelIDs}
 	if p.voice != nil && len(voiceRoomIDs) > 0 {
 		states, calls, err := p.voice.StatesForRooms(ctx, voiceRoomIDs)
@@ -209,6 +234,16 @@ func (p *readyDataProvider) GetReadyData(ctx context.Context, userID int64) (*st
 		}
 	}
 	return data, nil
+}
+
+// canView reports whether the user may view a space room that is not in the space's active
+// room list (an archived thread): the same permission resolution the authorizer uses.
+func (p *readyDataProvider) canView(ctx context.Context, userID int64, r rooms.RoomWithParticipants) bool {
+	if r.SpaceID == nil {
+		return false
+	}
+	perms, err := p.spaceSvc.EffectiveChannelPermissions(ctx, userID, *r.SpaceID, r.ID)
+	return err == nil && permissions.Has(perms, permissions.PermViewRoom)
 }
 
 func spaceToReadyMap(s *spaces.Space, snap *spaces.Snapshot) map[string]interface{} {
@@ -404,7 +439,17 @@ func main() {
 	hub.Run(ctx)
 
 	// Bots connect with `Authorization: Bot <token>`; the applications store resolves it.
-	resolver := stargate.NewResolver(sessionRepo, userRepo).WithBots(applications.NewRepository(scylla))
+	appsRepo := applications.NewRepository(scylla)
+	// An instance ban has to reach a bot's token the way it reaches a person's sessions.
+	bans := instance.NewService(cfg, instance.NewRepository(scylla))
+	bans.SetModeration(instance.ModerationDeps{Repo: instance.NewModerationRepository(scylla)})
+	resolver := stargate.NewResolver(sessionRepo, userRepo).WithBots(appsRepo).WithBanChecker(bans, func(ctx context.Context, botID int64) (int64, error) {
+		app, err := appsRepo.GetByID(ctx, botID)
+		if err != nil || app == nil {
+			return 0, err
+		}
+		return app.OwnerID, nil
+	})
 
 	srv := stargate.NewServer(stargate.ServerConfig{
 		Hub:               hub,

@@ -3,6 +3,7 @@ package devices
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 
 	"github.com/gofiber/fiber/v3"
@@ -24,6 +25,9 @@ type Handler struct {
 	svc *Service
 	rel RelationshipChecker
 	fid FIDResolver
+
+	// reauth re-checks the account password; see SetReauth.
+	reauth func(ctx context.Context, userID int64, password string) error
 }
 
 func NewHandler(svc *Service, rel RelationshipChecker) *Handler {
@@ -34,6 +38,38 @@ func NewHandler(svc *Service, rel RelationshipChecker) *Handler {
 // users (they resolve to the shadow row the caller shares a room with).
 func (h *Handler) SetResolver(r FIDResolver) {
 	h.fid = r
+}
+
+// SetReauth installs the password re-check that creating or deleting a backup version
+// demands. Those two requests decide where every device sends the account's room keys, so
+// a session token alone - which a hijacked tab or an admin's recovery-code reset yields -
+// is not enough for them. Injected rather than imported because the check lives in auth,
+// and this package only needs the one function, not the service.
+func (h *Handler) SetReauth(fn func(ctx context.Context, userID int64, password string) error) {
+	h.reauth = fn
+}
+
+// checkPassword runs that re-check and writes the refusal when it fails; the caller returns
+// the error it hands back whenever ok is false. Missing password is a 400, a wrong one a
+// 403 - distinct from 401, which the client treats as "session dead, sign in again".
+func (h *Handler) checkPassword(c fiber.Ctx, userID int64, password string) (ok bool, err error) {
+	if password == "" {
+		return false, c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "password is required"})
+	}
+	if h.reauth == nil {
+		// Fail closed. Without the hook the endpoint is back to "any session token may
+		// replace the backup", which is the hole the password exists to close.
+		logger.Err("devices", errors.New("backup re-auth hook not wired"), map[string]any{"user_id": userID})
+		return false, c.Status(http.StatusInternalServerError).JSON(fiber.Map{"error": "internal error"})
+	}
+	if err := h.reauth(c.Context(), userID, password); err != nil {
+		if errors.Is(err, auth.ErrInvalidCredentials) {
+			return false, c.Status(http.StatusForbidden).JSON(fiber.Map{"error": "invalid password"})
+		}
+		logger.Err("devices", err, map[string]any{"user_id": userID})
+		return false, c.Status(http.StatusInternalServerError).JSON(fiber.Map{"error": "internal error"})
+	}
+	return true, nil
 }
 
 // localIDFor maps a crypto-engine user id to the local user id used for relationship checks.
@@ -154,7 +190,7 @@ func (h *Handler) QueryKeys(c fiber.Ctx) error {
 		logger.Err("devices", err, map[string]any{"user_id": user.ID})
 		return c.Status(http.StatusInternalServerError).JSON(fiber.Map{"error": "internal error"})
 	}
-	out, err := h.svc.QueryKeys(c.Context(), filtered)
+	out, err := h.svc.QueryKeys(c.Context(), user.ID, filtered)
 	if err != nil {
 		logger.Err("devices", err, map[string]any{"user_id": user.ID})
 		return c.Status(http.StatusInternalServerError).JSON(fiber.Map{"error": "internal error"})
@@ -186,7 +222,7 @@ func (h *Handler) ClaimKeys(c fiber.Ctx) error {
 	for userIDStr := range filtered {
 		scoped[userIDStr] = in.OneTimeKeys[userIDStr]
 	}
-	out, err := h.svc.ClaimKeys(c.Context(), scoped)
+	out, err := h.svc.ClaimKeys(c.Context(), user.ID, scoped)
 	if err != nil {
 		logger.Err("devices", err, map[string]any{"user_id": user.ID})
 		return c.Status(http.StatusInternalServerError).JSON(fiber.Map{"error": "internal error"})
@@ -407,7 +443,9 @@ func backupVersionParam(c fiber.Ctx) (int64, bool) {
 //
 // `auth_data` carries the Curve25519 public key every device encrypts room keys to, and is
 // public by design. `wrapped_private_key` is the matching private key encrypted under the
-// user's recovery code - ciphertext the server cannot open.
+// user's recovery code - ciphertext the server cannot open. `password` is the account
+// password, checked again here (see checkPassword); the route's backupLimiter is the brake
+// on guessing it.
 func (h *Handler) CreateBackupVersion(c fiber.Ctx) error {
 	user := auth.GetUser(c)
 	if user == nil {
@@ -418,9 +456,13 @@ func (h *Handler) CreateBackupVersion(c fiber.Ctx) error {
 		AuthData          json.RawMessage `json:"auth_data"`
 		WrappedPrivateKey string          `json:"wrapped_private_key"`
 		Salt              string          `json:"salt"`
+		Password          string          `json:"password"`
 	}
 	if err := json.Unmarshal(c.Body(), &in); err != nil {
 		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "invalid json"})
+	}
+	if ok, err := h.checkPassword(c, user.ID, in.Password); !ok {
+		return err
 	}
 	v, err := h.svc.CreateBackupVersion(c.Context(), user.ID, in.Algorithm, string(in.AuthData), in.WrappedPrivateKey, in.Salt)
 	if err != nil {
@@ -445,7 +487,7 @@ func (h *Handler) GetBackupVersion(c fiber.Ctx) error {
 	if user == nil {
 		return c.Status(http.StatusUnauthorized).JSON(fiber.Map{"error": "unauthorized"})
 	}
-	v, err := h.svc.LatestBackupVersion(c.Context(), user.ID)
+	v, previous, err := h.svc.BackupVersions(c.Context(), user.ID)
 	if err != nil {
 		logger.Err("devices", err, map[string]any{"user_id": user.ID})
 		return c.Status(http.StatusInternalServerError).JSON(fiber.Map{"error": "internal error"})
@@ -458,7 +500,7 @@ func (h *Handler) GetBackupVersion(c fiber.Ctx) error {
 		logger.Err("devices", err, map[string]any{"user_id": user.ID, "version": v.Version})
 		return c.Status(http.StatusInternalServerError).JSON(fiber.Map{"error": "internal error"})
 	}
-	return c.JSON(fiber.Map{
+	out := fiber.Map{
 		"exists":     true,
 		"version":    id.Format(v.Version),
 		"algorithm":  v.Algorithm,
@@ -466,22 +508,46 @@ func (h *Handler) GetBackupVersion(c fiber.Ctx) error {
 		"etag":       v.Etag,
 		"count":      count,
 		"created_at": v.CreatedAt,
-	})
+	}
+	if previous != nil {
+		// Just enough for a client to offer "restore from the backup this one replaced"
+		// when the recovery code does not open the current version; the parameters a
+		// restore needs come from GetBackupRecovery?version= once the user asks.
+		out["previous"] = fiber.Map{
+			"version":    id.Format(previous.Version),
+			"created_at": previous.CreatedAt,
+		}
+	}
+	return c.JSON(out)
 }
 
-// GetBackupRecovery returns the backup's wrapped private key. GET /devices/backup/recovery
+// GetBackupRecovery returns the backup's wrapped private key.
+// GET /devices/backup/recovery[?version=N]
 //
 // Useless without the user's recovery code - it is AES-GCM ciphertext under a key derived
 // from 128 bits of CSPRNG - but it is the only recovery material the server holds, so it is
 // served on its own, from the tight rate-limit bucket, and only when a restore asks for it.
+// `version` may name the current version or the retained previous one (anything else is a
+// 404); without it the current one is served.
 func (h *Handler) GetBackupRecovery(c fiber.Ctx) error {
 	user := auth.GetUser(c)
 	if user == nil {
 		return c.Status(http.StatusUnauthorized).JSON(fiber.Map{"error": "unauthorized"})
 	}
-	v, err := h.svc.LatestBackupVersion(c.Context(), user.ID)
+	var version int64
+	if raw := c.Query("version"); raw != "" {
+		parsed, err := id.Parse(raw)
+		if err != nil {
+			return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "invalid version"})
+		}
+		version = parsed
+	}
+	v, err := h.svc.RecoverableBackupVersion(c.Context(), user.ID, version)
 	if err != nil {
-		logger.Err("devices", err, map[string]any{"user_id": user.ID})
+		if err == ErrBackupVersionNotFound {
+			return c.Status(http.StatusNotFound).JSON(fiber.Map{"error": "backup version not found"})
+		}
+		logger.Err("devices", err, map[string]any{"user_id": user.ID, "version": version})
 		return c.Status(http.StatusInternalServerError).JSON(fiber.Map{"error": "internal error"})
 	}
 	if v == nil {
@@ -497,8 +563,12 @@ func (h *Handler) GetBackupRecovery(c fiber.Ctx) error {
 	})
 }
 
-// DeleteBackupVersion discards a backup and every key in it.
-// DELETE /devices/backup/version?version=N
+// DeleteBackupVersion discards a backup and every key in it, immediately - the retention
+// that CreateBackupVersion gives a superseded version does not apply to an explicit delete.
+// DELETE /devices/backup/version?version=N with body {"password"}
+//
+// The version stays a query parameter for the client that already sends it that way; the
+// password goes in a JSON body because a credential has no business in a URL.
 func (h *Handler) DeleteBackupVersion(c fiber.Ctx) error {
 	user := auth.GetUser(c)
 	if user == nil {
@@ -507,6 +577,16 @@ func (h *Handler) DeleteBackupVersion(c fiber.Ctx) error {
 	version, ok := backupVersionParam(c)
 	if !ok {
 		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "version required"})
+	}
+	var in struct {
+		Password string `json:"password"`
+	}
+	// An absent body unmarshals as an error too; either way the password is missing.
+	if err := json.Unmarshal(c.Body(), &in); err != nil {
+		in.Password = ""
+	}
+	if ok, err := h.checkPassword(c, user.ID, in.Password); !ok {
+		return err
 	}
 	if err := h.svc.DeleteBackupVersion(c.Context(), user.ID, version); err != nil {
 		if err == ErrBackupVersionNotFound {

@@ -91,6 +91,8 @@ type Discovery struct {
 	mu     sync.Mutex
 	c      map[string]cachedInfo
 	failed map[string]time.Time
+	// forced: when each domain was last re-fetched on demand (a signature failure).
+	forced map[string]time.Time
 }
 
 func NewDiscovery(cfg config.FederationConfig) *Discovery {
@@ -104,6 +106,7 @@ func NewDiscovery(cfg config.FederationConfig) *Discovery {
 		},
 		c:      map[string]cachedInfo{},
 		failed: map[string]time.Time{},
+		forced: map[string]time.Time{},
 	}
 }
 
@@ -124,6 +127,17 @@ func (d *Discovery) Lookup(ctx context.Context, domain string, force bool) (*Ins
 		return nil, ErrInvalidFID
 	}
 	d.mu.Lock()
+	if force {
+		// A forced refresh is what a failed signature asks for, and a failed signature
+		// costs its sender nothing: without a brake, garbage requests naming a peer would
+		// each become an outbound fetch to it. One re-fetch per peer per minute covers a
+		// key rotation; inside the minute the request is judged on the cached key.
+		if at, ok := d.forced[domain]; ok && time.Since(at) < discoveryNegativeTTL {
+			force = false
+		} else {
+			d.forced[domain] = time.Now()
+		}
+	}
 	if !force {
 		if hit, ok := d.c[domain]; ok && time.Since(hit.fetchedAt) < discoveryTTL {
 			d.mu.Unlock()

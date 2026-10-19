@@ -301,6 +301,9 @@ func (s *Service) updateBotRole(ctx context.Context, sp *Space, bot *auth.User, 
 func (s *Service) afterMemberRemoved(ctx context.Context, spaceID, userID int64) {
 	s.cleanupBotRoles(ctx, spaceID, userID)
 	s.publishMemberRemoved(ctx, spaceID, userID)
+	if s.memberRemoved != nil {
+		s.memberRemoved(ctx, spaceID, userID)
+	}
 }
 
 // cleanupBotRoles deletes the roles a bot install created for userID (none for a person)

@@ -12,8 +12,9 @@ import (
 // nil when federation is off - then every server part is treated as local.
 type KeyRouter interface {
 	IsLocalServer(server string) bool
-	QueryRemote(ctx context.Context, domain string, req map[string][]string) (*QueryKeysOutput, error)
-	ClaimRemote(ctx context.Context, domain string, req map[string]map[string]string) (*ClaimKeysOutput, error)
+	// requesterID is the local user asking; the peer gates its users on sharing a room with them.
+	QueryRemote(ctx context.Context, domain string, requesterID int64, req map[string][]string) (*QueryKeysOutput, error)
+	ClaimRemote(ctx context.Context, domain string, requesterID int64, req map[string]map[string]string) (*ClaimKeysOutput, error)
 	SendToDeviceRemote(ctx context.Context, domain string, senderUserID, senderDeviceID int64, eventType string, messages map[string]map[string]json.RawMessage) error
 	// LocalFID is the federated id of a local user, or "" when federation is off.
 	LocalFID(userID int64) string

@@ -190,10 +190,17 @@ type RelationshipEvent struct {
 // KeysQuery / KeysClaim mirror the Matrix-shaped device endpoints, scoped to the
 // receiver's own users.
 type KeysQuery struct {
+	// Requester is the FID of the user asking, one of the requesting instance's own. The
+	// receiver admits each of its users only when the two share a room (or are friends and
+	// neither blocks the other), the same gate its own clients go through - without it any
+	// peer could list every account's devices.
+	Requester  string              `json:"requester"`
 	DeviceKeys map[string][]string `json:"device_keys"`
 }
 
 type KeysClaim struct {
+	// Requester: see KeysQuery.
+	Requester   string                       `json:"requester"`
 	OneTimeKeys map[string]map[string]string `json:"one_time_keys"`
 }
 

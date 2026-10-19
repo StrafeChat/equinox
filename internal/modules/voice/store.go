@@ -20,6 +20,7 @@ import (
 //	voice:user:<user>   the room the user is in
 //	voice:rooms         set of rooms that have any state
 //	voice:call:<room>   Call JSON for a PM / group PM call
+//	voice:modflags:<space>  hash  user id -> server mute/deafen bits a space keeps on a member
 type Store struct {
 	rdb    *redis.Client
 	prefix string
@@ -29,10 +30,50 @@ func NewStore(rdb *redis.Client, prefix string) *Store {
 	return &Store{rdb: rdb, prefix: prefix}
 }
 
-func (s *Store) roomKey(roomID int64) string { return s.prefix + "voice:room:" + strconv.FormatInt(roomID, 10) }
-func (s *Store) userKey(userID int64) string { return s.prefix + "voice:user:" + strconv.FormatInt(userID, 10) }
-func (s *Store) callKey(roomID int64) string { return s.prefix + "voice:call:" + strconv.FormatInt(roomID, 10) }
-func (s *Store) roomsKey() string            { return s.prefix + "voice:rooms" }
+func (s *Store) roomKey(roomID int64) string {
+	return s.prefix + "voice:room:" + strconv.FormatInt(roomID, 10)
+}
+func (s *Store) userKey(userID int64) string {
+	return s.prefix + "voice:user:" + strconv.FormatInt(userID, 10)
+}
+func (s *Store) callKey(roomID int64) string {
+	return s.prefix + "voice:call:" + strconv.FormatInt(roomID, 10)
+}
+func (s *Store) roomsKey() string { return s.prefix + "voice:rooms" }
+func (s *Store) modFlagsKey(spaceID int64) string {
+	return s.prefix + "voice:modflags:" + strconv.FormatInt(spaceID, 10)
+}
+
+// ModFlags returns the server mute and deafen a space keeps on a member between voice
+// connections. They live on the member, not the connection, as on Discord: a moderator
+// lifts them, leaving and rejoining does not.
+func (s *Store) ModFlags(ctx context.Context, spaceID, userID int64) (mute, deaf bool, err error) {
+	v, err := s.rdb.HGet(ctx, s.modFlagsKey(spaceID), strconv.FormatInt(userID, 10)).Result()
+	if errors.Is(err, redis.Nil) {
+		return false, false, nil
+	}
+	if err != nil {
+		return false, false, err
+	}
+	n, _ := strconv.Atoi(v)
+	return n&1 != 0, n&2 != 0, nil
+}
+
+// SetModFlags records (or, with both false, forgets) a member's server mute and deafen.
+func (s *Store) SetModFlags(ctx context.Context, spaceID, userID int64, mute, deaf bool) error {
+	field := strconv.FormatInt(userID, 10)
+	if !mute && !deaf {
+		return s.rdb.HDel(ctx, s.modFlagsKey(spaceID), field).Err()
+	}
+	n := 0
+	if mute {
+		n |= 1
+	}
+	if deaf {
+		n |= 2
+	}
+	return s.rdb.HSet(ctx, s.modFlagsKey(spaceID), field, strconv.Itoa(n)).Err()
+}
 
 // GetState returns the user's state in the room, or nil.
 func (s *Store) GetState(ctx context.Context, roomID, userID int64) (*State, error) {

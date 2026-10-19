@@ -17,7 +17,6 @@ import (
 	"github.com/go-webauthn/webauthn/webauthn"
 	"github.com/pquerna/otp"
 	"github.com/pquerna/otp/totp"
-	"golang.org/x/crypto/bcrypt"
 )
 
 var (
@@ -631,19 +630,9 @@ func (s *service) ensureRecoveryCodes(ctx context.Context, userID int64) ([]stri
 }
 
 // verifyPassword re-checks the account password for a security-sensitive settings change.
-// It deliberately re-fetches by email rather than trusting a *User already in hand: GetByID
-// may be cache-served, and the cache never carries PasswordHash (see cached_user_repo.go),
-// so a cached user's hash reads as empty and would make every re-auth fail. GetByEmail is
-// never cached, so it always sees the real column.
+// See verifyPasswordFor (password.go) for why it goes back to the database by email.
 func (s *service) verifyPassword(ctx context.Context, u *User, password string) error {
-	real, err := s.repo.GetByEmail(ctx, u.Email)
-	if err != nil {
-		return err
-	}
-	if real == nil || bcrypt.CompareHashAndPassword([]byte(real.PasswordHash), []byte(password)) != nil {
-		return ErrInvalidCredentials
-	}
-	return nil
+	return verifyPasswordFor(ctx, s.repo, u, password)
 }
 
 func (s *service) loadCredentials(ctx context.Context, userID int64) ([]webauthn.Credential, error) {

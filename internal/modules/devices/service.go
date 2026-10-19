@@ -94,7 +94,14 @@ type Service struct {
 	redis  *redis.Client
 	cfg    *config.Config
 	router KeyRouter
+
+	// reach gates to-device delivery on the sender sharing a room with (and not blocking
+	// or being blocked by) each recipient; see SetRelationshipChecker.
+	reach RelationshipChecker
 }
+
+// SetRelationshipChecker installs the shared-room gate for to-device delivery.
+func (s *Service) SetRelationshipChecker(r RelationshipChecker) { s.reach = r }
 
 func NewService(repo Repository, redisClient *redis.Client, cfg *config.Config) *Service {
 	return &Service{repo: repo, redis: redisClient, cfg: cfg}
@@ -213,7 +220,7 @@ func (s *Service) UploadKeys(ctx context.Context, userID, deviceID int64, in *Up
 // QueryKeys returns the device-keys claims for the requested users/devices. Empty device
 // list for a user means "all of that user's devices." Users on other instances are
 // queried there (see KeyRouter) and merged into the same response.
-func (s *Service) QueryKeys(ctx context.Context, req map[string][]string) (*QueryKeysOutput, error) {
+func (s *Service) QueryKeys(ctx context.Context, requesterID int64, req map[string][]string) (*QueryKeysOutput, error) {
 	out := &QueryKeysOutput{DeviceKeys: map[string]map[string]json.RawMessage{}}
 	remote := map[string]map[string][]string{}
 	for userIDStr, deviceIDStrs := range req {
@@ -254,13 +261,16 @@ func (s *Service) QueryKeys(ctx context.Context, req map[string][]string) (*Quer
 		}
 	}
 	for domain, sub := range remote {
-		res, err := s.router.QueryRemote(ctx, domain, sub)
+		res, err := s.router.QueryRemote(ctx, domain, requesterID, sub)
 		if err != nil {
 			// A peer being down must not break key discovery for everyone else in the room.
 			logger.Err("devices", err, map[string]any{"federation_peer": domain, "op": "keys/query"})
 			continue
 		}
 		for k, v := range res.DeviceKeys {
+			if _, asked := sub[k]; !asked {
+				continue // a peer answers for the users it was asked about, nobody else
+			}
 			out.DeviceKeys[k] = v
 		}
 	}
@@ -269,7 +279,7 @@ func (s *Service) QueryKeys(ctx context.Context, req map[string][]string) (*Quer
 
 // ClaimKeys atomically consumes one one-time (or fallback) key per requested device,
 // forwarding to other instances for their users.
-func (s *Service) ClaimKeys(ctx context.Context, req map[string]map[string]string) (*ClaimKeysOutput, error) {
+func (s *Service) ClaimKeys(ctx context.Context, requesterID int64, req map[string]map[string]string) (*ClaimKeysOutput, error) {
 	out := &ClaimKeysOutput{OneTimeKeys: map[string]map[string]json.RawMessage{}}
 	remote := map[string]map[string]map[string]string{}
 	for userIDStr, byDevice := range req {
@@ -305,12 +315,15 @@ func (s *Service) ClaimKeys(ctx context.Context, req map[string]map[string]strin
 		}
 	}
 	for domain, sub := range remote {
-		res, err := s.router.ClaimRemote(ctx, domain, sub)
+		res, err := s.router.ClaimRemote(ctx, domain, requesterID, sub)
 		if err != nil {
 			logger.Err("devices", err, map[string]any{"federation_peer": domain, "op": "keys/claim"})
 			continue
 		}
 		for k, v := range res.OneTimeKeys {
+			if _, asked := sub[k]; !asked {
+				continue
+			}
 			out.OneTimeKeys[k] = v
 		}
 	}
@@ -387,6 +400,18 @@ func (s *Service) deliverLocal(ctx context.Context, senderUserID, senderDeviceID
 		userID, err := id.Parse(idPart)
 		if err != nil {
 			continue
+		}
+		// To-device traffic reaches only people the sender may exchange keys with (a
+		// shared room; no block), the gate the key endpoints apply - otherwise any account
+		// could push arbitrary events to every device of anyone.
+		if userID != senderUserID && s.reach != nil {
+			ok, rerr := s.reach.CanExchangeKeys(ctx, senderUserID, userID)
+			if rerr != nil {
+				return rerr
+			}
+			if !ok {
+				continue
+			}
 		}
 		deviceIDStrs := make([]string, 0, len(byDevice))
 		for k := range byDevice {
@@ -517,12 +542,98 @@ func validateBackupAuthData(authData string) error {
 	return nil
 }
 
-// CreateBackupVersion starts a new backup version, replacing any previous one.
+// supersededBackupRetention is how long the version a new one replaced stays readable.
 //
-// Replacing rather than accumulating is deliberate: a superseded version's rows are room
-// keys wrapped under a recovery code the user has just stopped using, and keeping them
-// around would mean an old code still unlocks history. Devices still uploading to the old
-// version get ErrBackupVersionNotFound and re-read the current one.
+// A superseded version's rows are room keys wrapped under a recovery code the user has
+// stopped using, so for this long an old code still opens history. The alternative was
+// worse: creating a version used to delete the previous one in the same request, which made
+// "create a version" - something any session token, or the operator, could do - also
+// "destroy the user's only copy of their history". A week is long enough for the user to
+// notice (their other devices are told at once, see KEY_BACKUP_UPDATE) and restore from the
+// version they actually made.
+const supersededBackupRetention = 7 * 24 * time.Hour
+
+// backupVersionListLimit bounds the read behind the retention rule. The rule keeps at most
+// two rows, so anything past this is leftovers for the next pass to sweep.
+const backupVersionListLimit = 4
+
+// retainedBackupVersions splits an account's versions, newest first, into the ones the
+// retention rule keeps and the ones it drops: the current version, plus the one it
+// superseded while the current one is younger than supersededBackupRetention. The clock is
+// the current version's age rather than the previous one's, because "superseded for a
+// week" is the promise - a version that served for a year is not stale the day it is
+// replaced.
+func retainedBackupVersions(versions []KeyBackupVersion, now time.Time) (keep, drop []KeyBackupVersion) {
+	if len(versions) == 0 {
+		return nil, nil
+	}
+	n := 1
+	if len(versions) > 1 && now.Sub(versions[0].CreatedAt) < supersededBackupRetention {
+		n = 2
+	}
+	return versions[:n], versions[n:]
+}
+
+// backupVersions reads the account's current version and the superseded one still
+// retained (either may be nil). With sweep set it also deletes whatever the retention rule
+// no longer keeps - lazily, on the writes and the recovery read, never on the per-sync
+// GetBackupVersion poll, which only needs to read. A failed sweep is logged, not returned:
+// the request in hand is correct either way, and the next pass gets another go.
+func (s *Service) backupVersions(ctx context.Context, userID int64, sweep bool) (current, previous *KeyBackupVersion, err error) {
+	versions, err := s.repo.ListBackupVersions(ctx, userID, backupVersionListLimit)
+	if err != nil {
+		return nil, nil, err
+	}
+	keep, drop := retainedBackupVersions(versions, time.Now().UTC())
+	if sweep {
+		for _, v := range drop {
+			if err := s.deleteBackupVersionData(ctx, userID, v.Version); err != nil {
+				logger.Err("devices", err, map[string]any{"user_id": userID, "version": v.Version, "note": "superseded backup version not fully deleted"})
+			}
+		}
+	}
+	if len(keep) > 0 {
+		current = &keep[0]
+	}
+	if len(keep) > 1 {
+		previous = &keep[1]
+	}
+	return current, previous, nil
+}
+
+// BackupVersions is the read-only view every sync polls: the current version and, while
+// retained, the one it replaced.
+func (s *Service) BackupVersions(ctx context.Context, userID int64) (current, previous *KeyBackupVersion, err error) {
+	return s.backupVersions(ctx, userID, false)
+}
+
+// RecoverableBackupVersion returns the version a restore may read recovery material for:
+// the current one when version is 0 (nil if the account has none), otherwise the named
+// version provided it is the current or the retained previous one. The retention sweep runs
+// first, so a version past its week is gone rather than quietly still restorable.
+func (s *Service) RecoverableBackupVersion(ctx context.Context, userID, version int64) (*KeyBackupVersion, error) {
+	current, previous, err := s.backupVersions(ctx, userID, true)
+	if err != nil {
+		return nil, err
+	}
+	switch {
+	case version == 0:
+		return current, nil
+	case current != nil && current.Version == version:
+		return current, nil
+	case previous != nil && previous.Version == version:
+		return previous, nil
+	}
+	return nil, ErrBackupVersionNotFound
+}
+
+// CreateBackupVersion starts a new backup version. The one it supersedes is kept for
+// supersededBackupRetention; anything older goes now.
+//
+// The caller has already re-checked the password (see Handler.checkPassword): this is one
+// of the two requests that decide where every device sends the account's room keys. Devices
+// pinned to the old version are told over the gateway and stop uploading; the retained copy
+// is what the user restores from if the new version was not theirs.
 func (s *Service) CreateBackupVersion(ctx context.Context, userID int64, algorithm, authData, wrappedPrivateKey, salt string) (*KeyBackupVersion, error) {
 	if algorithm != backupAlgorithm {
 		return nil, ErrInvalidInput
@@ -534,11 +645,6 @@ func (s *Service) CreateBackupVersion(ctx context.Context, userID int64, algorit
 		return nil, ErrInvalidInput
 	}
 	if err := validateBackupAuthData(authData); err != nil {
-		return nil, err
-	}
-
-	previous, err := s.repo.LatestBackupVersion(ctx, userID)
-	if err != nil {
 		return nil, err
 	}
 
@@ -555,23 +661,17 @@ func (s *Service) CreateBackupVersion(ctx context.Context, userID int64, algorit
 	if err := s.repo.CreateBackupVersion(ctx, v); err != nil {
 		return nil, err
 	}
-	if previous != nil {
-		// Best effort: the new version is already usable, and leaving the old rows behind is
-		// a privacy problem rather than a correctness one, so it is worth logging loudly but
-		// not worth failing the request the user is waiting on.
-		if err := s.deleteBackupVersionData(ctx, userID, previous.Version); err != nil {
-			logger.Err("devices", err, map[string]any{"user_id": userID, "version": previous.Version, "note": "superseded backup version not fully deleted"})
-		}
+	// The row just written is the newest, so the sweep keeps it and the one it replaced.
+	if _, _, err := s.backupVersions(ctx, userID, true); err != nil {
+		logger.Err("devices", err, map[string]any{"user_id": userID, "note": "backup retention sweep skipped"})
 	}
+	s.publishBackupUpdate(ctx, userID, "created", v.Version)
 	return v, nil
 }
 
-func (s *Service) LatestBackupVersion(ctx context.Context, userID int64) (*KeyBackupVersion, error) {
-	return s.repo.LatestBackupVersion(ctx, userID)
-}
-
-// DeleteBackupVersion removes a version and every key in it - what "I lost my recovery
-// code, start over" does.
+// DeleteBackupVersion removes a version and every key in it, at once - what "I lost my
+// recovery code, start over" does. Deleting the current version makes the retained previous
+// one current again, which is how a user undoes a replacement that was not theirs.
 func (s *Service) DeleteBackupVersion(ctx context.Context, userID, version int64) error {
 	existing, err := s.repo.GetBackupVersion(ctx, userID, version)
 	if err != nil {
@@ -580,7 +680,11 @@ func (s *Service) DeleteBackupVersion(ctx context.Context, userID, version int64
 	if existing == nil {
 		return ErrBackupVersionNotFound
 	}
-	return s.deleteBackupVersionData(ctx, userID, version)
+	if err := s.deleteBackupVersionData(ctx, userID, version); err != nil {
+		return err
+	}
+	s.publishBackupUpdate(ctx, userID, "deleted", version)
+	return nil
 }
 
 func (s *Service) deleteBackupVersionData(ctx context.Context, userID, version int64) error {
@@ -590,15 +694,31 @@ func (s *Service) deleteBackupVersionData(ctx context.Context, userID, version i
 	return s.repo.DeleteBackupVersion(ctx, userID, version)
 }
 
+// publishBackupUpdate tells the account's other devices the backup version changed, so one
+// pinned to a version that is no longer current stops uploading and shows its
+// needs-confirming state now, rather than at whatever upload next gets a 404.
+func (s *Service) publishBackupUpdate(ctx context.Context, userID int64, action string, version int64) {
+	if s.redis == nil || s.cfg == nil {
+		return
+	}
+	stargate.PublishToUser(ctx, s.redis, userID, "KEY_BACKUP_UPDATE", map[string]interface{}{
+		"action":  action,
+		"version": id.Format(version),
+	}, s.stargateRegion())
+}
+
 // PutBackupKeys stores a batch of encrypted room keys, keeping the better copy where a
 // session is already present. Returns the backup's total session count and a new etag,
 // which is what the client's crypto engine expects back from the upload.
 func (s *Service) PutBackupKeys(ctx context.Context, userID, version int64, in *PutBackupKeysInput) (int, string, error) {
-	existing, err := s.repo.GetBackupVersion(ctx, userID, version)
+	existing, _, err := s.backupVersions(ctx, userID, true)
 	if err != nil {
 		return 0, "", err
 	}
-	if existing == nil {
+	// Only the current version takes uploads. The retained previous one exists to be read
+	// back, and a device still pointed at it has to learn the version moved - this 404 is
+	// how one that missed KEY_BACKUP_UPDATE finds out.
+	if existing == nil || existing.Version != version {
 		return 0, "", ErrBackupVersionNotFound
 	}
 
