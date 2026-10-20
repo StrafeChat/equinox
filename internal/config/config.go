@@ -28,6 +28,7 @@ type Config struct {
 	TwoFactor  TwoFactorConfig
 	Mail       MailConfig
 	Push       PushConfig
+	Gifs       GifsConfig
 	Database   DatabaseConfig
 	Log        LogConfig
 }
@@ -45,6 +46,15 @@ type VoiceConfig struct {
 	InternalURL string
 	APIKey      string
 	APISecret   string
+}
+
+// GifsConfig holds the API keys of the GIF search providers the composer's picker offers.
+// They are used only by this server: clients search through GET /gifs/search and
+// /gifs/trending, so a key never appears in anything a browser loads, and the provider sees
+// this server rather than each user's address. Never log the values.
+type GifsConfig struct {
+	GiphyAPIKey    string
+	HeypsterAPIKey string
 }
 
 // FederationConfig makes this instance addressable by other StrafeChat instances.
@@ -407,6 +417,7 @@ func Load() (*Config, error) {
 		},
 		Captcha: loadCaptchaConfig(),
 		Voice:   loadVoiceConfig(),
+		Gifs:    loadGifsConfig(),
 		Database: DatabaseConfig{
 			Scylla: ScyllaConfig{
 				Hosts:    getEnvArray("SCYLLA_HOSTS", []string{"localhost"}),
@@ -715,6 +726,17 @@ func validatePush(p PushConfig) error {
 		return errors.New("PUSH_WORKERS must be 1-64")
 	}
 	return nil
+}
+
+// loadGifsConfig reads GIPHY_API_KEY / HEYPSTER_API_KEY. The STRAFE_-prefixed names are
+// what the web container read when it still put the keys into config.js; an existing .env
+// carries them under those names, so they keep working as a fallback.
+func loadGifsConfig() GifsConfig {
+	env := func(k string) string { return strings.TrimSpace(getEnvString(k, "")) }
+	return GifsConfig{
+		GiphyAPIKey:    firstNonEmpty(env("GIPHY_API_KEY"), env("STRAFE_GIPHY_API_KEY")),
+		HeypsterAPIKey: firstNonEmpty(env("HEYPSTER_API_KEY"), env("STRAFE_HEYPSTER_API_KEY")),
+	}
 }
 
 func loadVoiceConfig() VoiceConfig {

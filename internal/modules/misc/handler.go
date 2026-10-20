@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	"github.com/StrafeChat/equinox/internal/config"
+	"github.com/StrafeChat/equinox/internal/modules/gifs"
 	"github.com/StrafeChat/equinox/internal/nebula"
 	"github.com/gofiber/fiber/v3"
 )
@@ -39,13 +40,22 @@ type EmailFeature struct {
 	VerificationRequired bool `json:"verification_required"`
 }
 
+// GifsFeature lists the GIF providers this instance searches for its clients (GET
+// /gifs/search, /gifs/trending): those it has an API key for. The keys themselves never
+// leave the server.
+type GifsFeature struct {
+	Enabled   bool     `json:"enabled"`
+	Providers []string `json:"providers"`
+}
+
 type Features struct {
 	Captcha    CaptchaFeature `json:"captcha"`
 	Email      EmailFeature   `json:"email"`
 	InviteOnly Feature        `json:"invite_only"`
 	// Voice is on when a LiveKit server is configured; clients hide every call control
 	// otherwise.
-	Voice Feature `json:"voice"`
+	Voice Feature     `json:"voice"`
+	Gifs  GifsFeature `json:"gifs"`
 }
 
 // Service is one component that makes up a running instance, advertised on GET / so clients
@@ -107,6 +117,11 @@ func emailFeature(cfg *config.Config) EmailFeature {
 	}
 }
 
+func gifsFeature(cfg *config.Config) GifsFeature {
+	p := gifs.ConfiguredProviders(cfg.Gifs)
+	return GifsFeature{Enabled: len(p) > 0, Providers: p}
+}
+
 func boolPtr(b bool) *bool { return &b }
 
 // services advertises the instance's components and their browser-facing URLs. Required
@@ -159,6 +174,7 @@ func (h *Handler) Index(c fiber.Ctx) error {
 			Email:      emailFeature(h.cfg),
 			InviteOnly: Feature{Enabled: h.cfg.Flags.InviteOnly},
 			Voice:      Feature{Enabled: h.cfg.Voice.Enabled},
+			Gifs:       gifsFeature(h.cfg),
 		},
 		Services: services(h.cfg),
 		Federation: Federation{

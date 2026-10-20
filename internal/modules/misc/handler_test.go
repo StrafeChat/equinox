@@ -1,6 +1,8 @@
 package misc
 
 import (
+	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/StrafeChat/equinox/internal/config"
@@ -122,5 +124,33 @@ func TestEmailFeature(t *testing.T) {
 	cfg.Mail.VerificationRequired = false
 	if f := emailFeature(cfg); !f.Enabled || f.VerificationRequired {
 		t.Errorf("mail on, verification off: got %+v", f)
+	}
+}
+
+// GET / names the GIF providers that have a key - and only their ids, never the key. With
+// none configured the list is empty rather than null, so a client can iterate it as is.
+func TestGifsFeature(t *testing.T) {
+	cfg := &config.Config{}
+	f := gifsFeature(cfg)
+	if f.Enabled || f.Providers == nil || len(f.Providers) != 0 {
+		t.Errorf("no keys: want disabled with an empty list, got %+v", f)
+	}
+	if b, _ := json.Marshal(f); string(b) != `{"enabled":false,"providers":[]}` {
+		t.Errorf("no keys: JSON = %s", b)
+	}
+
+	cfg.Gifs.HeypsterAPIKey = "heypster-test-key"
+	if f := gifsFeature(cfg); !f.Enabled || strings.Join(f.Providers, ",") != "heypster" {
+		t.Errorf("heypster only: got %+v", f)
+	}
+
+	cfg.Gifs.GiphyAPIKey = "giphy-test-key"
+	f = gifsFeature(cfg)
+	if !f.Enabled || strings.Join(f.Providers, ",") != "giphy,heypster" {
+		t.Errorf("both: got %+v", f)
+	}
+	b, _ := json.Marshal(f)
+	if strings.Contains(string(b), "test-key") {
+		t.Errorf("a key reached the feature map: %s", b)
 	}
 }
