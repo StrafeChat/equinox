@@ -60,9 +60,15 @@ func HTTPError(err error) (status int, message string, ok bool) {
 		return http.StatusBadRequest, err.Error(), true
 	case errors.Is(err, ErrInvalidRoom):
 		return http.StatusNotFound, "room not found", true
+	case errors.Is(err, ErrMemberNotFound):
+		return http.StatusNotFound, err.Error(), true
+	case errors.Is(err, ErrMemberProfileChanged):
+		return http.StatusConflict, err.Error(), true
 	case errors.Is(err, ErrNotMember), errors.Is(err, ErrMissingPerm), errors.Is(err, ErrRoleHierarchy),
 		errors.Is(err, ErrCannotModerateOwner), errors.Is(err, ErrNotSpaceOwner), errors.Is(err, ErrPermissionEscalation),
-		errors.Is(err, ErrInsufficientSpacePermission), errors.Is(err, ErrBanned):
+		errors.Is(err, ErrInsufficientSpacePermission), errors.Is(err, ErrBanned),
+		errors.Is(err, ErrCannotChangeNickname), errors.Is(err, ErrCannotChangeOwnerNickname), errors.Is(err, ErrNotOwnProfile),
+		errors.Is(err, ErrCannotResetOwnerProfile):
 		return http.StatusForbidden, err.Error(), true
 	case errors.Is(err, ErrCannotEditEveryone), errors.Is(err, ErrInvalidSlowmode), errors.Is(err, ErrInvalidRoomType),
 		errors.Is(err, ErrInvalidReorder), errors.Is(err, ErrOwnerCannotLeave), errors.Is(err, ErrInvalidSpaceName),
@@ -74,7 +80,9 @@ func HTTPError(err error) (status int, message string, ok bool) {
 		errors.Is(err, ErrInvalidInvite), errors.Is(err, ErrInvalidUserLimit), errors.Is(err, ErrInvalidBitrate),
 		errors.Is(err, ErrAlreadyOwner), errors.Is(err, ErrSpaceNameMismatch), errors.Is(err, ErrInvalidBot),
 		errors.Is(err, ErrManagedRole), errors.Is(err, ErrNotLocalUser), errors.Is(err, ErrInvalidVerification),
-		errors.Is(err, ErrInvalidAutomodFlags), errors.Is(err, ErrInvalidMentionLimit):
+		errors.Is(err, ErrInvalidAutomodFlags), errors.Is(err, ErrInvalidMentionLimit),
+		errors.Is(err, ErrInvalidNickname), errors.Is(err, ErrInvalidMemberAboutMe), errors.Is(err, ErrInvalidMemberBio),
+		errors.Is(err, ErrInvalidMemberPronouns), errors.Is(err, ErrInvalidProfileImage):
 		return http.StatusBadRequest, err.Error(), true
 	}
 	return 0, "", false
@@ -375,7 +383,8 @@ func roomUserOverrideToJSON(o *SpaceRoomUserOverride) fiber.Map {
 	}
 }
 
-// Members returns members of a space with basic user info. GET /spaces/:id/members.
+// Members returns members of a space with basic user info and each one's space profile.
+// GET /spaces/:id/members.
 func (h *Handler) Members(c fiber.Ctx) error {
 	user := auth.GetUser(c)
 	if user == nil {
@@ -390,15 +399,8 @@ func (h *Handler) Members(c fiber.Ctx) error {
 		return spaceError(c, err, map[string]any{"space_id": spaceID})
 	}
 	out := make([]fiber.Map, 0, len(members))
-	for _, m := range members {
-		roleStrs := make([]string, len(m.Member.RoleIDs))
-		for i, rid := range m.Member.RoleIDs {
-			roleStrs[i] = id.Format(rid)
-		}
-		row := fiber.Map(h.svc.memberUserFields(m.User))
-		row["joined_at"] = m.Member.JoinedAt
-		row["roles"] = roleStrs
-		out = append(out, row)
+	for i := range members {
+		out = append(out, fiber.Map(h.svc.memberJSON(&members[i].Member, members[i].User)))
 	}
 	return c.JSON(out)
 }

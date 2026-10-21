@@ -126,10 +126,19 @@ type ThreadWire struct {
 	StarterMessage     string     `json:"starter_message,omitempty"`
 }
 
+// SpaceMemberWire is a member as the origin holds them, full state: the space profile
+// (Nickname through Pronouns - the member's per-space overrides of their global profile) is
+// left out when empty, and an absent field means "no override", never "unchanged". A peer
+// older than space profiles ignores those fields; one that sends none has no profiles.
 type SpaceMemberWire struct {
 	User     Profile   `json:"user"`
 	Roles    []string  `json:"roles"`
 	Nickname string    `json:"nickname,omitempty"`
+	Avatar   string    `json:"avatar,omitempty"`
+	Banner   string    `json:"banner,omitempty"`
+	AboutMe  string    `json:"about_me,omitempty"`
+	Bio      string    `json:"bio,omitempty"`
+	Pronouns string    `json:"pronouns,omitempty"`
 	JoinedAt time.Time `json:"joined_at"`
 	// Presence as others see it, so a mirror's member list starts with real statuses
 	// instead of "offline until their next change".
@@ -446,9 +455,12 @@ func (s *Service) roomWire(ctx context.Context, room *rooms.Room, ov spaces.Room
 	return w
 }
 
+// memberWire is one member for a peer. Every member form goes through here - the snapshot,
+// member pages and the add/update relays - so joins and resyncs carry space profiles too.
 func (s *Service) memberWire(m *spaces.SpaceMember, u *auth.User) SpaceMemberWire {
 	w := SpaceMemberWire{
-		User: s.ProfileOf(u), Roles: make([]string, 0, len(m.RoleIDs)), Nickname: m.Nickname, JoinedAt: m.JoinedAt,
+		User: s.ProfileOf(u), Roles: make([]string, 0, len(m.RoleIDs)), JoinedAt: m.JoinedAt,
+		Nickname: m.Nickname, Avatar: m.Avatar, Banner: m.Banner, AboutMe: m.AboutMe, Bio: m.Bio, Pronouns: m.Pronouns,
 		Presence: auth.ToPublicPresence(u.Presence, true),
 	}
 	for _, rid := range m.RoleIDs {
@@ -557,6 +569,29 @@ func httpURLOnly(u string) string {
 		return ""
 	}
 	return u
+}
+
+// memberImageURL is a peer-supplied space avatar or banner: an http(s) URL no longer than a
+// local one may be (spaces.MaxMemberImageURLRunes), else none.
+func memberImageURL(u string) string {
+	u = httpURLOnly(u)
+	if utf8.RuneCountInString(u) > spaces.MaxMemberImageURLRunes {
+		return ""
+	}
+	return u
+}
+
+// mirrorMemberProfile copies the space profile the origin sent onto m, clamped to the local
+// limits. The nickname loses control and bidi characters first - it stands in for the
+// member's name everywhere in the space, so it must not be able to break a line or turn the
+// text around it - and the images must be http(s).
+func mirrorMemberProfile(m *spaces.MirrorMember, w SpaceMemberWire) {
+	m.Nickname = clampText(spaces.StripNicknameControls(w.Nickname), spaces.MaxNicknameRunes)
+	m.Avatar = memberImageURL(w.Avatar)
+	m.Banner = memberImageURL(w.Banner)
+	m.AboutMe = clampText(w.AboutMe, spaces.MaxMemberAboutMeRunes)
+	m.Bio = clampText(w.Bio, spaces.MaxMemberBioRunes)
+	m.Pronouns = clampText(w.Pronouns, spaces.MaxMemberPronounsRunes)
 }
 
 // applySpaceInfo overlays the origin's settings onto a (new or stored) space row. The
@@ -695,7 +730,8 @@ func (s *Service) mirrorMember(ctx context.Context, origin string, w SpaceMember
 		return spaces.MirrorMember{}, err
 	}
 	s.applyRelayedPresence(ctx, u, w.Presence)
-	m := spaces.MirrorMember{UserID: u.ID, Nickname: clampText(w.Nickname, 32), JoinedAt: w.JoinedAt}
+	m := spaces.MirrorMember{UserID: u.ID, JoinedAt: w.JoinedAt}
+	mirrorMemberProfile(&m, w)
 	for _, raw := range w.Roles {
 		if rid, err := id.Parse(raw); err == nil {
 			m.RoleIDs = append(m.RoleIDs, rid)
@@ -1013,6 +1049,7 @@ func (s *Service) applyJoinSnapshot(ctx context.Context, domain string, user *au
 			break
 		}
 	}
+	found := me != nil // the origin's own row for the member, not the stand-in below
 	if me == nil {
 		me = &spaces.MirrorMember{UserID: user.ID, JoinedAt: time.Now().UTC()}
 		if rid, err := id.Parse(snap.Info.EveryoneRole); err == nil {
@@ -1020,8 +1057,25 @@ func (s *Service) applyJoinSnapshot(ctx context.Context, domain string, user *au
 		}
 	}
 	if m, err := s.repo.GetSpaceByOrigin(ctx, domain, originSpaceID); err == nil && m != nil {
-		// Someone here already mirrors it: just add this member.
-		if err := s.spaceSvc.AddMirrorMember(ctx, m.SpaceID, *me); err != nil {
+		// Someone here already mirrors it. The member may already be in it too (Join on a
+		// Discover card of a space they are in, an invite redeemed again): the origin's join
+		// was a no-op, and so is this one. Their own row in the snapshot is applied as an
+		// update - only what differs, announced as an update - and when the snapshot does not
+		// carry them (its member list is only the first page) there is nothing to apply: the
+		// stand-in built above, @everyone and no space profile, would overwrite their roles
+		// and profile with nothing.
+		switch err := s.spaceSvc.AssertMember(ctx, user.ID, m.SpaceID); {
+		case err == nil:
+			if found {
+				if err := s.spaceSvc.UpdateMirrorMember(ctx, m.SpaceID, *me); err != nil {
+					return nil, err
+				}
+			}
+		case errors.Is(err, spaces.ErrNotMember):
+			if err := s.spaceSvc.AddMirrorMember(ctx, m.SpaceID, *me); err != nil {
+				return nil, err
+			}
+		default:
 			return nil, err
 		}
 		s.storeMirrorPeers(ctx, m.SpaceID, domain, snap.Peers)

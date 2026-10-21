@@ -147,8 +147,9 @@ func (s *Service) deleteSpaceCascade(ctx context.Context, actorID int64, sp *Spa
 			"space_id": id.Format(spaceID),
 		}, s.stargateRegion())
 	}
-	for _, m := range members {
-		if err := s.repo.RemoveMember(ctx, spaceID, m.UserID); err != nil {
+	for i := range members {
+		m := &members[i]
+		if err := s.removeMemberRow(ctx, spaceID, m.UserID, m); err != nil {
 			return err
 		}
 		if s.redis != nil {

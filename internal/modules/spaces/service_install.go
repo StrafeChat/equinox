@@ -278,9 +278,11 @@ func (s *Service) updateBotRole(ctx context.Context, sp *Space, bot *auth.User, 
 	if err != nil || mem == nil {
 		return 0, ErrNotMember
 	}
-	if err := s.repo.SetMemberRoleIDs(ctx, sp.ID, bot.ID, append(mem.RoleIDs, role.ID)); err != nil {
+	roleIDs := append(mem.RoleIDs, role.ID)
+	if err := s.repo.SetMemberRoleIDs(ctx, sp.ID, bot.ID, roleIDs); err != nil {
 		return 0, err
 	}
+	mem.RoleIDs = roleIDs
 	s.invalidateSnapshot(ctx, sp.ID)
 	if all, err := s.SpaceRoles(ctx, sp.ID); err == nil {
 		payload := spaceToEventPayload(sp)
@@ -288,10 +290,7 @@ func (s *Service) updateBotRole(ctx context.Context, sp *Space, bot *auth.User, 
 		payload["roles"] = RoleMaps(all)
 		s.publishSpaceEvent(ctx, sp.ID, "SPACE_UPDATE", payload)
 	}
-	s.publishSpaceEvent(ctx, sp.ID, "SPACE_MEMBER_UPDATE", map[string]interface{}{
-		"user_id":  id.Format(bot.ID),
-		"role_ids": formatRoleIDStrings(append(mem.RoleIDs, role.ID)),
-	})
+	s.publishMemberUpdate(ctx, sp.ID, mem)
 	s.fedMemberUpdated(ctx, sp.ID, bot.ID)
 	return granted, nil
 }
@@ -425,7 +424,7 @@ func (s *Service) AddMemberViaOAuth(ctx context.Context, actorID, spaceID, userI
 // member's own channel so their other sessions (or a bot's gateway connection) learn of
 // the space without a refresh.
 func (s *Service) addMember(ctx context.Context, sp *Space, userID int64, roleIDs []int64) error {
-	if err := s.repo.AddMember(ctx, sp.ID, userID, roleIDs); err != nil {
+	if err := s.repo.AddMember(ctx, sp.ID, userID, roleIDs, MemberProfile{}); err != nil {
 		return err
 	}
 	if err := s.repo.AddSpaceToUserSet(ctx, userID, sp.ID); err != nil {
@@ -454,6 +453,11 @@ func (s *Service) publishMemberAdd(ctx context.Context, sp *Space, userID int64)
 	payload["space_id"] = id.Format(sp.ID)
 	if mem, _ := s.repo.GetMember(ctx, sp.ID, userID); mem != nil {
 		payload["role_ids"] = formatRoleIDStrings(mem.RoleIDs)
+		payload["joined_at"] = mem.JoinedAt
+		// A mirror's copy of an existing member arrives with their space profile.
+		for k, v := range memberProfileFields(mem) {
+			payload[k] = v
+		}
 	}
 	stargate.PublishToSpace(ctx, s.redis, sp.ID, "SPACE_MEMBER_ADD", payload, s.stargateRegion())
 

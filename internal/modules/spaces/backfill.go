@@ -25,7 +25,7 @@ func (s *Service) BackfillVoicePermissions(ctx context.Context) error {
 		return err
 	}
 	updated := 0
-	err = s.repo.ForEachSpaceRole(ctx, func(spaceID, roleID int64, name string, perms int64) error {
+	err = s.repo.ForEachSpaceRole(ctx, func(spaceID, roleID int64, name string, perms, _ int64) error {
 		if name != EveryoneRoleName || perms&permissions.DefaultVoice == permissions.DefaultVoice {
 			return nil
 		}
@@ -67,7 +67,7 @@ func (s *Service) BackfillAttachFilesPermission(ctx context.Context) error {
 	now := time.Now().UTC()
 	spaceIDs := map[int64]struct{}{}
 	roles := 0
-	err = s.repo.ForEachSpaceRole(ctx, func(spaceID, roleID int64, _ string, perms int64) error {
+	err = s.repo.ForEachSpaceRole(ctx, func(spaceID, roleID int64, _ string, perms, _ int64) error {
 		spaceIDs[spaceID] = struct{}{}
 		if perms&send == 0 || perms&attach != 0 {
 			return nil
@@ -176,7 +176,7 @@ func (s *Service) BackfillThreadPermissions(ctx context.Context) error {
 	now := time.Now().UTC()
 	spaceIDs := map[int64]struct{}{}
 	roles := 0
-	err = s.repo.ForEachSpaceRole(ctx, func(spaceID, roleID int64, _ string, perms int64) error {
+	err = s.repo.ForEachSpaceRole(ctx, func(spaceID, roleID int64, _ string, perms, _ int64) error {
 		spaceIDs[spaceID] = struct{}{}
 		next := mirrorThreadBits(perms)
 		if next == perms {
@@ -270,4 +270,85 @@ func (s *Service) backfillOverrides(ctx context.Context, spaceID, roomID int64, 
 		}
 	}
 	return n, nil
+}
+
+// Data migration for the nickname bits (permissions.PermChangeNickname 1<<28,
+// PermManageNicknames 1<<29).
+const dataMigrationNicknamePermissions = "050_nickname_permissions"
+
+// mirrorNicknameBits: @everyone gets Change Nickname (Discord's default); any role that can kick
+// or ban members gets Manage Nicknames, so an existing space's moderators can fix a bad nickname
+// without a role edit. Pure; idempotent.
+func mirrorNicknameBits(roleName string, perms int64) int64 {
+	if roleName == EveryoneRoleName {
+		perms |= permissions.PermChangeNickname
+	}
+	if perms&(permissions.PermKickMembers|permissions.PermBanMembers) != 0 {
+		perms |= permissions.PermManageNicknames
+	}
+	return perms
+}
+
+// BackfillNicknamePermissions gives existing spaces the nickname defaults (mirrorNicknameBits).
+// Exactly once per keyspace; idempotent if re-run. Both bits are space-scoped, so unlike the
+// thread backfill there is no override pass (overrides are masked with AllRoom).
+//
+// Two kinds of role are left alone. A space this instance only mirrors belongs to its origin,
+// which runs its own backfill and relays the result; rewriting the copy here would leave it
+// out of step with the origin until the next resync. And a bot's managed role holds exactly
+// what the person who installed the bot consented to, so it gains nothing nobody approved.
+// On the origin, each changed role is relayed at once so mirrors converge without a resync.
+//
+// Needs the federator wired first (routes/spaces.go): without it every space looks local.
+func (s *Service) BackfillNicknamePermissions(ctx context.Context) error {
+	claimed, err := s.repo.ClaimDataMigration(ctx, dataMigrationNicknamePermissions)
+	if err != nil || !claimed {
+		return err
+	}
+	now := time.Now().UTC()
+	hostedElsewhere := map[int64]bool{}
+	changedSpaces := map[int64]struct{}{}
+	type roleRef struct{ spaceID, roleID int64 }
+	var changed []roleRef
+	err = s.repo.ForEachSpaceRole(ctx, func(spaceID, roleID int64, name string, perms, botID int64) error {
+		if botID != 0 {
+			return nil
+		}
+		mirror, seen := hostedElsewhere[spaceID]
+		if !seen {
+			mirror = s.mirrorOrigin(ctx, spaceID) != ""
+			hostedElsewhere[spaceID] = mirror
+		}
+		if mirror {
+			return nil
+		}
+		next := mirrorNicknameBits(name, perms)
+		if next == perms {
+			return nil
+		}
+		if err := s.repo.UpdateSpaceRolePermissions(ctx, spaceID, roleID, next, now); err != nil {
+			return err
+		}
+		changedSpaces[spaceID] = struct{}{}
+		changed = append(changed, roleRef{spaceID, roleID})
+		return nil
+	})
+	if err != nil {
+		if relErr := s.repo.ReleaseDataMigration(ctx, dataMigrationNicknamePermissions); relErr != nil {
+			logger.Err("spaces", relErr, map[string]any{"data_migration": dataMigrationNicknamePermissions})
+		}
+		return err
+	}
+	// The snapshot's shape is unchanged - the bits live in role.permissions, which it already
+	// caches - so dropping the cached copies is enough.
+	for spaceID := range changedSpaces {
+		s.invalidateSnapshot(ctx, spaceID)
+	}
+	for _, r := range changed {
+		if role, err := s.repo.GetSpaceRole(ctx, r.spaceID, r.roleID); err == nil && role != nil {
+			s.fedRoleChanged(ctx, r.spaceID, role, false)
+		}
+	}
+	logger.Info("spaces", "nickname permissions backfilled on %d role(s) across %d space(s)", len(changed), len(changedSpaces))
+	return nil
 }

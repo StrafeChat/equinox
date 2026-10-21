@@ -34,12 +34,56 @@ var spaceAuditLogTable = table.New(table.Metadata{
 	SortKey: []string{"id"},
 })
 
+// space_members carries the membership (roles, joined_at) and the member's space profile
+// (nickname through pronouns; see member_profile.go). Two statements below spell the columns
+// out instead of going through this metadata - the INSERT and ListMembersPage's SELECT - and
+// repo_columns_test.go keeps all three in step, since a mismatch only fails at runtime.
 var spaceMembersTable = table.New(table.Metadata{
 	Name:    "space_members",
-	Columns: []string{"space_id", "user_id", "role_ids", "nickname", "joined_at"},
+	Columns: []string{"space_id", "user_id", "role_ids", "nickname", "avatar", "banner", "about_me", "bio", "pronouns", "joined_at"},
 	PartKey: []string{"space_id"},
 	SortKey: []string{"user_id"},
 })
+
+// insertMemberStmt writes every column of a membership, so a join (or a mirror's copy of one)
+// always starts from exactly what it binds - nil profile columns become NULL and clear
+// anything a removed membership left behind. The values come from memberRowValues.
+const insertMemberStmt = "INSERT INTO space_members (space_id, user_id, role_ids, nickname, avatar, banner, about_me, bio, pronouns, joined_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+
+// listMembersPageStmt is ListMembersPage's range read; same columns as spaceMembersTable.
+const listMembersPageStmt = "SELECT space_id, user_id, role_ids, nickname, avatar, banner, about_me, bio, pronouns, joined_at FROM space_members WHERE space_id = ? AND user_id > ? LIMIT ?"
+
+// memberRowValues is insertMemberStmt's bind list, in its column order.
+func memberRowValues(spaceID, userID int64, roleIDs []int64, p MemberProfile, joinedAt time.Time) []interface{} {
+	return []interface{}{
+		spaceID, userID, roleIDs,
+		nilIfEmpty(p.Nick), nilIfEmpty(p.Avatar), nilIfEmpty(p.Banner),
+		nilIfEmpty(p.AboutMe), nilIfEmpty(p.Bio), nilIfEmpty(p.Pronouns),
+		joinedAt,
+	}
+}
+
+// liveMember is the test every member read applies: a row without joined_at is not a
+// member. Such a "ghost" row can appear when a profile or role write races the member's
+// removal - Scylla does not order a lightweight transaction against a plain delete, so the
+// written cells can outlive the row's tombstone, leaving a row with no joined_at and no
+// roles. Read as a member, it would hand a kicked or banned user @everyone's access again
+// (every permission check starts from @everyone). This filter, not the conditional writes,
+// is what keeps a removed member removed; AddMember overwrites such a row cleanly on a rejoin.
+func liveMember(m *SpaceMember) bool {
+	return m != nil && !m.JoinedAt.IsZero()
+}
+
+// liveMembers drops ghost rows (see liveMember), reusing rows' backing array.
+func liveMembers(rows []SpaceMember) []SpaceMember {
+	out := rows[:0]
+	for i := range rows {
+		if liveMember(&rows[i]) {
+			out = append(out, rows[i])
+		}
+	}
+	return out
+}
 
 var spacesByUserTable = table.New(table.Metadata{
 	Name:    "spaces_by_user",
@@ -87,10 +131,18 @@ type Repository interface {
 	CreateEmoji(ctx context.Context, e *SpaceEmoji) error
 	UpdateEmojiName(ctx context.Context, spaceID, emojiID int64, name string, now time.Time) error
 	DeleteEmoji(ctx context.Context, spaceID, emojiID int64) error
-	AddMember(ctx context.Context, spaceID, userID int64, roleIDs []int64) error
+	// AddMember writes the whole member row (every column, so nothing from an earlier
+	// membership survives) and the spaces_by_user row. A local join passes MemberProfile{};
+	// a mirror copying the origin's member passes their space profile.
+	AddMember(ctx context.Context, spaceID, userID int64, roleIDs []int64, p MemberProfile) error
 	ListSpacesByUser(ctx context.Context, userID int64) ([]SpaceMemberRow, error)
 	AddSpaceToUserSet(ctx context.Context, userID int64, spaceID int64) error
+	// IsMember, MemberRoleIDs, GetMember, ListMembers and ListMembersPage all treat a row
+	// without joined_at as absent (see liveMember).
 	IsMember(ctx context.Context, spaceID, userID int64) (bool, error)
+	// MemberRoleIDs is the narrow read permission checks use: only role_ids and joined_at,
+	// not the profile text. ok is false when userID is not a member.
+	MemberRoleIDs(ctx context.Context, spaceID, userID int64) (roleIDs []int64, ok bool, err error)
 	ListMembers(ctx context.Context, spaceID int64) ([]SpaceMember, error)
 	ListMembersPage(ctx context.Context, spaceID, after int64, limit int) ([]SpaceMember, error)
 	CountMembers(ctx context.Context, spaceID int64) (int, error)
@@ -113,7 +165,16 @@ type Repository interface {
 	UpdateEveryoneRoleID(ctx context.Context, spaceID, roleID int64) error
 	GetMember(ctx context.Context, spaceID, userID int64) (*SpaceMember, error)
 	SetMemberRoleIDs(ctx context.Context, spaceID, userID int64, roleIDs []int64) error
+	// UpdateMemberProfile sets the profile columns named in p on the member row prev (as
+	// read just before; nil field = leave alone, "" = clear to NULL). It is a lightweight
+	// transaction tied to that membership - IF joined_at = prev.JoinedAt - so it can never
+	// land on a row the member has since left (or left and rejoined); and when it sets the
+	// avatar or banner it also compares that column with prev's value, so two concurrent
+	// uploads cannot both believe they replaced the same image. false = nothing written:
+	// re-read and decide (the member is gone, or the image changed underneath).
+	UpdateMemberProfile(ctx context.Context, spaceID, userID int64, prev *SpaceMember, p MemberProfilePatch) (bool, error)
 	// RemoveMember deletes the space_members row and the matching spaces_by_user row (kick, ban, leave).
+	// Call it through Service.removeMemberRow, which also releases the member's space images.
 	RemoveMember(ctx context.Context, spaceID, userID int64) error
 
 	CreateBan(ctx context.Context, ban *SpaceBan) error
@@ -126,9 +187,9 @@ type Repository interface {
 	ListSpaceRoles(ctx context.Context, spaceID int64) ([]SpaceRole, error)
 	UpdateSpaceRole(ctx context.Context, r *SpaceRole) error
 	// Data-migration support (see backfill.go). ForEachSpaceRole scans every role in
-	// the keyspace; ClaimDataMigration records name and reports whether this call was
-	// the one that claimed it.
-	ForEachSpaceRole(ctx context.Context, fn func(spaceID, roleID int64, name string, permissions int64) error) error
+	// the keyspace (botID is non-zero for a bot's managed role); ClaimDataMigration records
+	// name and reports whether this call was the one that claimed it.
+	ForEachSpaceRole(ctx context.Context, fn func(spaceID, roleID int64, name string, permissions, botID int64) error) error
 	UpdateSpaceRolePermissions(ctx context.Context, spaceID, roleID int64, permissions int64, updatedAt time.Time) error
 	ClaimDataMigration(ctx context.Context, name string) (bool, error)
 	ReleaseDataMigration(ctx context.Context, name string) error
@@ -212,12 +273,11 @@ func (r *repo) GetByIDs(ctx context.Context, ids []int64) ([]*Space, error) {
 	return out, nil
 }
 
-func (r *repo) AddMember(ctx context.Context, spaceID, userID int64, roleIDs []int64) error {
+func (r *repo) AddMember(ctx context.Context, spaceID, userID int64, roleIDs []int64, p MemberProfile) error {
 	now := time.Now().UTC()
 	b := r.session.Batch(gocql.LoggedBatch).WithContext(ctx)
-	stmt, _ := spaceMembersTable.Insert()
-	b.Query(stmt, spaceID, userID, roleIDs, "", now)
-	stmt, _ = spacesByUserTable.Insert()
+	b.Query(insertMemberStmt, memberRowValues(spaceID, userID, roleIDs, p, now)...)
+	stmt, _ := spacesByUserTable.Insert()
 	b.Query(stmt, userID, spaceID, now)
 	return r.session.ExecuteBatch(b)
 }
@@ -263,18 +323,42 @@ func (r *repo) AddSpaceToUserSet(ctx context.Context, userID int64, spaceID int6
 	return err
 }
 
+// IsMember reads only joined_at: it runs on every gateway subscribe, message send and thread
+// check, none of which need the rest of the row.
 func (r *repo) IsMember(ctx context.Context, spaceID, userID int64) (bool, error) {
-	stmt, names := spaceMembersTable.Get()
-	q := r.session.Query(stmt, names).WithContext(ctx)
+	q := r.session.Session.Query(
+		"SELECT joined_at FROM space_members WHERE space_id = ? AND user_id = ?",
+		spaceID, userID,
+	).WithContext(ctx)
 	defer q.Release()
-	var m SpaceMember
-	if err := q.Bind(spaceID, userID).GetRelease(&m); err != nil {
+	var joinedAt time.Time
+	if err := q.Scan(&joinedAt); err != nil {
 		if err == gocql.ErrNotFound {
 			return false, nil
 		}
 		return false, err
 	}
-	return true, nil
+	return !joinedAt.IsZero(), nil
+}
+
+func (r *repo) MemberRoleIDs(ctx context.Context, spaceID, userID int64) ([]int64, bool, error) {
+	q := r.session.Session.Query(
+		"SELECT role_ids, joined_at FROM space_members WHERE space_id = ? AND user_id = ?",
+		spaceID, userID,
+	).WithContext(ctx)
+	defer q.Release()
+	var roleIDs []int64
+	var joinedAt time.Time
+	if err := q.Scan(&roleIDs, &joinedAt); err != nil {
+		if err == gocql.ErrNotFound {
+			return nil, false, nil
+		}
+		return nil, false, err
+	}
+	if joinedAt.IsZero() {
+		return nil, false, nil
+	}
+	return roleIDs, true, nil
 }
 
 // ListMembers returns all members for a space.
@@ -287,7 +371,12 @@ func (r *repo) ListMembers(ctx context.Context, spaceID int64) ([]SpaceMember, e
 	var out []SpaceMember
 	var row SpaceMember
 	for iter.StructScan(&row) {
-		out = append(out, row)
+		if liveMember(&row) {
+			out = append(out, row)
+		}
+		// A fresh struct per row, so a ghost row can never pass the filter on the previous
+		// row's joined_at.
+		row = SpaceMember{}
 	}
 	if err := iter.Close(); err != nil {
 		return nil, err
@@ -296,13 +385,26 @@ func (r *repo) ListMembers(ctx context.Context, spaceID int64) ([]SpaceMember, e
 }
 
 // ListMembersPage returns up to limit members whose user id is above after, in user id
-// order - the clustering order, so a page is one range read.
+// order - the clustering order, so a page is one range read. Ghost rows are skipped without
+// shortening the page (a short page reads as the last one to the caller): when some were
+// dropped, the read continues past them.
 func (r *repo) ListMembersPage(ctx context.Context, spaceID, after int64, limit int) ([]SpaceMember, error) {
-	const stmt = "SELECT space_id, user_id, role_ids, nickname, joined_at FROM space_members WHERE space_id = ? AND user_id > ? LIMIT ?"
-	q := r.session.Query(stmt, nil).WithContext(ctx).Bind(spaceID, after, limit)
 	var out []SpaceMember
-	if err := q.SelectRelease(&out); err != nil {
-		return nil, err
+	for len(out) < limit {
+		want := limit - len(out)
+		var rows []SpaceMember
+		q := r.session.Query(listMembersPageStmt, nil).WithContext(ctx).Bind(spaceID, after, want)
+		if err := q.SelectRelease(&rows); err != nil {
+			return nil, err
+		}
+		n := len(rows)
+		if n > 0 {
+			after = rows[n-1].UserID
+		}
+		out = append(out, liveMembers(rows)...)
+		if n < want {
+			break
+		}
 	}
 	return out, nil
 }
@@ -502,6 +604,9 @@ func (r *repo) GetMember(ctx context.Context, spaceID, userID int64) (*SpaceMemb
 		}
 		return nil, err
 	}
+	if !liveMember(&m) {
+		return nil, nil
+	}
 	return &m, nil
 }
 
@@ -513,6 +618,65 @@ func (r *repo) SetMemberRoleIDs(ctx context.Context, spaceID, userID int64, role
 	err := q.Exec()
 	q.Release()
 	return err
+}
+
+func (r *repo) UpdateMemberProfile(ctx context.Context, spaceID, userID int64, prev *SpaceMember, p MemberProfilePatch) (bool, error) {
+	if !liveMember(prev) {
+		return false, nil
+	}
+	stmt, args := memberProfileUpdate(spaceID, userID, prev, p)
+	if stmt == "" {
+		return true, nil
+	}
+	q := r.session.Session.Query(stmt, args...).WithContext(ctx)
+	defer q.Release()
+	// MapScanCAS for the same reason as ClaimDataMigration: a CAS that loses hands back the
+	// current values of the condition columns, which have to be scanned somewhere.
+	return q.MapScanCAS(map[string]interface{}{})
+}
+
+// memberProfileUpdate builds UpdateMemberProfile's statement: only the columns p sets, in
+// column order, conditioned on prev's membership and, for an image it replaces, on prev's
+// image. "" for no column set.
+func memberProfileUpdate(spaceID, userID int64, prev *SpaceMember, p MemberProfilePatch) (string, []interface{}) {
+	fields := []struct {
+		col string
+		val *string
+	}{
+		{"nickname", p.Nick}, {"avatar", p.Avatar}, {"banner", p.Banner},
+		{"about_me", p.AboutMe}, {"bio", p.Bio}, {"pronouns", p.Pronouns},
+	}
+	var b strings.Builder
+	args := make([]interface{}, 0, len(fields)+5)
+	for _, f := range fields {
+		if f.val == nil {
+			continue
+		}
+		if len(args) == 0 {
+			b.WriteString("UPDATE space_members SET ")
+		} else {
+			b.WriteString(", ")
+		}
+		b.WriteString(f.col)
+		b.WriteString(" = ?")
+		args = append(args, nilIfEmpty(*f.val))
+	}
+	if len(args) == 0 {
+		return "", nil
+	}
+	b.WriteString(" WHERE space_id = ? AND user_id = ? IF joined_at = ?")
+	args = append(args, spaceID, userID, prev.JoinedAt)
+	// prev's "" is a NULL column (empty values are always written as NULL), and "= null" is
+	// how a condition asks for that.
+	if p.Avatar != nil {
+		b.WriteString(" AND avatar = ?")
+		args = append(args, nilIfEmpty(prev.Avatar))
+	}
+	if p.Banner != nil {
+		b.WriteString(" AND banner = ?")
+		args = append(args, nilIfEmpty(prev.Banner))
+	}
+	return b.String(), args
 }
 
 func (r *repo) InsertSpaceRole(ctx context.Context, role *SpaceRole) error {
@@ -560,14 +724,14 @@ func (r *repo) UpdateSpaceRole(ctx context.Context, role *SpaceRole) error {
 	return q.BindStruct(role).ExecRelease()
 }
 
-func (r *repo) ForEachSpaceRole(ctx context.Context, fn func(spaceID, roleID int64, name string, permissions int64) error) error {
-	q := r.session.Session.Query("SELECT space_id, id, name, permissions FROM space_roles").WithContext(ctx)
+func (r *repo) ForEachSpaceRole(ctx context.Context, fn func(spaceID, roleID int64, name string, permissions, botID int64) error) error {
+	q := r.session.Session.Query("SELECT space_id, id, name, permissions, bot_id FROM space_roles").WithContext(ctx)
 	defer q.Release()
 	iter := q.Iter()
-	var spaceID, roleID, perms int64
+	var spaceID, roleID, perms, botID int64
 	var name string
-	for iter.Scan(&spaceID, &roleID, &name, &perms) {
-		if err := fn(spaceID, roleID, name, perms); err != nil {
+	for iter.Scan(&spaceID, &roleID, &name, &perms, &botID) {
+		if err := fn(spaceID, roleID, name, perms, botID); err != nil {
 			_ = iter.Close()
 			return err
 		}

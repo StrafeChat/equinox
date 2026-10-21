@@ -81,6 +81,9 @@ type Federator interface {
 	RemoteUpdateRole(ctx context.Context, origin string, spaceID int64, user *auth.User, roleID int64, in *UpdateSpaceRoleInput) (*SpaceRole, error)
 	RemoteDeleteRole(ctx context.Context, origin string, spaceID int64, user *auth.User, roleID int64) error
 	RemoteSetMemberRoles(ctx context.Context, origin string, spaceID int64, user *auth.User, targetID int64, roleIDs []int64) error
+	// RemoteUpdateMemberProfile changes a space profile at the origin (the member's own, or a
+	// moderator's nickname change or reset of another member's), which makes every check.
+	RemoteUpdateMemberProfile(ctx context.Context, origin string, spaceID int64, user *auth.User, targetID int64, in *MemberProfilePatch) error
 	RemoteModerate(ctx context.Context, origin string, spaceID int64, user *auth.User, action string, targetID int64, reason string) error
 	RemoteListBans(ctx context.Context, origin string, spaceID int64, user *auth.User) ([]SpaceBan, map[int64]*auth.User, error)
 	RemoteListInvites(ctx context.Context, origin string, spaceID int64, user *auth.User) ([]SpaceInvite, map[int64]*auth.User, error)
@@ -470,12 +473,46 @@ type MirrorRoom struct {
 	Overrides RoomOverrides
 }
 
-// MirrorMember is a member as the origin describes them, already a local user id.
+// MirrorMember is a member as the origin describes them, already a local user id. The space
+// profile (Nickname through Pronouns) is the origin's, already clamped to the local limits;
+// "" = no override. It is full state: an empty field clears whatever the mirror had.
 type MirrorMember struct {
 	UserID   int64
 	RoleIDs  []int64
 	Nickname string
+	Avatar   string
+	Banner   string
+	AboutMe  string
+	Bio      string
+	Pronouns string
 	JoinedAt time.Time
+}
+
+// profile is the space profile the origin reported.
+func (m MirrorMember) profile() MemberProfile {
+	return MemberProfile{Nick: m.Nickname, Avatar: m.Avatar, Banner: m.Banner, AboutMe: m.AboutMe, Bio: m.Bio, Pronouns: m.Pronouns}
+}
+
+// mirrorMemberDiffers reports whether the origin's view of a member differs from the stored
+// row: their roles (as a multiset - the order carries nothing) or any of the six space
+// profile fields. A reconcile rewrites only the members it is true for.
+func mirrorMemberDiffers(existing SpaceMember, m MirrorMember) bool {
+	return !multisetEqualInt64(existing.RoleIDs, m.RoleIDs) || existing.Profile() != m.profile()
+}
+
+// StripNicknameControls removes what a nickname may never hold - control characters
+// (newlines, tabs), the line and paragraph separators U+2028/U+2029, and bidi embeddings,
+// overrides and isolates: forbiddenNicknameRune, the set validNickname refuses - from one
+// another instance relayed. The origin already refuses these; a mirror strips rather than
+// refuses, so one bad value from a peer costs a few characters of a nickname instead of
+// the whole member.
+func StripNicknameControls(s string) string {
+	return strings.Map(func(r rune) rune {
+		if forbiddenNicknameRune(r) {
+			return -1
+		}
+		return r
+	}, s)
 }
 
 // RoomOrder is one room's place in the channel list.
@@ -608,7 +645,7 @@ func (s *Service) ReconcileMirror(ctx context.Context, spec *MirrorSpec) (remove
 			if err := s.AddMirrorMember(ctx, spaceID, m); err != nil {
 				return nil, err
 			}
-		} else if !multisetEqualInt64(existing.RoleIDs, m.RoleIDs) {
+		} else if mirrorMemberDiffers(existing, m) {
 			if err := s.UpdateMirrorMember(ctx, spaceID, m); err != nil {
 				return nil, err
 			}
@@ -688,8 +725,11 @@ func (s *Service) CreateMirror(ctx context.Context, spec *MirrorSpec) error {
 	return nil
 }
 
+// putMirrorMember writes the origin's member row whole - roles and space profile in the one
+// INSERT, every column bound - so a row left over from a membership the mirror missed the
+// end of (a lost remove relay, a rejoin) cannot keep its old nickname or images.
 func (s *Service) putMirrorMember(ctx context.Context, spaceID int64, m MirrorMember) error {
-	if err := s.repo.AddMember(ctx, spaceID, m.UserID, m.RoleIDs); err != nil {
+	if err := s.repo.AddMember(ctx, spaceID, m.UserID, m.RoleIDs, m.profile()); err != nil {
 		return err
 	}
 	// Shadows get the space in their users.spaces set too: that set is what presence
@@ -709,6 +749,11 @@ func (s *Service) AddMirrorMember(ctx context.Context, spaceID int64, m MirrorMe
 	if sp == nil {
 		return ErrSpaceNotFound
 	}
+	// An "add" for a row that is already here overwrites it, but never releases an image it
+	// replaces: relayed state is not ordered against the other relays, the captured reply to
+	// a manage op or a resync, so an older "add" can arrive after a newer image, which the
+	// origin and every other mirror still show. Releasing what was replaced is left to
+	// ForwardMemberProfile, after the origin has accepted the write, and to removal.
 	if err := s.putMirrorMember(ctx, spaceID, m); err != nil {
 		return err
 	}
@@ -730,39 +775,119 @@ func (s *Service) AnnounceMirrorMember(ctx context.Context, spaceID, userID int6
 	s.publishMemberAdd(ctx, sp, userID)
 }
 
-// UpdateMirrorMember applies a member change the origin reported (roles).
+// errMirrorProfileRace: a relayed member update kept losing its compare-and-set to other
+// writes of the same row. Deliberately not an HTTPError sentinel: the relay is answered 500,
+// which the origin's outbox retries (a 4xx would drop it for good).
+var errMirrorProfileRace = errors.New("the member's space profile kept changing while a relayed update was applied")
+
+// UpdateMirrorMember applies a member change the origin reported: their roles and their
+// space profile, both full state. Only what differs is written; an update that changes
+// nothing writes and announces nothing. It never releases an image the update replaces:
+// relays are not ordered against each other (the outbox, the captured reply to a manage op,
+// a resync), so the state arriving may be older than the row's, and the image it replaces
+// may be the one the origin and every other mirror show now. ForwardMemberProfile releases
+// what this instance's own write replaced, once the origin has accepted it.
 func (s *Service) UpdateMirrorMember(ctx context.Context, spaceID int64, m MirrorMember) error {
 	existing, err := s.repo.GetMember(ctx, spaceID, m.UserID)
 	if err != nil {
 		return err
 	}
 	if existing == nil {
-		return s.AddMirrorMember(ctx, spaceID, m)
+		// Not a member here: most likely removed by a relay the origin sent after this one
+		// (a kick that overtook the captured reply to the member's own profile change).
+		// Re-adding them would undo the removal, and keep a banned member receiving the
+		// space's events until the next resync; a member the mirror really lacks is added by
+		// the resync instead (ReconcileMirror adds anyone it does not have).
+		return nil
 	}
-	if err := s.repo.SetMemberRoleIDs(ctx, spaceID, m.UserID, m.RoleIDs); err != nil {
+	if !mirrorMemberDiffers(*existing, m) {
+		return nil
+	}
+	if !multisetEqualInt64(existing.RoleIDs, m.RoleIDs) {
+		if err := s.repo.SetMemberRoleIDs(ctx, spaceID, m.UserID, m.RoleIDs); err != nil {
+			return err
+		}
+	}
+	// The profile write is tied to the row just read (its membership and, for an image, its
+	// old value). Only relays write a mirror's profile, so losing the compare-and-set means
+	// two of them crossed (a manage reply and the outbox, or a resync); a fresh read settles
+	// it, and ends the loop at once when the other one already wrote this same state.
+	want := m.profile()
+	cur := existing
+	for attempt := 0; cur.Profile() != want; attempt++ {
+		applied, err := s.repo.UpdateMemberProfile(ctx, spaceID, m.UserID, cur, profileDiff(cur.Profile(), want))
+		if err != nil {
+			return err
+		}
+		if applied {
+			break
+		}
+		fresh, err := s.repo.GetMember(ctx, spaceID, m.UserID)
+		if err != nil {
+			return err
+		}
+		if fresh == nil {
+			// Removed meanwhile, by a relay the origin sent later: this update is stale, and
+			// re-adding the member would undo the removal.
+			return nil
+		}
+		if attempt >= 2 {
+			return errMirrorProfileRace
+		}
+		cur = fresh
+	}
+	updated, err := s.repo.GetMember(ctx, spaceID, m.UserID)
+	if err != nil {
 		return err
 	}
-	s.publishSpaceEvent(ctx, spaceID, "SPACE_MEMBER_UPDATE", map[string]interface{}{
-		"user_id":  id.Format(m.UserID),
-		"role_ids": formatRoleIDStrings(m.RoleIDs),
-	})
+	if updated == nil {
+		return nil
+	}
+	s.publishMemberUpdate(ctx, spaceID, updated)
 	return nil
 }
 
 // RemoveMirrorMember applies a removal the origin reported (kick, ban, leave) and tells
-// the member's sessions and the rest of the space, like a local removal.
+// the member's sessions and the rest of the space, like a local removal. Their space
+// profile goes with the row, and the images this instance stored for it are released.
 func (s *Service) RemoveMirrorMember(ctx context.Context, spaceID, userID int64) error {
-	ok, err := s.repo.IsMember(ctx, spaceID, userID)
+	existing, err := s.repo.GetMember(ctx, spaceID, userID)
 	if err != nil {
 		return err
 	}
-	if !ok {
+	if existing == nil {
 		return nil
 	}
-	if err := s.repo.RemoveMember(ctx, spaceID, userID); err != nil {
+	if err := s.removeMemberRow(ctx, spaceID, userID, existing); err != nil {
 		return err
 	}
 	s.publishMemberRemoved(ctx, spaceID, userID)
+	return nil
+}
+
+// ForwardMemberProfile is a mirror's space-profile write: forward asks the space's origin
+// (the member.profile op), which makes every check and whose relay updates the row here.
+// Once the origin has accepted the patch, the images this instance stored for the member
+// that the patch replaced are released - the only release a mirror makes on a profile
+// write, because it is the only one tied to an ordered fact: the row read before asking is
+// what the member had here, and the origin then overwrote whatever it had with the patch.
+// An image on this CDN for this member came from an upload here, under a fresh key, so
+// nothing sets the replaced one again. Relayed state releases nothing (UpdateMirrorMember),
+// so a reset made on another instance leaks the image here instead of deleting a live one.
+// A forward that fails releases nothing either: it may still have reached the origin.
+func (s *Service) ForwardMemberProfile(ctx context.Context, spaceID, targetID int64, in *MemberProfilePatch, forward func() error) error {
+	if in == nil {
+		return ErrNothingToPatch
+	}
+	// Only the release needs the row; failing to read it is a leak, not a refusal.
+	before, err := s.repo.GetMember(ctx, spaceID, targetID)
+	logMirror(err, spaceID, "read member before forwarding a profile change")
+	if err := forward(); err != nil {
+		return err
+	}
+	if before != nil {
+		s.releaseMemberBlobs(ctx, spaceID, targetID, before.Profile(), in.Apply(before.Profile()))
+	}
 	return nil
 }
 

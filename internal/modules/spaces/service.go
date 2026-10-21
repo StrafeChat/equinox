@@ -152,7 +152,7 @@ func (s *Service) CreateSpace(ctx context.Context, actorID int64, in *CreateSpac
 	if err := s.repo.UpdateEveryoneRoleID(ctx, spaceID, everyoneRID); err != nil {
 		return nil, err
 	}
-	if err := s.repo.AddMember(ctx, spaceID, actorID, []int64{everyoneRID}); err != nil {
+	if err := s.repo.AddMember(ctx, spaceID, actorID, []int64{everyoneRID}, MemberProfile{}); err != nil {
 		return nil, err
 	}
 	if err := s.repo.AddSpaceToUserSet(ctx, actorID, spaceID); err != nil {
@@ -466,14 +466,14 @@ func (s *Service) VisibleSpaceRooms(ctx context.Context, userID, spaceID int64) 
 	var base int64
 	var roleIDs []int64
 	if !privileged {
-		mem, err := s.repo.GetMember(ctx, spaceID, userID)
+		ids, ok, err := s.repo.MemberRoleIDs(ctx, spaceID, userID)
 		if err != nil {
 			return nil, snap, err
 		}
-		if mem == nil {
+		if !ok {
 			return nil, snap, nil
 		}
-		roleIDs = mem.RoleIDs
+		roleIDs = ids
 		base = snap.basePermissions(roleIDs)
 		privileged = permissions.Has(base, permissions.PermAdministrator)
 	}
@@ -758,14 +758,14 @@ func (s *Service) canModerateMember(ctx context.Context, spaceID, actorID, targe
 	if err != nil {
 		return err
 	}
-	targetMem, err := s.repo.GetMember(ctx, spaceID, targetUserID)
+	targetRoles, ok, err := s.repo.MemberRoleIDs(ctx, spaceID, targetUserID)
 	if err != nil {
 		return err
 	}
-	if targetMem == nil {
+	if !ok {
 		return ErrNotMember
 	}
-	if highestRolePosition(targetMem.RoleIDs, everyoneID, byID) >= actorHighest {
+	if highestRolePosition(targetRoles, everyoneID, byID) >= actorHighest {
 		return ErrRoleHierarchy
 	}
 	return nil
@@ -807,7 +807,7 @@ func (s *Service) KickMember(ctx context.Context, actorID, spaceID, targetUserID
 	if err := s.canModerateMember(ctx, spaceID, actorID, targetUserID, permissions.PermKickMembers); err != nil {
 		return err
 	}
-	if err := s.repo.RemoveMember(ctx, spaceID, targetUserID); err != nil {
+	if err := s.removeMemberRow(ctx, spaceID, targetUserID, nil); err != nil {
 		return err
 	}
 	s.afterMemberRemoved(ctx, spaceID, targetUserID)
@@ -866,7 +866,9 @@ func (s *Service) BanMember(ctx context.Context, actorID, spaceID, targetUserID 
 		return err
 	}
 	if wasMember {
-		if err := s.repo.RemoveMember(ctx, spaceID, targetUserID); err != nil {
+		// removeMemberRow, not repo.RemoveMember: it also releases the member's space-profile
+		// images, which nothing else would ever delete once the row is gone.
+		if err := s.removeMemberRow(ctx, spaceID, targetUserID, nil); err != nil {
 			return err
 		}
 		s.afterMemberRemoved(ctx, spaceID, targetUserID)
@@ -988,7 +990,7 @@ func (s *Service) LeaveSpace(ctx context.Context, actorID, spaceID int64) error 
 	if !ok {
 		return ErrNotMember
 	}
-	if err := s.repo.RemoveMember(ctx, spaceID, actorID); err != nil {
+	if err := s.removeMemberRow(ctx, spaceID, actorID, nil); err != nil {
 		return err
 	}
 	s.afterMemberRemoved(ctx, spaceID, actorID)

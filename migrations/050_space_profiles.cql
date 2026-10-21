@@ -1,0 +1,15 @@
+-- Space profiles (Discord's server profiles). A member's per-space nickname already lives in
+-- space_members.nickname (013, unused until now); these columns are the rest of the per-space
+-- profile. Each one overrides the member's global profile inside this one space only:
+--   avatar, banner - URLs of images on Nebula (normally under spaces/members/<space>/<user>/)
+--   about_me, bio  - same limits as the global profile (190 characters each)
+--   pronouns       - free text, 40 characters
+-- NULL (or '') = no override, so the global value shows. They live on the member row on purpose:
+-- leaving, being kicked or banned, or the space being deleted removes the row and with it the
+-- whole space profile. Nothing about a former member's space profile is kept.
+--
+-- One statement, so a failed run retries cleanly from the top (Scylla accepts the parenthesised
+-- multi-column ADD; checked on a scratch keyspace). Apply it before starting API/gateway
+-- binaries that know these columns: they select them on every full member read (member
+-- lists, joins, kicks, role edits), which fail against a keyspace without them.
+ALTER TABLE space_members ADD (avatar text, banner text, about_me text, bio text, pronouns text);

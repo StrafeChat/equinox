@@ -6,6 +6,7 @@ package pushdir
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"time"
 
@@ -149,4 +150,15 @@ func (d *Directory) CanView(ctx context.Context, userID int64, room *push.RoomIn
 		return false, err
 	}
 	return permissions.Has(perms, permissions.PermViewRoom), nil
+}
+
+// MemberProfile reads the member row, which carries the space profile. GetMember answers
+// nil for someone who is not (or no longer) a member, so they keep their global profile.
+func (d *Directory) MemberProfile(ctx context.Context, spaceID, userID int64) (*push.MemberProfile, error) {
+	m, err := d.spaces.GetMember(ctx, spaceID, userID)
+	if err != nil || m == nil {
+		return nil, err
+	}
+	// Old rows hold "" for no nickname; trimming also keeps a blank one from naming anyone.
+	return &push.MemberProfile{Nick: strings.TrimSpace(m.Nickname), Avatar: m.Avatar}, nil
 }

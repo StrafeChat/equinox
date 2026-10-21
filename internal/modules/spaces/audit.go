@@ -46,12 +46,26 @@ const (
 	AuditMemberVoiceDisconnect = "member_voice_disconnect"
 )
 
+// Space profiles (member_profile.go); targets are user ids.
+const (
+	// A moderator changed or cleared another member's nickname: changes are
+	// {"nick": {"old", "new"}}, a side left out when empty. A member's own changes are
+	// never logged (the server keeps no nickname history).
+	AuditMemberNickUpdate = "member_nick_update"
+	// A moderator reset another member's space profile: changes are {"fields": [...]}, the
+	// profile fields (avatar, banner, about_me, bio, pronouns) that were set and are now
+	// cleared. The values themselves are not kept.
+	AuditMemberProfileReset = "member_profile_reset"
+)
+
 // userTargetActions are the actions whose target_id is a user id (hydrated on read).
 var userTargetActions = map[string]bool{
 	AuditMemberKick:            true,
 	AuditMemberBanAdd:          true,
 	AuditMemberBanRemove:       true,
 	AuditMemberRolesUpdate:     true,
+	AuditMemberNickUpdate:      true,
+	AuditMemberProfileReset:    true,
 	AuditBotAdd:                true,
 	AuditMemberVoiceMute:       true,
 	AuditMemberVoiceDeafen:     true,
@@ -103,6 +117,22 @@ func (s *Service) audit(ctx context.Context, spaceID, actorID int64, action, tar
 			enc = string(raw)
 		}
 	}
+	s.auditEncoded(ctx, spaceID, actorID, action, targetID, enc, reason)
+}
+
+// auditFields is audit for an entry whose changes are a list of field names rather than
+// before/after pairs (member_profile_reset: {"fields": [...]}).
+func (s *Service) auditFields(ctx context.Context, spaceID, actorID int64, action, targetID string, fields []string, reason string) {
+	var enc string
+	if len(fields) > 0 {
+		if raw, err := json.Marshal(map[string][]string{"fields": fields}); err == nil {
+			enc = string(raw)
+		}
+	}
+	s.auditEncoded(ctx, spaceID, actorID, action, targetID, enc, reason)
+}
+
+func (s *Service) auditEncoded(ctx context.Context, spaceID, actorID int64, action, targetID, enc, reason string) {
 	e := &SpaceAuditEntry{
 		SpaceID:    spaceID,
 		ID:         id.Next(),

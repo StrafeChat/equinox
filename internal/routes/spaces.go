@@ -50,6 +50,13 @@ func SetupSpacesRoutes(d Deps) {
 		spaceSvc.SetFederator(d.Federation)
 		d.Federation.SetSpaces(spaceSvc)
 	}
+	// Nicknames: @everyone may change their own, roles that can kick or ban may manage others'
+	// (runs once per keyspace). After the federator is wired, not before like the two above:
+	// it skips spaces this instance only mirrors and relays the roles it changes, and both
+	// need the federator to know which spaces those are.
+	if err := spaceSvc.BackfillNicknamePermissions(context.Background()); err != nil {
+		logger.Err("spaces", err, map[string]any{"step": "backfill nickname permissions"})
+	}
 	spaceHandler := spaces.NewHandler(spaceSvc, d.Config)
 
 	// Public: invite preview and the server widget (no auth)
@@ -72,6 +79,12 @@ func SetupSpacesRoutes(d Deps) {
 	e.Get("", spaceHandler.ListMyEmojis)
 	e.Get("/:emojiId", spaceHandler.GetEmojiByID)
 	r.Get("/:id/members", perUserLimiter(30, time.Minute), spaceHandler.Members)
+	// Space profiles: one member (":userId" may be "@me"), a profile edit, and the caller's
+	// own space avatar and banner uploads.
+	r.Get("/:id/members/:userId", perUserLimiter(60, time.Minute), spaceHandler.GetMember)
+	r.Patch("/:id/members/:userId", perUserLimiter(20, time.Minute), spaceHandler.PatchMember)
+	r.Post("/:id/members/@me/avatar", perUserLimiter(10, time.Minute), spaceHandler.PostMemberAvatar)
+	r.Post("/:id/members/@me/banner", perUserLimiter(10, time.Minute), spaceHandler.PostMemberBanner)
 	r.Delete("/:id/members/:userId", spaceHandler.KickMember)
 	r.Put("/:id/members/:userId/roles", spaceHandler.PutMemberRoles)
 	r.Post("/:id/bans/:userId", spaceHandler.BanMember)

@@ -304,13 +304,15 @@ type memDir struct {
 	hidden map[[2]int64]bool
 	// revoked sessions.
 	revoked map[[2]int64]bool
+	// profiles: space profiles by (space, user); a missing entry is a non-member.
+	profiles map[[2]int64]*MemberProfile
 }
 
 func newMemDir() *memDir {
 	return &memDir{
 		users: map[int64]*UserInfo{}, rooms: map[int64]*RoomInfo{}, members: map[int64][]int64{},
 		settings: map[[2]int64]*RoomSettings{}, spaces: map[int64]*SpaceInfo{}, roles: map[int64]map[int64]string{},
-		hidden: map[[2]int64]bool{}, revoked: map[[2]int64]bool{},
+		hidden: map[[2]int64]bool{}, revoked: map[[2]int64]bool{}, profiles: map[[2]int64]*MemberProfile{},
 	}
 }
 
@@ -331,6 +333,9 @@ func (d *memDir) RoleNames(_ context.Context, id int64) (map[int64]string, error
 }
 func (d *memDir) CanView(_ context.Context, userID int64, room *RoomInfo) (bool, error) {
 	return !d.hidden[[2]int64{userID, room.ID}], nil
+}
+func (d *memDir) MemberProfile(_ context.Context, spaceID, userID int64) (*MemberProfile, error) {
+	return d.profiles[[2]int64{spaceID, userID}], nil
 }
 
 // newTestService is a Service over in-memory storage whose sender trusts the fake push

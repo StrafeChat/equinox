@@ -35,13 +35,16 @@ type jobCtx struct {
 	roleNames map[int64]string
 	members   []int64
 	membersOK bool
+	// profiles are space profiles in the room's space, by user (nil = none); only a space
+	// room looks them up.
+	profiles map[int64]*MemberProfile
 
 	previewOnce sync.Once
 	preview     string
 }
 
 func newJobCtx(s *Service, j *job) *jobCtx {
-	jc := &jobCtx{s: s, job: j, users: map[int64]*UserInfo{}, rooms: map[int64]*RoomInfo{}}
+	jc := &jobCtx{s: s, job: j, users: map[int64]*UserInfo{}, rooms: map[int64]*RoomInfo{}, profiles: map[int64]*MemberProfile{}}
 	if j.Message != nil {
 		jc.mentioned = make(map[int64]struct{}, len(j.Message.Mentioned))
 		for _, uid := range j.Message.Mentioned {
@@ -101,8 +104,37 @@ func (jc *jobCtx) user(ctx context.Context, userID int64) *UserInfo {
 	return u
 }
 
-// previewNames for renderPreview, through the job's caches.
+// spaceProfile looks a user's space profile in the room's space up once per job: nil
+// outside a space, for a non-member, and for someone with no profile there.
+func (jc *jobCtx) spaceProfile(ctx context.Context, userID int64) *MemberProfile {
+	if jc.room == nil || jc.room.SpaceID == 0 {
+		return nil
+	}
+	jc.mu.Lock()
+	p, ok := jc.profiles[userID]
+	jc.mu.Unlock()
+	if ok {
+		return p
+	}
+	p, err := jc.s.dir.MemberProfile(ctx, jc.room.SpaceID, userID)
+	if err != nil {
+		// The global profile is a fine stand-in, and it is kept for the rest of the job: a
+		// hundred recipients must not mean a hundred failing reads.
+		logger.Err("push", err, map[string]any{"user_id": userID, "space_id": jc.room.SpaceID, "step": "load space profile"})
+		p = nil
+	}
+	jc.mu.Lock()
+	jc.profiles[userID] = p
+	jc.mu.Unlock()
+	return p
+}
+
+// previewNames for renderPreview, through the job's caches. In a space a mention reads as
+// the member's nickname there, as the clients render it.
 func (jc *jobCtx) userName(ctx context.Context, userID int64) (string, bool) {
+	if p := jc.spaceProfile(ctx, userID); p != nil && p.Nick != "" {
+		return p.Nick, true
+	}
 	if u := jc.user(ctx, userID); u != nil {
 		return u.Name(), true
 	}
@@ -221,18 +253,32 @@ func (jc *jobCtx) conversationName(ctx context.Context, recipient int64) string 
 	}
 }
 
-// author is the "a" object for a sender or caller.
+// author is the "a" object for a sender or caller. In a space room their space nickname and
+// avatar, where set, replace the global ones; a PM always shows the global profile.
 func (jc *jobCtx) author(ctx context.Context, userID int64) *Author {
 	a := &Author{ID: formatID(userID), Name: "Someone"}
 	if u := jc.user(ctx, userID); u != nil {
 		if n := u.Name(); n != "" {
 			a.Name = n
 		}
-		if strings.HasPrefix(u.Avatar, "https://") || strings.HasPrefix(u.Avatar, "http://") {
+		if httpURL(u.Avatar) {
 			a.Avatar = u.Avatar
 		}
 	}
+	if p := jc.spaceProfile(ctx, userID); p != nil {
+		if p.Nick != "" {
+			a.Name = p.Nick
+		}
+		if httpURL(p.Avatar) {
+			a.Avatar = p.Avatar
+		}
+	}
 	return a
+}
+
+// httpURL: the device loads the avatar itself, so only a web URL is worth sending.
+func httpURL(s string) bool {
+	return strings.HasPrefix(s, "https://") || strings.HasPrefix(s, "http://")
 }
 
 // basePayload is the routing part every room-scoped payload carries; read adds the

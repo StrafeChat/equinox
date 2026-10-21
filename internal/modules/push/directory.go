@@ -24,6 +24,9 @@ type Directory interface {
 	// View Room). A message in a private channel fans out to the whole space's member
 	// list; only those who can read it may be told about it.
 	CanView(ctx context.Context, userID int64, room *RoomInfo) (bool, error)
+	// MemberProfile is the user's space profile in a space, as far as a notification shows
+	// it; nil when the user is not a member.
+	MemberProfile(ctx context.Context, spaceID, userID int64) (*MemberProfile, error)
 }
 
 // UserInfo is the slice of an account the decision and the payload need.
@@ -86,4 +89,12 @@ type SpaceInfo struct {
 	Name string
 	// DefaultMentionsOnly: the space's default_message_notifications is "only mentions".
 	DefaultMentionsOnly bool
+}
+
+// MemberProfile is the part of a member's space profile a push shows. Inside that space it
+// replaces the global name and avatar, as every client does there; empty = no override.
+type MemberProfile struct {
+	Nick string
+	// Avatar is an absolute URL, or empty.
+	Avatar string
 }

@@ -12,7 +12,7 @@ import (
 // Space owner gets full channel permissions (bypasses room denies). Administrator bit bypasses room denies.
 //
 // Roles and overrides come from the space snapshot (one Redis read when cached); the only
-// per-call database read is the member row.
+// per-call database read is the member's role ids (MemberRoleIDs, not the whole row).
 func (s *Service) EffectiveChannelPermissions(ctx context.Context, userID, spaceID, roomID int64) (int64, error) {
 	snap, err := s.permissionSnapshot(ctx, spaceID, roomID)
 	if err != nil {
@@ -21,16 +21,16 @@ func (s *Service) EffectiveChannelPermissions(ctx context.Context, userID, space
 	if snap.OwnerID == userID {
 		return permissions.AllRoom, nil
 	}
-	mem, err := s.repo.GetMember(ctx, spaceID, userID)
-	if err != nil || mem == nil {
+	roleIDs, ok, err := s.repo.MemberRoleIDs(ctx, spaceID, userID)
+	if err != nil || !ok {
 		return 0, ErrNotMember
 	}
-	base := snap.basePermissions(mem.RoleIDs)
+	base := snap.basePermissions(roleIDs)
 	if permissions.Has(base, permissions.PermAdministrator) {
 		return permissions.AllRoom, nil
 	}
 	ov := snap.EffectiveRoomOverrides(roomID)
-	perms := resolveEffectiveRoomPermissions(base, snap.EveryoneRoleID, mem.RoleIDs, userID, ov.Roles, ov.Users)
+	perms := resolveEffectiveRoomPermissions(base, snap.EveryoneRoleID, roleIDs, userID, ov.Roles, ov.Users)
 	// A private thread exists only for its members and Manage Threads holders (Discord's rule);
 	// everyone else gets nothing there, not even View.
 	if m, ok := snap.Meta[roomID]; ok && m.Thread && m.Private && !permissions.Has(perms, permissions.PermManageThreads) {
@@ -120,11 +120,11 @@ func (s *Service) SpacePermissionBase(ctx context.Context, userID, spaceID int64
 	if snap.OwnerID == userID {
 		return permissions.AllSpace, nil
 	}
-	mem, err := s.repo.GetMember(ctx, spaceID, userID)
-	if err != nil || mem == nil {
+	roleIDs, ok, err := s.repo.MemberRoleIDs(ctx, spaceID, userID)
+	if err != nil || !ok {
 		return 0, ErrNotMember
 	}
-	base := snap.basePermissions(mem.RoleIDs)
+	base := snap.basePermissions(roleIDs)
 	if permissions.Has(base, permissions.PermAdministrator) {
 		return permissions.AllSpace, nil
 	}

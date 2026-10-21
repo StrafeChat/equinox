@@ -199,12 +199,20 @@ type SpaceEmojiRef struct {
 // MaxEmojisPerSpace caps a space's custom emoji.
 const MaxEmojisPerSpace = 50
 
-// SpaceMember is a user's membership in a space.
+// SpaceMember is a user's membership in a space. Nickname and the five fields after it are
+// the member's space profile (see member_profile.go): each overrides the global profile in
+// this space only, and "" means no override. They live on the membership row so they go
+// with it when the member leaves.
 type SpaceMember struct {
 	SpaceID  int64     `db:"space_id"`
 	UserID   int64     `db:"user_id"`
 	RoleIDs  []int64   `db:"role_ids"`
 	Nickname string    `db:"nickname"`
+	Avatar   string    `db:"avatar"`
+	Banner   string    `db:"banner"`
+	AboutMe  string    `db:"about_me"`
+	Bio      string    `db:"bio"`
+	Pronouns string    `db:"pronouns"`
 	JoinedAt time.Time `db:"joined_at"`
 }
 

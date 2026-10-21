@@ -134,13 +134,13 @@ func (s *Service) memberRoleContext(ctx context.Context, spaceID, actorID int64)
 	for i := range roles {
 		byID[roles[i].ID] = &roles[i]
 	}
-	mem, err := s.repo.GetMember(ctx, spaceID, actorID)
+	roleIDs, ok, err := s.repo.MemberRoleIDs(ctx, spaceID, actorID)
 	if err != nil {
 		return 0, nil, 0, err
 	}
 	actorHighest = -1
-	if mem != nil {
-		actorHighest = highestRolePosition(mem.RoleIDs, everyoneID, byID)
+	if ok {
+		actorHighest = highestRolePosition(roleIDs, everyoneID, byID)
 	}
 	return everyoneID, byID, actorHighest, nil
 }
@@ -421,10 +421,14 @@ func (s *Service) SetMemberRoles(ctx context.Context, actorID, spaceID, targetUs
 	if err := s.repo.SetMemberRoleIDs(ctx, spaceID, targetUserID, out); err != nil {
 		return err
 	}
-	s.publishSpaceEvent(ctx, spaceID, "SPACE_MEMBER_UPDATE", map[string]interface{}{
-		"user_id":  id.Format(targetUserID),
-		"role_ids": formatRoleIDStrings(out),
-	})
+	// The event is the member's full state (roles and space profile), read back after the
+	// write so it reflects anything else that changed meanwhile.
+	if fresh, err := s.repo.GetMember(ctx, spaceID, targetUserID); err == nil && fresh != nil {
+		mem = fresh
+	} else {
+		mem.RoleIDs = out
+	}
+	s.publishMemberUpdate(ctx, spaceID, mem)
 	s.fedMemberUpdated(ctx, spaceID, targetUserID)
 	s.audit(ctx, spaceID, actorID, AuditMemberRolesUpdate, id.Format(targetUserID), map[string]change{
 		"roles": {New: formatRoleIDStrings(out)},

@@ -64,6 +64,19 @@ const (
 	PermManageThreads         int64 = 1 << 27
 )
 
+// Nicknames (appended after threads; space-scoped, never a room override). Change Nickname: a
+// member may set or clear their own nickname in the space (on for @everyone, as on Discord).
+// Manage Nicknames: change or clear other members' nicknames and reset (clear, never set) the
+// rest of their space profiles, subject to the role hierarchy; and set your own nickname.
+// Only the owner may change the owner's nickname or profile.
+//
+// Bit 30 is the last one the web client's 32-bit bitwise maths can hold (bit 31 is its sign
+// bit); anything past 30 needs the client to move off `&`/`|` first.
+const (
+	PermChangeNickname  int64 = 1 << 28
+	PermManageNicknames int64 = 1 << 29
+)
+
 // AllThreads is every thread bit; DefaultThreads is what @everyone gets: start public
 // threads and talk in threads.
 const (
@@ -80,9 +93,11 @@ const AllVoice = PermConnect | PermSpeak | PermVideo | PermMuteMembers | PermDea
 const DefaultVoice = PermConnect | PermSpeak | PermVideo | PermUseVAD
 
 // DefaultEveryone is @everyone for new spaces: Discord's defaults for a member with no
-// roles - can view/talk/react/invite and use voice, cannot manage anything or mass-mention.
+// roles - can view/talk/react/invite, use voice and set their own nickname, cannot manage
+// anything or mass-mention.
 const DefaultEveryone = PermViewRoom | PermSendMessages | PermReadMessageHistory |
-	PermAddReactions | PermUseExternalEmojis | PermCreateInvite | PermAttachFiles | DefaultThreads | DefaultVoice
+	PermAddReactions | PermUseExternalEmojis | PermCreateInvite | PermAttachFiles | DefaultThreads | DefaultVoice |
+	PermChangeNickname
 
 // AllRoom is every room-scoped bit: space owner's implicit permissions in any room, and
 // what Administrator resolves to for EffectiveChannelPermissions.
@@ -93,7 +108,8 @@ const AllRoom = PermViewRoom | PermSendMessages | PermReadMessageHistory |
 // AllSpace is every space-scoped bit: space owner's implicit permissions, and what
 // Administrator resolves to for SpacePermissionBase.
 const AllSpace = AllRoom | PermManageRoles | PermManageRooms | PermKickMembers |
-	PermBanMembers | PermAdministrator | PermManageSpace | PermCreateInvite | PermManageEmojis
+	PermBanMembers | PermAdministrator | PermManageSpace | PermCreateInvite | PermManageEmojis |
+	PermChangeNickname | PermManageNicknames
 
 // ApplyOverwrites applies Discord-style allow/deny overwrites in order (each step: clear deny, then set allow).
 func ApplyOverwrites(base int64, overwrites []struct{ Allow, Deny int64 }) int64 {

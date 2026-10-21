@@ -427,6 +427,43 @@ type manageMemberRoles struct {
 	Roles []string `json:"roles"`
 }
 
+// member.profile: a change to one member's space profile - the asking member's own, or, as a
+// moderator, another member's nickname and clearing the rest. Each field is nil (absent from
+// the JSON: unchanged) or a value, "" being a clear; the origin runs every check.
+type manageMemberProfile struct {
+	User     string  `json:"user"` // FID of the member whose profile changes (the actor's own for a self edit)
+	Nick     *string `json:"nick,omitempty"`
+	Avatar   *string `json:"avatar,omitempty"`
+	Banner   *string `json:"banner,omitempty"`
+	AboutMe  *string `json:"about_me,omitempty"`
+	Bio      *string `json:"bio,omitempty"`
+	Pronouns *string `json:"pronouns,omitempty"`
+}
+
+// memberProfileParams is the member.profile op for a patch on the member fid.
+func memberProfileParams(fid string, in *spaces.MemberProfilePatch) manageMemberProfile {
+	return manageMemberProfile{
+		User: fid, Nick: in.Nick, Avatar: in.Avatar, Banner: in.Banner,
+		AboutMe: in.AboutMe, Bio: in.Bio, Pronouns: in.Pronouns,
+	}
+}
+
+// patch is the op as the spaces service takes it. An image the asking instance sets is the
+// URL of an upload it stored on its own CDN; all this side can hold it to is being an http(s)
+// URL within the local limit, so nothing else (a javascript: URL, say) reaches a browser.
+// Only the member themself may set one, which the service enforces.
+func (p manageMemberProfile) patch() (*spaces.MemberProfilePatch, error) {
+	for _, v := range []*string{p.Avatar, p.Banner} {
+		if v != nil && strings.TrimSpace(*v) != "" && memberImageURL(*v) == "" {
+			return nil, errBadParams
+		}
+	}
+	return &spaces.MemberProfilePatch{
+		Nick: p.Nick, Avatar: p.Avatar, Banner: p.Banner,
+		AboutMe: p.AboutMe, Bio: p.Bio, Pronouns: p.Pronouns,
+	}, nil
+}
+
 type manageMember struct {
 	User   string `json:"user"`
 	Reason string `json:"reason,omitempty"`
@@ -717,6 +754,26 @@ func (s *Service) manageAt(ctx context.Context, sp *spaces.Space, actor *auth.Us
 			roleIDs = append(roleIDs, rid)
 		}
 		return nil, svc.SetMemberRoles(ctx, actor.ID, spaceID, target, roleIDs)
+	case "member.profile":
+		// The same call a local PATCH makes, as the asking member: Change / Manage Nicknames,
+		// the role hierarchy, the owner rule, and images and text set only by the member
+		// themself (a moderator only clears them). spaceActor already tied the actor to the
+		// asking instance, so with that last rule an instance sets space images only for its
+		// own users. The relay this write causes for the asker is captured into the reply.
+		var p manageMemberProfile
+		if err := decodeParams(params, &p); err != nil {
+			return nil, err
+		}
+		target, err := s.ResolveLocalID(ctx, p.User)
+		if err != nil {
+			return nil, err
+		}
+		in, err := p.patch()
+		if err != nil {
+			return nil, err
+		}
+		_, err = svc.UpdateMemberProfile(ctx, actor.ID, spaceID, target, in)
+		return nil, err
 	case "member.kick", "member.ban", "member.unban":
 		var p manageMember
 		if err := decodeParams(params, &p); err != nil {
@@ -1198,6 +1255,36 @@ func (s *Service) RemoteSetMemberRoles(ctx context.Context, origin string, space
 		p.Roles = append(p.Roles, id.Format(rid))
 	}
 	return s.manage(ctx, origin, spaceID, user, "member.roles", p, nil)
+}
+
+// RemoteUpdateMemberProfile changes a space profile at the origin, which makes every check;
+// the relay its write produces updates the row here before this returns. in is already
+// normalized; an image in it is on this instance's CDN (the member uploaded it here). Once
+// the origin accepts, ForwardMemberProfile releases the images here the patch replaced.
+func (s *Service) RemoteUpdateMemberProfile(ctx context.Context, origin string, spaceID int64, user *auth.User, targetID int64, in *spaces.MemberProfilePatch) error {
+	if in == nil || in.Empty() {
+		return spaces.ErrNothingToPatch
+	}
+	// Giving another member's avatar, bio and so on a value is refused whatever anyone's
+	// roles are - it depends on the request alone - so refuse it here, as the sentinel the
+	// REST handler answers with its machine-readable code, instead of as a relayed message.
+	if user.ID != targetID {
+		for _, v := range []*string{in.Avatar, in.Banner, in.AboutMe, in.Bio, in.Pronouns} {
+			if v != nil && *v != "" {
+				return spaces.ErrNotOwnProfile
+			}
+		}
+	}
+	fid, err := s.fidOfLocal(ctx, targetID)
+	if err != nil {
+		if errors.Is(err, spaces.ErrNotMember) {
+			return spaces.ErrMemberNotFound // the target, not the caller, is unknown
+		}
+		return err
+	}
+	return s.spaceSvc.ForwardMemberProfile(ctx, spaceID, targetID, in, func() error {
+		return s.manage(ctx, origin, spaceID, user, "member.profile", memberProfileParams(fid, in), nil)
+	})
 }
 
 func (s *Service) RemoteModerate(ctx context.Context, origin string, spaceID int64, user *auth.User, action string, targetID int64, reason string) error {
