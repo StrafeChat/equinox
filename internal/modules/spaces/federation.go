@@ -80,7 +80,15 @@ type Federator interface {
 	RemoteCreateRole(ctx context.Context, origin string, spaceID int64, user *auth.User, in *CreateSpaceRoleInput) (*SpaceRole, error)
 	RemoteUpdateRole(ctx context.Context, origin string, spaceID int64, user *auth.User, roleID int64, in *UpdateSpaceRoleInput) (*SpaceRole, error)
 	RemoteDeleteRole(ctx context.Context, origin string, spaceID int64, user *auth.User, roleID int64) error
+	// RemoteReorderRoles moves roles at the origin (ReorderSpaceRoles there, which makes every
+	// check) and returns the space's roles as the origin answered them.
+	RemoteReorderRoles(ctx context.Context, origin string, spaceID int64, user *auth.User, moves []RolePosition) ([]SpaceRole, error)
 	RemoteSetMemberRoles(ctx context.Context, origin string, spaceID int64, user *auth.User, targetID int64, roleIDs []int64) error
+	// RemoteChangeMemberRole gives a member one role at the origin (add) or takes it away, as
+	// one set operation there (AddMemberRole / RemoveMemberRole, which make every check). When
+	// the origin predates the operation it returns ErrOriginLacksOperation, and the caller
+	// sends the member's whole list with RemoteSetMemberRoles instead.
+	RemoteChangeMemberRole(ctx context.Context, origin string, spaceID int64, user *auth.User, targetID, roleID int64, add bool) error
 	// RemoteUpdateMemberProfile changes a space profile at the origin (the member's own, or a
 	// moderator's nickname change or reset of another member's), which makes every check.
 	RemoteUpdateMemberProfile(ctx context.Context, origin string, spaceID int64, user *auth.User, targetID int64, in *MemberProfilePatch) error
@@ -172,6 +180,10 @@ var (
 	ErrOriginUnavailable = errors.New("the instance hosting this space could not be reached")
 	// ErrFederationOff: an invite code names another instance but this one doesn't federate.
 	ErrFederationOff = errors.New("this instance does not federate with other instances")
+	// ErrOriginLacksOperation: the instance hosting the space predates the management
+	// operation a mirror asked it for. The caller falls back to an older one that every
+	// origin has; it never reaches a client.
+	ErrOriginLacksOperation = errors.New("the instance hosting this space does not support this operation")
 )
 
 // OriginError is the origin instance's refusal of a forwarded request, passed through to

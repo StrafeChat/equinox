@@ -324,6 +324,14 @@ type UpdateSpaceRoleInput struct {
 	Mentionable *bool   `json:"mentionable,omitempty"`
 }
 
+// RolePosition is one entry of a role reorder (PATCH /spaces/:id/roles, Discord's Modify Guild
+// Role Positions): a custom role and the position it is asked to take. Where it lands is
+// placeRoles' decision - an occupied slot is taken and its occupant goes above it.
+type RolePosition struct {
+	RoleID   int64
+	Position int
+}
+
 // PutRoomRoleOverrideInput sets channel overrides for a role in a room.
 type PutRoomRoleOverrideInput struct {
 	Allow int64 `json:"allow"`

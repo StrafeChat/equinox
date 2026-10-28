@@ -165,6 +165,11 @@ type Repository interface {
 	UpdateEveryoneRoleID(ctx context.Context, spaceID, roleID int64) error
 	GetMember(ctx context.Context, spaceID, userID int64) (*SpaceMember, error)
 	SetMemberRoleIDs(ctx context.Context, spaceID, userID int64, roleIDs []int64) error
+	// AddMemberRoleID / RemoveMemberRoleID add or take away one role with a set operation on
+	// role_ids instead of rewriting the whole set, so two single-role changes to one member at
+	// once (two bots handing out roles) both land rather than the later overwriting the earlier.
+	AddMemberRoleID(ctx context.Context, spaceID, userID, roleID int64) error
+	RemoveMemberRoleID(ctx context.Context, spaceID, userID, roleID int64) error
 	// UpdateMemberProfile sets the profile columns named in p on the member row prev (as
 	// read just before; nil field = leave alone, "" = clear to NULL). It is a lightweight
 	// transaction tied to that membership - IF joined_at = prev.JoinedAt - so it can never
@@ -618,6 +623,30 @@ func (r *repo) SetMemberRoleIDs(ctx context.Context, spaceID, userID int64, role
 	err := q.Exec()
 	q.Release()
 	return err
+}
+
+// The single-role set operations (role_ids is a set<bigint>, so + is a union and - a
+// difference; neither reads the row).
+const (
+	addMemberRoleStmt    = "UPDATE space_members SET role_ids = role_ids + ? WHERE space_id = ? AND user_id = ?"
+	removeMemberRoleStmt = "UPDATE space_members SET role_ids = role_ids - ? WHERE space_id = ? AND user_id = ?"
+)
+
+func (r *repo) AddMemberRoleID(ctx context.Context, spaceID, userID, roleID int64) error {
+	return r.memberRoleSetOp(ctx, addMemberRoleStmt, spaceID, userID, roleID)
+}
+
+func (r *repo) RemoveMemberRoleID(ctx context.Context, spaceID, userID, roleID int64) error {
+	return r.memberRoleSetOp(ctx, removeMemberRoleStmt, spaceID, userID, roleID)
+}
+
+// memberRoleSetOp runs one of the set statements above. Like SetMemberRoleIDs it is a plain
+// write: racing the member's removal it can leave a row without joined_at, which every member
+// read already treats as absent (see liveMember).
+func (r *repo) memberRoleSetOp(ctx context.Context, stmt string, spaceID, userID, roleID int64) error {
+	q := r.session.Session.Query(stmt, []int64{roleID}, spaceID, userID).WithContext(ctx)
+	defer q.Release()
+	return q.Exec()
 }
 
 func (r *repo) UpdateMemberProfile(ctx context.Context, spaceID, userID int64, prev *SpaceMember, p MemberProfilePatch) (bool, error) {

@@ -57,6 +57,11 @@ func SetupSpacesRoutes(d Deps) {
 	if err := spaceSvc.BackfillNicknamePermissions(context.Background()); err != nil {
 		logger.Err("spaces", err, map[string]any{"step": "backfill nickname permissions"})
 	}
+	// Role positions: unique and >= 1 in every space hosted here, legacy ties settled with the
+	// newer role below (runs once per keyspace). After the federator, for the same reasons.
+	if err := spaceSvc.BackfillRolePositions(context.Background()); err != nil {
+		logger.Err("spaces", err, map[string]any{"step": "backfill role positions"})
+	}
 	spaceHandler := spaces.NewHandler(spaceSvc, d.Config)
 
 	// Public: invite preview and the server widget (no auth)
@@ -86,7 +91,13 @@ func SetupSpacesRoutes(d Deps) {
 	r.Post("/:id/members/@me/avatar", perUserLimiter(10, time.Minute), spaceHandler.PostMemberAvatar)
 	r.Post("/:id/members/@me/banner", perUserLimiter(10, time.Minute), spaceHandler.PostMemberBanner)
 	r.Delete("/:id/members/:userId", spaceHandler.KickMember)
-	r.Put("/:id/members/:userId/roles", spaceHandler.PutMemberRoles)
+	// A member's roles: the whole list, or one role added / removed (Discord's Add / Remove
+	// Guild Member Role, what role bots call). One budget across the three, so alternating
+	// between them buys nothing.
+	memberRolesLimit := perUserLimiter(120, time.Minute)
+	r.Put("/:id/members/:userId/roles", memberRolesLimit, spaceHandler.PutMemberRoles)
+	r.Put("/:id/members/:userId/roles/:roleId", memberRolesLimit, spaceHandler.PutMemberRole)
+	r.Delete("/:id/members/:userId/roles/:roleId", memberRolesLimit, spaceHandler.DeleteMemberRole)
 	r.Post("/:id/bans/:userId", spaceHandler.BanMember)
 	r.Delete("/:id/bans/:userId", spaceHandler.UnbanMember)
 	r.Get("/:id/bans", spaceHandler.ListBans)
@@ -94,6 +105,8 @@ func SetupSpacesRoutes(d Deps) {
 	r.Post("/:id/transfer-ownership", spaceHandler.TransferOwnership)
 	r.Get("/:id/roles", spaceHandler.ListRoles)
 	r.Post("/:id/roles", perUserLimiter(20, time.Minute), spaceHandler.CreateRole)
+	// Role positions in one request (Discord's Modify Guild Role Positions).
+	r.Patch("/:id/roles", spaceHandler.ReorderRoles)
 	r.Patch("/:id/roles/:roleId", spaceHandler.UpdateRole)
 	r.Delete("/:id/roles/:roleId", spaceHandler.DeleteRole)
 	r.Get("/:id/rooms/:roomId/overrides", spaceHandler.ListRoomOverrides)

@@ -13,25 +13,27 @@ import (
 )
 
 var (
-	ErrRoleNotFound           = errors.New("role not found")
-	ErrCannotEditEveryone     = errors.New("cannot rename or delete the @everyone role")
-	ErrMissingPerm            = errors.New("missing permission")
-	ErrInvalidRoom            = errors.New("room not in this space")
-	ErrInvalidSlowmode        = errors.New("invalid slowmode")
-	ErrInvalidRoomType        = errors.New("invalid room type")
-	ErrInvalidReorder         = errors.New("invalid room order")
-	ErrInvalidRoleName        = errors.New("role name must be 1-100 characters and not @everyone")
-	ErrInvalidRoomName        = errors.New("room name must be at most 100 characters")
-	ErrTooManyRoles           = errors.New("a space can have at most 250 roles")
-	ErrTooManyRooms           = errors.New("a space can have at most 500 rooms")
-	ErrInvalidTopic           = errors.New("topic must be at most 1024 characters")
-	ErrInvalidUserLimit       = errors.New("user limit must be 0 (unlimited) to 99")
-	ErrInvalidBitrate         = errors.New("bitrate must be 8000-384000 bits per second, or 0 for the default")
-	ErrCannotChangeOwnerRoles = errors.New("cannot change roles of the space owner")
-	// ErrRoleHierarchy mirrors Discord: a non-owner can't manage a role at or above their own
-	// highest role's position, and can't act on a member whose highest role outranks theirs.
-	// Otherwise a Manage Roles holder could create an Administrator role and grant it to
-	// themselves, or edit/demote staff above them.
+	ErrRoleNotFound       = errors.New("role not found")
+	ErrCannotEditEveryone = errors.New("cannot rename or delete the @everyone role")
+	ErrMissingPerm        = errors.New("missing permission")
+	ErrInvalidRoom        = errors.New("room not in this space")
+	ErrInvalidSlowmode    = errors.New("invalid slowmode")
+	ErrInvalidRoomType    = errors.New("invalid room type")
+	ErrInvalidReorder     = errors.New("invalid room order")
+	ErrInvalidRoleName    = errors.New("role name must be 1-100 characters and not @everyone")
+	ErrInvalidRoomName    = errors.New("room name must be at most 100 characters")
+	ErrTooManyRoles       = errors.New("a space can have at most 250 roles")
+	ErrTooManyRooms       = errors.New("a space can have at most 500 rooms")
+	ErrInvalidTopic       = errors.New("topic must be at most 1024 characters")
+	ErrInvalidUserLimit   = errors.New("user limit must be 0 (unlimited) to 99")
+	ErrInvalidBitrate     = errors.New("bitrate must be 8000-384000 bits per second, or 0 for the default")
+	// ErrEveryoneRole: every member holds @everyone, so it is never added or removed by hand.
+	ErrEveryoneRole = errors.New("every member has the @everyone role; it cannot be added or removed")
+	// ErrRoleHierarchy mirrors Discord: a non-owner can't create into, edit, move, delete, grant
+	// or remove a role at or above their own highest role's position (whoever the member is -
+	// granting depends on the role alone), and can't kick, ban or rename a member whose highest
+	// role is at or above theirs. Otherwise a Manage Roles holder could create an Administrator
+	// role and grant it to themselves, or demote staff above them.
 	ErrRoleHierarchy = errors.New("cannot manage a role or member at or above your own highest role")
 	// ErrPermissionEscalation mirrors Discord's other rule: you can only hand out
 	// permissions you hold yourself. Without it a Manage Roles holder could set
@@ -118,31 +120,43 @@ func highestRolePosition(roleIDs []int64, everyoneID int64, byID map[int64]*Spac
 // memberRoleContext loads what role-hierarchy checks need: the @everyone id, a role
 // lookup map, and the actor's own highest role position (irrelevant if actor is owner).
 func (s *Service) memberRoleContext(ctx context.Context, spaceID, actorID int64) (everyoneID int64, byID map[int64]*SpaceRole, actorHighest int, err error) {
-	sp, err := s.repo.GetByID(ctx, spaceID)
+	_, everyoneID, byID, actorHighest, err = s.roleContext(ctx, spaceID, actorID)
+	return everyoneID, byID, actorHighest, err
+}
+
+// roleContext is memberRoleContext with the space it read.
+func (s *Service) roleContext(ctx context.Context, spaceID, actorID int64) (sp *Space, everyoneID int64, byID map[int64]*SpaceRole, actorHighest int, err error) {
+	sp, err = s.repo.GetByID(ctx, spaceID)
 	if err != nil || sp == nil {
-		return 0, nil, 0, ErrSpaceNotFound
+		return nil, 0, nil, 0, ErrSpaceNotFound
 	}
 	everyoneID, err = s.ensureEveryoneRoleID(ctx, sp)
 	if err != nil {
-		return 0, nil, 0, err
+		return nil, 0, nil, 0, err
 	}
 	roles, err := s.repo.ListSpaceRoles(ctx, spaceID)
 	if err != nil {
-		return 0, nil, 0, err
+		return nil, 0, nil, 0, err
 	}
-	byID = make(map[int64]*SpaceRole, len(roles))
-	for i := range roles {
-		byID[roles[i].ID] = &roles[i]
+	byID = indexRoles(roles)
+	actorHighest, err = s.actorHighestPosition(ctx, spaceID, actorID, everyoneID, byID)
+	if err != nil {
+		return nil, 0, nil, 0, err
 	}
+	return sp, everyoneID, byID, actorHighest, nil
+}
+
+// actorHighestPosition is the position of the actor's highest role among byID, excluding
+// @everyone: -1 when they hold no other role or are not a member.
+func (s *Service) actorHighestPosition(ctx context.Context, spaceID, actorID, everyoneID int64, byID map[int64]*SpaceRole) (int, error) {
 	roleIDs, ok, err := s.repo.MemberRoleIDs(ctx, spaceID, actorID)
 	if err != nil {
-		return 0, nil, 0, err
+		return 0, err
 	}
-	actorHighest = -1
-	if ok {
-		actorHighest = highestRolePosition(roleIDs, everyoneID, byID)
+	if !ok {
+		return -1, nil
 	}
-	return everyoneID, byID, actorHighest, nil
+	return highestRolePosition(roleIDs, everyoneID, byID), nil
 }
 
 // ListSpaceRoles returns all roles in a space. Any member may list.
@@ -158,6 +172,12 @@ func (s *Service) ListSpaceRoles(ctx context.Context, actorID, spaceID int64) ([
 }
 
 // CreateSpaceRole creates a custom role. Requires ManageRoles (or owner via SpacePermissionBase).
+//
+// The role goes in at position 1, just above @everyone (Discord's default), and the run of
+// roles directly above it moves up one. That puts it below every custom role there is - so a
+// bot or moderator can hand out, edit and delete the role they just made - and it is why a
+// non-owner must hold a custom role to create one: without one, the new role would sit above
+// them. The response carries the role's final position.
 func (s *Service) CreateSpaceRole(ctx context.Context, actorID, spaceID int64, in *CreateSpaceRoleInput) (*SpaceRole, error) {
 	if origin, actor, err := s.remoteSpace(ctx, actorID, spaceID); err != nil {
 		return nil, err
@@ -178,10 +198,12 @@ func (s *Service) CreateSpaceRole(ctx context.Context, actorID, spaceID int64, i
 	if err != nil || sp == nil {
 		return nil, ErrSpaceNotFound
 	}
-	_, err = s.ensureEveryoneRoleID(ctx, sp)
+	everyoneID, err := s.ensureEveryoneRoleID(ctx, sp)
 	if err != nil {
 		return nil, err
 	}
+	unlock := lockRoles(spaceID)
+	defer unlock()
 	existing, err := s.repo.ListSpaceRoles(ctx, spaceID)
 	if err != nil {
 		return nil, err
@@ -189,41 +211,50 @@ func (s *Service) CreateSpaceRole(ctx context.Context, actorID, spaceID int64, i
 	if len(existing) >= MaxRolesPerSpace {
 		return nil, ErrTooManyRoles
 	}
-	maxPos := 0
-	for _, r := range existing {
-		if r.Position > maxPos {
-			maxPos = r.Position
+	if sp.OwnerID != actorID {
+		// Position 1 is below every role at 1 or higher (placeRoles puts the new role first
+		// among equals), so this is exactly "the new role ends up below the actor".
+		highest, err := s.actorHighestPosition(ctx, spaceID, actorID, everyoneID, indexRoles(existing))
+		if err != nil {
+			return nil, err
+		}
+		if highest < 1 {
+			return nil, ErrRoleHierarchy
 		}
 	}
-	rid := id.Next()
 	now := time.Now().UTC()
-	role := &SpaceRole{
+	role := SpaceRole{
 		SpaceID:     spaceID,
-		ID:          rid,
+		ID:          id.Next(),
 		Name:        name,
 		Permissions: in.Permissions,
-		Position:    maxPos + 1,
+		Position:    1,
 		Color:       in.Color,
 		Hoist:       in.Hoist,
 		Mentionable: in.Mentionable,
 		CreatedAt:   now,
 		UpdatedAt:   now,
 	}
-	if err := s.repo.InsertSpaceRole(ctx, role); err != nil {
+	roles := append(existing, role)
+	all, err := s.applyRoleOrder(ctx, sp, everyoneID, roles, placeRoles(roles, everyoneID, map[int64]int{role.ID: 1}), role.ID, true, true)
+	if err != nil {
 		return nil, err
 	}
-	s.invalidateSnapshot(ctx, spaceID)
-	s.publishSpaceEvent(ctx, spaceID, "SPACE_ROLE_CREATE", spaceRoleEventData(role))
-	s.fedRoleChanged(ctx, spaceID, role, false)
-	s.audit(ctx, spaceID, actorID, AuditRoleCreate, id.Format(role.ID), map[string]change{
-		"name":        {New: role.Name},
-		"permissions": {New: role.Permissions},
+	created := findRole(all, role.ID)
+	s.publishSpaceEvent(ctx, spaceID, "SPACE_ROLE_CREATE", spaceRoleEventData(created))
+	s.audit(ctx, spaceID, actorID, AuditRoleCreate, id.Format(created.ID), map[string]change{
+		"name":        {New: created.Name},
+		"permissions": {New: created.Permissions},
 	}, "")
-	return role, nil
+	return created, nil
 }
 
 // UpdateSpaceRole updates a role. @everyone may only have permissions changed (not name).
-// Non-owners cannot edit a role at or above their own highest role (Discord-style hierarchy).
+// Non-owners cannot edit a role at or above their own highest role (Discord-style hierarchy),
+// nor move one to or above it. A new position is a swap (swapRoles): the role takes the slot
+// it asked for and the role holding it takes the moved role's old one, so no two roles ever
+// share a position and clients that reorder with one such request per role, reusing the slots
+// the roles hold, end where they meant. (PATCH /spaces/:id/roles, the batch, inserts instead.)
 func (s *Service) UpdateSpaceRole(ctx context.Context, actorID, spaceID, roleID int64, in *UpdateSpaceRoleInput) (*SpaceRole, error) {
 	if origin, actor, err := s.remoteSpace(ctx, actorID, spaceID); err != nil {
 		return nil, err
@@ -241,13 +272,22 @@ func (s *Service) UpdateSpaceRole(ctx context.Context, actorID, spaceID, roleID 
 	if err != nil {
 		return nil, err
 	}
-	role, err := s.repo.GetSpaceRole(ctx, spaceID, roleID)
-	if err != nil || role == nil {
+	// Held for the whole read-modify-write, not only for a move: the role's row is written
+	// whole, and a position read before another write moved it would be written back over it.
+	unlock := lockRoles(spaceID)
+	defer unlock()
+	roles, err := s.repo.ListSpaceRoles(ctx, spaceID)
+	if err != nil {
+		return nil, err
+	}
+	byID := indexRoles(roles)
+	role := byID[roleID]
+	if role == nil {
 		return nil, ErrRoleNotFound
 	}
 	before := *role
 	if roleID != everyoneID && sp.OwnerID != actorID {
-		_, _, actorHighest, err := s.memberRoleContext(ctx, spaceID, actorID)
+		actorHighest, err := s.actorHighestPosition(ctx, spaceID, actorID, everyoneID, byID)
 		if err != nil {
 			return nil, err
 		}
@@ -265,8 +305,11 @@ func (s *Service) UpdateSpaceRole(ctx context.Context, actorID, spaceID, roleID 
 			return nil, ErrCannotEditEveryone
 		}
 		if in.Position != nil {
-			return nil, ErrCannotEditEveryone
+			return nil, ErrCannotMoveEveryone
 		}
+	}
+	if in.Position != nil && !validRolePosition(*in.Position) {
+		return nil, ErrInvalidRolePosition
 	}
 	if in.Name != nil && roleID != everyoneID {
 		n := strings.TrimSpace(*in.Name)
@@ -284,9 +327,6 @@ func (s *Service) UpdateSpaceRole(ctx context.Context, actorID, spaceID, roleID 
 		}
 		role.Permissions = *in.Permissions
 	}
-	if in.Position != nil && roleID != everyoneID {
-		role.Position = *in.Position
-	}
 	if in.Color != nil {
 		role.Color = *in.Color
 	}
@@ -296,24 +336,27 @@ func (s *Service) UpdateSpaceRole(ctx context.Context, actorID, spaceID, roleID 
 	if in.Mentionable != nil {
 		role.Mentionable = *in.Mentionable
 	}
-	role.UpdatedAt = time.Now().UTC()
-	if err := s.repo.UpdateSpaceRole(ctx, role); err != nil {
+	var placed map[int64]int
+	if in.Position != nil {
+		placed = swapRoles(roles, everyoneID, roleID, *in.Position)
+	}
+	all, err := s.applyRoleOrder(ctx, sp, everyoneID, roles, placed, roleID, false, true)
+	if err != nil {
 		return nil, err
 	}
-	s.invalidateSnapshot(ctx, spaceID)
-	s.publishSpaceEvent(ctx, spaceID, "SPACE_ROLE_UPDATE", spaceRoleEventData(role))
-	s.fedRoleChanged(ctx, spaceID, role, false)
+	updated := findRole(all, roleID)
+	s.publishSpaceEvent(ctx, spaceID, "SPACE_ROLE_UPDATE", spaceRoleEventData(updated))
 	changes := map[string]change{}
-	diff(changes, "name", before.Name, role.Name)
-	diff(changes, "permissions", before.Permissions, role.Permissions)
-	diff(changes, "position", before.Position, role.Position)
-	diff(changes, "color", before.Color, role.Color)
-	diff(changes, "hoist", before.Hoist, role.Hoist)
-	diff(changes, "mentionable", before.Mentionable, role.Mentionable)
+	diff(changes, "name", before.Name, updated.Name)
+	diff(changes, "permissions", before.Permissions, updated.Permissions)
+	diff(changes, "position", before.Position, updated.Position)
+	diff(changes, "color", before.Color, updated.Color)
+	diff(changes, "hoist", before.Hoist, updated.Hoist)
+	diff(changes, "mentionable", before.Mentionable, updated.Mentionable)
 	if len(changes) > 0 {
 		s.audit(ctx, spaceID, actorID, AuditRoleUpdate, id.Format(roleID), changes, "")
 	}
-	return role, nil
+	return updated, nil
 }
 
 // DeleteSpaceRole removes a custom role.
@@ -337,6 +380,10 @@ func (s *Service) DeleteSpaceRole(ctx context.Context, actorID, spaceID, roleID 
 	if roleID == everyoneID {
 		return ErrCannotEditEveryone
 	}
+	// Under the role lock: a reorder that read this role before the delete would otherwise
+	// write its position back afterwards, recreating part of the row.
+	unlock := lockRoles(spaceID)
+	defer unlock()
 	role, err := s.repo.GetSpaceRole(ctx, spaceID, roleID)
 	if err != nil {
 		return err
@@ -370,14 +417,13 @@ func (s *Service) DeleteSpaceRole(ctx context.Context, actorID, spaceID, roleID 
 
 // SetMemberRoles replaces a member's roles. Caller must ManageRoles. @everyone is added if missing.
 //
-// Discord-style hierarchy, with the same carve-out Discord makes for yourself:
-//   - Only the owner may change the owner's roles - but they *may*, which is how the owner
-//     gives themselves a colour or a hoisted title.
-//   - A non-owner may edit their own roles too (you do not outrank yourself), and anyone
-//     else whose highest role is below their own.
-//   - Either way, a role at or above the actor's own highest can neither be handed out nor
-//     taken away: roles the target already holds up there are carried over untouched,
-//     matching the locked checkboxes the client draws for them.
+// Discord's rule: what may be given or taken away depends on the roles alone, never on the
+// member. A role strictly below the actor's highest can be given to or taken from anyone - the
+// owner, a member who outranks the actor, the actor themself (which is how a moderator, or the
+// owner, gives themselves a colour or a hoisted title). A role at or above the actor's highest
+// can be neither: roles the member already holds up there are carried over untouched, matching
+// the locked checkboxes the client draws for them. The owner is above the hierarchy and may
+// change any role. Kick, ban and nicknames act on the member and still check the member's rank.
 func (s *Service) SetMemberRoles(ctx context.Context, actorID, spaceID, targetUserID int64, roleIDs []int64) error {
 	if origin, actor, err := s.remoteSpace(ctx, actorID, spaceID); err != nil {
 		return err
@@ -391,10 +437,6 @@ func (s *Service) SetMemberRoles(ctx context.Context, actorID, spaceID, targetUs
 	if err != nil || sp == nil {
 		return ErrSpaceNotFound
 	}
-	isSelf := actorID == targetUserID
-	if sp.OwnerID == targetUserID && !isSelf {
-		return ErrCannotChangeOwnerRoles
-	}
 	mem, err := s.repo.GetMember(ctx, spaceID, targetUserID)
 	if err != nil || mem == nil {
 		return ErrNotMember
@@ -404,9 +446,6 @@ func (s *Service) SetMemberRoles(ctx context.Context, actorID, spaceID, targetUs
 		return err
 	}
 	isOwner := sp.OwnerID == actorID
-	if !isOwner && !isSelf && highestRolePosition(mem.RoleIDs, everyoneID, byID) >= actorHighest {
-		return ErrRoleHierarchy
-	}
 	// A bot's own role is nobody else's to hold, and nobody's to take away from the bot.
 	for _, rid := range roleIDs {
 		if r := byID[rid]; r != nil && r.IsManaged() && r.BotID != targetUserID {
@@ -434,6 +473,133 @@ func (s *Service) SetMemberRoles(ctx context.Context, actorID, spaceID, targetUs
 		"roles": {New: formatRoleIDStrings(out)},
 	}, "")
 	return nil
+}
+
+// AddMemberRole gives a member one role (PUT /spaces/:id/members/:userId/roles/:roleId,
+// Discord's Add Guild Member Role); RemoveMemberRole takes one away (DELETE). The rules are
+// SetMemberRoles': Manage Roles, a role strictly below the actor's highest (the owner: any),
+// never @everyone, never a bot's managed role, whatever the member's own rank. A member who
+// already holds the role (or, removing, does not) is success with nothing written or sent.
+// The write is one set operation, so single-role changes racing each other all land.
+func (s *Service) AddMemberRole(ctx context.Context, actorID, spaceID, targetID, roleID int64) error {
+	return s.changeMemberRole(ctx, actorID, spaceID, targetID, roleID, true)
+}
+
+// RemoveMemberRole: see AddMemberRole.
+func (s *Service) RemoveMemberRole(ctx context.Context, actorID, spaceID, targetID, roleID int64) error {
+	return s.changeMemberRole(ctx, actorID, spaceID, targetID, roleID, false)
+}
+
+func (s *Service) changeMemberRole(ctx context.Context, actorID, spaceID, targetID, roleID int64, add bool) error {
+	origin, actor, err := s.remoteSpace(ctx, actorID, spaceID)
+	if err != nil {
+		return err
+	}
+	// On a mirror too: the checks read the mirrored roles, so a change the origin would refuse
+	// is refused the same way here even when nothing would be forwarded (the member already
+	// has the role) - and removing a role above the actor is refused, not sent as a list the
+	// origin would quietly carry that role over in.
+	mem, everyoneID, byID, err := s.checkMemberRoleChange(ctx, actorID, spaceID, targetID, roleID)
+	if err != nil {
+		return err
+	}
+	if hasRoleID(mem.RoleIDs, roleID) == add {
+		return nil
+	}
+	next := withRoleID(mem.RoleIDs, byID, everyoneID, roleID, add)
+	if origin != "" {
+		// The origin makes the one change as a set operation, like the write below, so two
+		// single-role changes racing each other both land there too; the result comes back as
+		// a relay. An origin from before that operation takes the whole list instead, built
+		// from the row here (the origin's relayed state): a read-modify-write that a change
+		// racing it can undo, but one every origin understands.
+		err := s.fed.RemoteChangeMemberRole(ctx, origin, spaceID, actor, targetID, roleID, add)
+		if errors.Is(err, ErrOriginLacksOperation) {
+			return s.fed.RemoteSetMemberRoles(ctx, origin, spaceID, actor, targetID, next)
+		}
+		return err
+	}
+	if add {
+		err = s.repo.AddMemberRoleID(ctx, spaceID, targetID, roleID)
+	} else {
+		err = s.repo.RemoveMemberRoleID(ctx, spaceID, targetID, roleID)
+	}
+	if err != nil {
+		return err
+	}
+	// The event is the member's full state, read back after the write (see SetMemberRoles).
+	fresh, rerr := s.repo.GetMember(ctx, spaceID, targetID)
+	if rerr != nil {
+		fresh = mem
+		fresh.RoleIDs = append([]int64{everyoneID}, next...)
+	} else if fresh == nil {
+		// Left or was removed meanwhile: there is no member to tell anyone about.
+		return nil
+	}
+	s.publishMemberUpdate(ctx, spaceID, fresh)
+	s.fedMemberUpdated(ctx, spaceID, targetID)
+	s.audit(ctx, spaceID, actorID, AuditMemberRolesUpdate, id.Format(targetID), map[string]change{
+		"roles": {New: formatRoleIDStrings(fresh.RoleIDs)},
+	}, "")
+	return nil
+}
+
+// checkMemberRoleChange applies the single-role rules (see AddMemberRole) and returns the
+// target's member row, the space's @everyone id and its roles by id.
+func (s *Service) checkMemberRoleChange(ctx context.Context, actorID, spaceID, targetID, roleID int64) (*SpaceMember, int64, map[int64]*SpaceRole, error) {
+	if err := s.canManageRoles(ctx, actorID, spaceID); err != nil {
+		return nil, 0, nil, err
+	}
+	sp, everyoneID, byID, actorHighest, err := s.roleContext(ctx, spaceID, actorID)
+	if err != nil {
+		return nil, 0, nil, err
+	}
+	if roleID == everyoneID {
+		return nil, 0, nil, ErrEveryoneRole
+	}
+	role := byID[roleID]
+	if role == nil {
+		return nil, 0, nil, ErrRoleNotFound
+	}
+	if role.IsManaged() {
+		return nil, 0, nil, ErrManagedRole
+	}
+	if sp.OwnerID != actorID && role.Position >= actorHighest {
+		return nil, 0, nil, ErrRoleHierarchy
+	}
+	mem, err := s.repo.GetMember(ctx, spaceID, targetID)
+	if err != nil {
+		return nil, 0, nil, err
+	}
+	if mem == nil {
+		return nil, 0, nil, ErrNotMember
+	}
+	return mem, everyoneID, byID, nil
+}
+
+func hasRoleID(roleIDs []int64, roleID int64) bool {
+	for _, rid := range roleIDs {
+		if rid == roleID {
+			return true
+		}
+	}
+	return false
+}
+
+// withRoleID is a member's role list with roleID added or removed - the list SetMemberRoles
+// takes: without @everyone, which every write adds back, and without the ids of roles deleted
+// since (a member row keeps them), which SetMemberRoles would refuse as unknown.
+func withRoleID(roleIDs []int64, byID map[int64]*SpaceRole, everyoneID, roleID int64, add bool) []int64 {
+	out := make([]int64, 0, len(roleIDs)+1)
+	for _, rid := range roleIDs {
+		if rid != everyoneID && rid != roleID && byID[rid] != nil {
+			out = append(out, rid)
+		}
+	}
+	if add {
+		out = append(out, roleID)
+	}
+	return out
 }
 
 // resolveMemberRoles turns a requested role list into the set to store: @everyone first,

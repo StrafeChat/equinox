@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/StrafeChat/equinox/internal/id"
+	"github.com/StrafeChat/equinox/internal/logger"
 	"github.com/StrafeChat/equinox/internal/modules/auth"
 	"github.com/StrafeChat/equinox/internal/modules/permissions"
 	"github.com/StrafeChat/equinox/internal/stargate"
@@ -182,14 +183,11 @@ func (s *Service) InstallBot(ctx context.Context, actorID, spaceID, botUserID, p
 		return 0, err
 	}
 	if roleCreated {
-		// The bot's role went in at the bottom and every other custom role moved up one:
-		// one SPACE_UPDATE with the full role list keeps every client's copy exact.
+		// The bot's role went in at the bottom, pushing up the run of roles directly above
+		// it: one SPACE_UPDATE with the full role list brings every client both.
 		s.invalidateSnapshot(ctx, spaceID)
 		if roles, err := s.SpaceRoles(ctx, spaceID); err == nil {
-			payload := spaceToEventPayload(sp)
-			payload["everyone_role_id"] = id.Format(eid)
-			payload["roles"] = RoleMaps(roles)
-			s.publishSpaceEvent(ctx, spaceID, "SPACE_UPDATE", payload)
+			s.publishRoleOrder(ctx, sp, eid, roles)
 		}
 	}
 	s.audit(ctx, spaceID, actorID, AuditBotAdd, id.Format(botUserID), map[string]change{
@@ -198,31 +196,33 @@ func (s *Service) InstallBot(ctx context.Context, actorID, spaceID, botUserID, p
 	return granted, nil
 }
 
-// createBotRole inserts the bot's role just above @everyone (position 1), shifting every
-// other custom role up by one - Discord's placement, and what keeps the role below the
-// person who installed the bot so they can still edit or delete it.
+// createBotRole adds the bot's managed role at position 1, just above @everyone - Discord's
+// placement, which keeps it below the person who installed the bot so they can still edit or
+// delete it (and the owner drags it above the roles the bot should hand out). placeRoles
+// pushes up only the run of roles directly above it. Nothing is announced here: the caller
+// sends one SPACE_UPDATE once the bot holds the role.
 func (s *Service) createBotRole(ctx context.Context, sp *Space, everyoneID int64, bot *auth.User, perms int64) (*SpaceRole, error) {
+	unlock := lockRoles(sp.ID)
+	defer unlock()
 	existing, err := s.repo.ListSpaceRoles(ctx, sp.ID)
 	if err != nil {
 		return nil, err
 	}
-	now := time.Now().UTC()
-	for i := range existing {
-		r := &existing[i]
-		if r.ID == everyoneID {
-			continue
-		}
-		r.Position++
-		r.UpdatedAt = now
-		if err := s.repo.UpdateSpaceRole(ctx, r); err != nil {
-			return nil, err
-		}
+	return s.insertBotRole(ctx, sp, everyoneID, bot, perms, existing)
+}
+
+// insertBotRole is createBotRole for a caller already holding the role lock, with the space's
+// roles as it read them.
+func (s *Service) insertBotRole(ctx context.Context, sp *Space, everyoneID int64, bot *auth.User, perms int64, existing []SpaceRole) (*SpaceRole, error) {
+	if len(existing) >= MaxRolesPerSpace {
+		return nil, ErrTooManyRoles
 	}
 	name := bot.DisplayName
 	if name == "" {
 		name = bot.Username
 	}
-	role := &SpaceRole{
+	now := time.Now().UTC()
+	role := SpaceRole{
 		SpaceID:     sp.ID,
 		ID:          id.Next(),
 		Name:        name,
@@ -232,23 +232,30 @@ func (s *Service) createBotRole(ctx context.Context, sp *Space, everyoneID int64
 		CreatedAt:   now,
 		UpdatedAt:   now,
 	}
-	if err := s.repo.InsertSpaceRole(ctx, role); err != nil {
+	roles := append(existing, role)
+	all, err := s.applyRoleOrder(ctx, sp, everyoneID, roles, placeRoles(roles, everyoneID, map[int64]int{role.ID: 1}), role.ID, true, false)
+	if err != nil {
 		return nil, err
 	}
-	for i := range existing {
-		if existing[i].ID != everyoneID {
-			s.fedRoleChanged(ctx, sp.ID, &existing[i], false)
-		}
-	}
-	s.fedRoleChanged(ctx, sp.ID, role, false)
-	return role, nil
+	return findRole(all, role.ID), nil
 }
 
 // updateBotRole re-applies granted permissions to an installed bot's managed role (or
 // creates the role when the bot was first added with none).
 func (s *Service) updateBotRole(ctx context.Context, sp *Space, bot *auth.User, granted int64) (int64, error) {
+	eid, err := s.ensureEveryoneRoleID(ctx, sp)
+	if err != nil {
+		return 0, err
+	}
+	mem, err := s.repo.GetMember(ctx, sp.ID, bot.ID)
+	if err != nil || mem == nil {
+		return 0, ErrNotMember
+	}
+	// The role lock covers the read and the write: the role's row is written whole.
+	unlock := lockRoles(sp.ID)
 	roles, err := s.repo.ListSpaceRoles(ctx, sp.ID)
 	if err != nil {
+		unlock()
 		return 0, err
 	}
 	for i := range roles {
@@ -258,7 +265,9 @@ func (s *Service) updateBotRole(ctx context.Context, sp *Space, bot *auth.User, 
 		}
 		r.Permissions = granted
 		r.UpdatedAt = time.Now().UTC()
-		if err := s.repo.UpdateSpaceRole(ctx, r); err != nil {
+		err := s.repo.UpdateSpaceRole(ctx, r)
+		unlock()
+		if err != nil {
 			return 0, err
 		}
 		s.invalidateSnapshot(ctx, sp.ID)
@@ -266,29 +275,22 @@ func (s *Service) updateBotRole(ctx context.Context, sp *Space, bot *auth.User, 
 		s.fedRoleChanged(ctx, sp.ID, r, false)
 		return granted, nil
 	}
-	eid, err := s.ensureEveryoneRoleID(ctx, sp)
+	role, err := s.insertBotRole(ctx, sp, eid, bot, granted, roles)
+	unlock()
 	if err != nil {
 		return 0, err
 	}
-	role, err := s.createBotRole(ctx, sp, eid, bot, granted)
-	if err != nil {
+	if err := s.repo.AddMemberRoleID(ctx, sp.ID, bot.ID, role.ID); err != nil {
 		return 0, err
 	}
-	mem, err := s.repo.GetMember(ctx, sp.ID, bot.ID)
-	if err != nil || mem == nil {
-		return 0, ErrNotMember
+	if fresh, err := s.repo.GetMember(ctx, sp.ID, bot.ID); err == nil && fresh != nil {
+		mem = fresh
+	} else {
+		mem.RoleIDs = append(mem.RoleIDs, role.ID)
 	}
-	roleIDs := append(mem.RoleIDs, role.ID)
-	if err := s.repo.SetMemberRoleIDs(ctx, sp.ID, bot.ID, roleIDs); err != nil {
-		return 0, err
-	}
-	mem.RoleIDs = roleIDs
 	s.invalidateSnapshot(ctx, sp.ID)
 	if all, err := s.SpaceRoles(ctx, sp.ID); err == nil {
-		payload := spaceToEventPayload(sp)
-		payload["everyone_role_id"] = id.Format(eid)
-		payload["roles"] = RoleMaps(all)
-		s.publishSpaceEvent(ctx, sp.ID, "SPACE_UPDATE", payload)
+		s.publishRoleOrder(ctx, sp, eid, all)
 	}
 	s.publishMemberUpdate(ctx, sp.ID, mem)
 	s.fedMemberUpdated(ctx, sp.ID, bot.ID)
@@ -306,19 +308,25 @@ func (s *Service) afterMemberRemoved(ctx context.Context, spaceID, userID int64)
 }
 
 // cleanupBotRoles deletes the roles a bot install created for userID (none for a person)
-// and closes the gap they leave in the position order, undoing the shift-up their
-// creation did, so repeated installs don't march every other role's position upward.
+// and closes the gap they leave in the position order, so the roles above move back down to
+// where they were before the bot's role pushed them up and repeated installs don't march
+// every other role's position upward. Best-effort: the member is already gone.
 func (s *Service) cleanupBotRoles(ctx context.Context, spaceID, userID int64) {
+	unlock := lockRoles(spaceID)
+	defer unlock()
 	roles, err := s.repo.ListSpaceRoles(ctx, spaceID)
 	if err != nil {
 		return
 	}
 	var gone []int
+	kept := make([]SpaceRole, 0, len(roles))
 	for i := range roles {
 		if roles[i].BotID != userID {
+			kept = append(kept, roles[i])
 			continue
 		}
 		if err := s.repo.DeleteSpaceRole(ctx, spaceID, roles[i].ID); err != nil {
+			kept = append(kept, roles[i])
 			continue
 		}
 		gone = append(gone, roles[i].Position)
@@ -330,36 +338,16 @@ func (s *Service) cleanupBotRoles(ctx context.Context, spaceID, userID int64) {
 	if len(gone) == 0 {
 		return
 	}
-	now := time.Now().UTC()
-	for i := range roles {
-		r := &roles[i]
-		if r.BotID == userID || r.Position == 0 {
-			continue
-		}
-		shift := 0
-		for _, p := range gone {
-			if r.Position > p {
-				shift++
-			}
-		}
-		if shift == 0 {
-			continue
-		}
-		r.Position -= shift
-		r.UpdatedAt = now
-		_ = s.repo.UpdateSpaceRole(ctx, r)
-		s.fedRoleChanged(ctx, spaceID, r, false)
-	}
 	s.invalidateSnapshot(ctx, spaceID)
-	if sp, err := s.repo.GetByID(ctx, spaceID); err == nil && sp != nil {
-		if all, err := s.SpaceRoles(ctx, spaceID); err == nil {
-			payload := spaceToEventPayload(sp)
-			if sp.EveryoneRoleID != 0 {
-				payload["everyone_role_id"] = id.Format(sp.EveryoneRoleID)
-			}
-			payload["roles"] = RoleMaps(all)
-			s.publishSpaceEvent(ctx, spaceID, "SPACE_UPDATE", payload)
-		}
+	sp, err := s.repo.GetByID(ctx, spaceID)
+	if err != nil || sp == nil || sp.EveryoneRoleID == 0 {
+		return
+	}
+	// Each role above a removed one moves down by how many were removed below it, never past
+	// the role ranked under it (closeRoleGaps), and is written like every other position.
+	placed := closeRoleGaps(kept, sp.EveryoneRoleID, gone)
+	if _, err := s.applyRoleOrder(ctx, sp, sp.EveryoneRoleID, kept, placed, 0, false, true); err != nil {
+		logger.Err("spaces", err, map[string]any{"space_id": spaceID, "step": "close the gap a bot's roles left"})
 	}
 }
 

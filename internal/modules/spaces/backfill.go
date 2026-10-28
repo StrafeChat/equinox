@@ -352,3 +352,87 @@ func (s *Service) BackfillNicknamePermissions(ctx context.Context) error {
 	logger.Info("spaces", "nickname permissions backfilled on %d role(s) across %d space(s)", len(changed), len(changedSpaces))
 	return nil
 }
+
+// Data migration that makes custom role positions unique (see service_role_order.go).
+const dataMigrationRolePositions = "051_role_positions"
+
+// BackfillRolePositions gives every space this instance hosts unique custom role positions,
+// all >= 1. Roles used to be created at the top and moved by writing a position as given, so
+// existing spaces can hold two roles at one position - each "at or above" the other, both
+// locked for anyone holding either - or a custom role at 0 beside @everyone. Each space goes
+// through placeRoles with no moves: a tie is settled with the newer role (higher id) below,
+// Discord's order, and only the run above it moves up; positions that already fit stay.
+// Exactly once per keyspace; idempotent if re-run (normalized positions place to themselves).
+//
+// A space this instance only mirrors is skipped: its origin normalizes and relays the roles it
+// moves, as for every write. Bot roles are included - they are part of the order like any other
+// role. Needs the federator wired first (routes/spaces.go), as BackfillNicknamePermissions does.
+func (s *Service) BackfillRolePositions(ctx context.Context) error {
+	claimed, err := s.repo.ClaimDataMigration(ctx, dataMigrationRolePositions)
+	if err != nil || !claimed {
+		return err
+	}
+	// ForEachSpaceRole is the one keyspace-wide scan of roles; a space without roles has
+	// nothing to order. Each space is visited once, so its mirror check runs once.
+	spaceIDs := map[int64]struct{}{}
+	err = s.repo.ForEachSpaceRole(ctx, func(spaceID, _ int64, _ string, _, _ int64) error {
+		spaceIDs[spaceID] = struct{}{}
+		return nil
+	})
+	moved, spaces := 0, 0
+	if err == nil {
+		for spaceID := range spaceIDs {
+			n, nerr := s.normalizeRolePositions(ctx, spaceID)
+			if nerr != nil {
+				err = nerr
+				break
+			}
+			if n > 0 {
+				moved += n
+				spaces++
+			}
+		}
+	}
+	if err != nil {
+		// Hand the claim back so the next start retries; the spaces already done place to
+		// themselves the second time.
+		if relErr := s.repo.ReleaseDataMigration(ctx, dataMigrationRolePositions); relErr != nil {
+			logger.Err("spaces", relErr, map[string]any{"data_migration": dataMigrationRolePositions})
+		}
+		return err
+	}
+	logger.Info("spaces", "role positions normalized on %d role(s) across %d space(s)", moved, spaces)
+	return nil
+}
+
+// normalizeRolePositions settles one hosted space's role order (see BackfillRolePositions) and
+// returns how many roles moved.
+func (s *Service) normalizeRolePositions(ctx context.Context, spaceID int64) (int, error) {
+	if s.mirrorOrigin(ctx, spaceID) != "" {
+		return 0, nil
+	}
+	sp, err := s.repo.GetByID(ctx, spaceID)
+	if err != nil {
+		return 0, err
+	}
+	// No space row: role rows the space's deletion left behind. No @everyone id: a space older
+	// than the column, which the first role write bootstraps - without it the @everyone row
+	// cannot be told from a custom role at 0, and must not be moved.
+	if sp == nil || sp.EveryoneRoleID == 0 {
+		return 0, nil
+	}
+	unlock := lockRoles(spaceID)
+	defer unlock()
+	roles, err := s.repo.ListSpaceRoles(ctx, spaceID)
+	if err != nil {
+		return 0, err
+	}
+	placed := placeRoles(roles, sp.EveryoneRoleID, nil)
+	if len(placed) == 0 {
+		return 0, nil
+	}
+	if _, err := s.applyRoleOrder(ctx, sp, sp.EveryoneRoleID, roles, placed, 0, false, true); err != nil {
+		return 0, err
+	}
+	return len(placed), nil
+}

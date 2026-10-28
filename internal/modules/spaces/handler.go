@@ -72,8 +72,9 @@ func HTTPError(err error) (status int, message string, ok bool) {
 		return http.StatusForbidden, err.Error(), true
 	case errors.Is(err, ErrCannotEditEveryone), errors.Is(err, ErrInvalidSlowmode), errors.Is(err, ErrInvalidRoomType),
 		errors.Is(err, ErrInvalidReorder), errors.Is(err, ErrOwnerCannotLeave), errors.Is(err, ErrInvalidSpaceName),
-		errors.Is(err, ErrNothingToPatch), errors.Is(err, ErrInvalidRoleName), errors.Is(err, ErrCannotChangeOwnerRoles),
-		errors.Is(err, ErrInvalidRoomName), errors.Is(err, ErrInvalidTopic), errors.Is(err, ErrInvalidDescription),
+		errors.Is(err, ErrNothingToPatch), errors.Is(err, ErrInvalidRoleName),
+		errors.Is(err, ErrCannotMoveEveryone), errors.Is(err, ErrInvalidRolePosition), errors.Is(err, ErrInvalidRolePositions),
+		errors.Is(err, ErrEveryoneRole), errors.Is(err, ErrInvalidRoomName), errors.Is(err, ErrInvalidTopic), errors.Is(err, ErrInvalidDescription),
 		errors.Is(err, ErrTooManyRoles), errors.Is(err, ErrTooManyRooms),
 		errors.Is(err, ErrInvalidSystemRoom), errors.Is(err, ErrInvalidAFKRoom), errors.Is(err, ErrInvalidAFKTimeout),
 		errors.Is(err, ErrInvalidNotifLevel), errors.Is(err, ErrInvalidSystemFlags), errors.Is(err, ErrInvalidWidgetRoom),
@@ -659,6 +660,52 @@ func (h *Handler) UpdateRole(c fiber.Ctx) error {
 	return c.JSON(spaceRoleToJSON(role))
 }
 
+// rolePositionEntry is one element of PATCH /spaces/:id/roles.
+type rolePositionEntry struct {
+	ID       string `json:"id"`
+	Position int    `json:"position"`
+}
+
+// ReorderRoles PATCH /spaces/:id/roles - Discord's Modify Guild Role Positions. Body:
+// [{"id": "<role snowflake>", "position": n}, ...]; answers 200 with every role of the space,
+// in the GET /spaces/:id/roles shape.
+func (h *Handler) ReorderRoles(c fiber.Ctx) error {
+	user := auth.GetUser(c)
+	if user == nil {
+		return c.Status(http.StatusUnauthorized).JSON(fiber.Map{"error": "unauthorized"})
+	}
+	spaceID, err := id.Parse(c.Params("id"))
+	if err != nil {
+		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "invalid space id"})
+	}
+	var body []rolePositionEntry
+	if err := json.Unmarshal(c.Body(), &body); err != nil {
+		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "invalid JSON"})
+	}
+	moves := make([]RolePosition, 0, len(body))
+	for _, e := range body {
+		rid, err := id.Parse(e.ID)
+		if err != nil {
+			return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "invalid role id in list"})
+		}
+		moves = append(moves, RolePosition{RoleID: rid, Position: e.Position})
+	}
+	roles, err := h.svc.ReorderSpaceRoles(c.Context(), user.ID, spaceID, moves)
+	if err != nil {
+		// A role the body names that the space does not have is a bad request, not a missing
+		// resource in the path (as for PUT .../roles).
+		if errors.Is(err, ErrRoleNotFound) {
+			return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "unknown role id"})
+		}
+		return spaceError(c, err, map[string]any{"space_id": spaceID})
+	}
+	out := make([]fiber.Map, 0, len(roles))
+	for i := range roles {
+		out = append(out, spaceRoleToJSON(&roles[i]))
+	}
+	return c.JSON(out)
+}
+
 // DeleteRole DELETE /spaces/:id/roles/:roleId
 func (h *Handler) DeleteRole(c fiber.Ctx) error {
 	user := auth.GetUser(c)
@@ -714,6 +761,46 @@ func (h *Handler) PutMemberRoles(c fiber.Ctx) error {
 			return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "unknown role id"})
 		}
 		return spaceError(c, err, map[string]any{"space_id": spaceID})
+	}
+	return c.SendStatus(http.StatusNoContent)
+}
+
+// PutMemberRole PUT /spaces/:id/members/:userId/roles/:roleId - Discord's Add Guild Member
+// Role. 204, also when the member already has the role. ":userId" may be "@me".
+func (h *Handler) PutMemberRole(c fiber.Ctx) error {
+	return h.changeMemberRole(c, true)
+}
+
+// DeleteMemberRole DELETE /spaces/:id/members/:userId/roles/:roleId - Discord's Remove Guild
+// Member Role. 204, also when the member does not have the role.
+func (h *Handler) DeleteMemberRole(c fiber.Ctx) error {
+	return h.changeMemberRole(c, false)
+}
+
+func (h *Handler) changeMemberRole(c fiber.Ctx, add bool) error {
+	user := auth.GetUser(c)
+	if user == nil {
+		return c.Status(http.StatusUnauthorized).JSON(fiber.Map{"error": "unauthorized"})
+	}
+	spaceID, err := id.Parse(c.Params("id"))
+	if err != nil {
+		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "invalid space id"})
+	}
+	targetID, ok := memberTarget(c, user.ID)
+	if !ok {
+		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "invalid user id"})
+	}
+	roleID, err := id.Parse(c.Params("roleId"))
+	if err != nil {
+		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "invalid role id"})
+	}
+	if add {
+		err = h.svc.AddMemberRole(c.Context(), user.ID, spaceID, targetID, roleID)
+	} else {
+		err = h.svc.RemoveMemberRole(c.Context(), user.ID, spaceID, targetID, roleID)
+	}
+	if err != nil {
+		return spaceError(c, err, map[string]any{"space_id": spaceID, "role_id": roleID})
 	}
 	return c.SendStatus(http.StatusNoContent)
 }

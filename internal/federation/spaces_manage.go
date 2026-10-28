@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -422,9 +424,31 @@ type manageRole struct {
 	Role string `json:"role"`
 }
 
+// role.positions: roles moved in one request (Discord's Modify Guild Role Positions), each a
+// custom role of the space and the position it asks for. Where each one lands is the origin's
+// ReorderSpaceRoles' decision, and the answer is every role of the space ([]SpaceRoleWire).
+type manageRolePositions struct {
+	Positions []manageRolePosition `json:"positions"`
+}
+
+type manageRolePosition struct {
+	Role     string `json:"role"`
+	Position int    `json:"position"`
+}
+
 type manageMemberRoles struct {
 	User  string   `json:"user"`
 	Roles []string `json:"roles"`
+}
+
+// member.role: one role given to (add true) or taken from (add false) one member, the
+// single-role routes' op. The origin applies it as one set operation, so changes racing each
+// other all land, which member.roles - the whole list, read and written back by the mirror -
+// cannot promise. add is required: a missing one is refused, never read as a removal.
+type manageMemberRole struct {
+	User string `json:"user"`
+	Role string `json:"role"`
+	Add  *bool  `json:"add"`
 }
 
 // member.profile: a change to one member's space profile - the asking member's own, or, as a
@@ -736,6 +760,31 @@ func (s *Service) manageAt(ctx context.Context, sp *spaces.Space, actor *auth.Us
 			return nil, errBadParams
 		}
 		return nil, svc.DeleteSpaceRole(ctx, actor.ID, spaceID, rid)
+	case "role.positions":
+		// The same call PATCH /spaces/:id/roles makes, as the asking member: Manage Roles, the
+		// hierarchy on every listed role and requested position, nothing written on a refusal.
+		// The relays for the roles it moved are captured into the reply.
+		var p manageRolePositions
+		if err := decodeParams(params, &p); err != nil {
+			return nil, err
+		}
+		moves := make([]spaces.RolePosition, 0, len(p.Positions))
+		for _, e := range p.Positions {
+			rid, err := id.Parse(e.Role)
+			if err != nil {
+				return nil, errBadParams
+			}
+			moves = append(moves, spaces.RolePosition{RoleID: rid, Position: e.Position})
+		}
+		roles, err := svc.ReorderSpaceRoles(ctx, actor.ID, spaceID, moves)
+		if err != nil {
+			return nil, err
+		}
+		out := make([]SpaceRoleWire, 0, len(roles))
+		for i := range roles {
+			out = append(out, s.roleWire(ctx, &roles[i]))
+		}
+		return out, nil
 	case "member.roles":
 		var p manageMemberRoles
 		if err := decodeParams(params, &p); err != nil {
@@ -754,6 +803,29 @@ func (s *Service) manageAt(ctx context.Context, sp *spaces.Space, actor *auth.Us
 			roleIDs = append(roleIDs, rid)
 		}
 		return nil, svc.SetMemberRoles(ctx, actor.ID, spaceID, target, roleIDs)
+	case "member.role":
+		// The same call PUT / DELETE /spaces/:id/members/:userId/roles/:roleId makes, as the
+		// asking member: Manage Roles, a role below their highest, never @everyone or a bot's
+		// managed role. The member relay its write causes is captured into the reply.
+		var p manageMemberRole
+		if err := decodeParams(params, &p); err != nil {
+			return nil, err
+		}
+		if p.Add == nil {
+			return nil, errBadParams
+		}
+		rid, err := id.Parse(p.Role)
+		if err != nil {
+			return nil, errBadParams
+		}
+		target, err := s.ResolveLocalID(ctx, p.User)
+		if err != nil {
+			return nil, err
+		}
+		if *p.Add {
+			return nil, svc.AddMemberRole(ctx, actor.ID, spaceID, target, rid)
+		}
+		return nil, svc.RemoveMemberRole(ctx, actor.ID, spaceID, target, rid)
 	case "member.profile":
 		// The same call a local PATCH makes, as the asking member: Change / Manage Nicknames,
 		// the role hierarchy, the owner rule, and images and text set only by the member
@@ -1245,6 +1317,109 @@ func (s *Service) RemoteDeleteRole(ctx context.Context, origin string, spaceID i
 	return s.manage(ctx, origin, spaceID, user, "role.delete", manageRole{Role: id.Format(roleID)}, nil)
 }
 
+// RemoteReorderRoles moves roles at the origin with role.positions, which runs
+// ReorderSpaceRoles there as the member, with every check, and returns the space's roles as
+// the origin answered them. The relays in the reply - one role upsert per role the origin
+// moved, in the order it wrote them - have brought this mirror's roles to the same order by
+// then. Role ids are the origin's on both sides, so nothing is translated.
+//
+// A list naming @everyone or a role the space does not have is refused here first, from the
+// mirrored roles (checkMirroredRoles). An origin that predates role.positions answers "unknown
+// action"; the moves then go one role.update at a time (reorderRolesOneByOne).
+func (s *Service) RemoteReorderRoles(ctx context.Context, origin string, spaceID int64, user *auth.User, moves []spaces.RolePosition) ([]spaces.SpaceRole, error) {
+	if err := s.checkMirroredRoles(ctx, spaceID, user.ID, moves); err != nil {
+		return nil, err
+	}
+	p := manageRolePositions{Positions: make([]manageRolePosition, 0, len(moves))}
+	for _, m := range moves {
+		p.Positions = append(p.Positions, manageRolePosition{Role: id.Format(m.RoleID), Position: m.Position})
+	}
+	var answer []SpaceRoleWire
+	if err := s.manage(ctx, origin, spaceID, user, "role.positions", p, &answer); err != nil {
+		if isUnknownAction(err) {
+			return s.reorderRolesOneByOne(ctx, origin, spaceID, user, moves)
+		}
+		return nil, err
+	}
+	if len(answer) == 0 {
+		// Accepted, but no list came back (ours always lists @everyone at least). The roles the
+		// reply's relays left here are the answer - not "no roles" for a client to apply.
+		return s.spaceSvc.SpaceRoles(ctx, spaceID)
+	}
+	roles := make([]spaces.SpaceRole, 0, len(answer))
+	for _, w := range answer {
+		r, err := s.roleFromWire(ctx, w)
+		if err != nil {
+			return nil, spaces.ErrOriginUnavailable // a malformed answer, like one that does not decode
+		}
+		r.SpaceID = spaceID
+		roles = append(roles, *r)
+	}
+	return roles, nil
+}
+
+// reorderRolesOneByOne is role.positions for an origin that predates it: one role.update
+// {position} per move, in ascending requested position. Such an origin writes a position as
+// given, so every move lands where it asked, and the lists clients send - reusing the
+// positions the moved roles already held - leave no two roles sharing one when the last move
+// is in. Each answer's relays update this mirror as it goes, and the roles it ends up with
+// are the answer.
+//
+// Those moves are separate writes at the origin, so a refusal part-way (the role hierarchy,
+// say) leaves the moves before it applied. The refusals the mirrored roles can foresee -
+// @everyone, a role the space does not have - were made before anything was sent.
+func (s *Service) reorderRolesOneByOne(ctx context.Context, origin string, spaceID int64, user *auth.User, moves []spaces.RolePosition) ([]spaces.SpaceRole, error) {
+	ordered := append([]spaces.RolePosition(nil), moves...)
+	sort.SliceStable(ordered, func(i, j int) bool { return ordered[i].Position < ordered[j].Position })
+	for _, m := range ordered {
+		pos := m.Position
+		if _, err := s.RemoteUpdateRole(ctx, origin, spaceID, user, m.RoleID, &spaces.UpdateSpaceRoleInput{Position: &pos}); err != nil {
+			return nil, err
+		}
+	}
+	return s.spaceSvc.SpaceRoles(ctx, spaceID)
+}
+
+// checkMirroredRoles refuses a reorder naming @everyone or a role the space does not have, by
+// this mirror's copy of the roles (which is the origin's, ids included), with the errors the
+// origin's ReorderSpaceRoles gives for them - so a request answers the same on every instance
+// (the REST handler's 400 "unknown role id", not the origin's 404 for a role named in a body),
+// and an origin that applies moves one at a time is never sent part of a list it would refuse.
+// The roles are read as the actor, so someone who is not a member learns nothing about them.
+func (s *Service) checkMirroredRoles(ctx context.Context, spaceID, actorID int64, moves []spaces.RolePosition) error {
+	roles, err := s.spaceSvc.ListSpaceRoles(ctx, actorID, spaceID)
+	if err != nil {
+		return err
+	}
+	sp, err := s.spaceSvc.GetSpace(ctx, spaceID)
+	if err != nil {
+		return err
+	}
+	if sp == nil {
+		return spaces.ErrSpaceNotFound
+	}
+	known := make(map[int64]bool, len(roles))
+	for _, r := range roles {
+		known[r.ID] = true
+	}
+	for _, m := range moves {
+		if m.RoleID == sp.EveryoneRoleID {
+			return spaces.ErrCannotMoveEveryone
+		}
+		if !known[m.RoleID] {
+			return spaces.ErrRoleNotFound
+		}
+	}
+	return nil
+}
+
+// isUnknownAction reports whether the origin refused a /spaces/manage op as one it does not
+// have, which is how an instance from before the op answers (400 "unknown action").
+func isUnknownAction(err error) bool {
+	var oe *spaces.OriginError
+	return errors.As(err, &oe) && oe.Status == http.StatusBadRequest && oe.Message == errUnknownAction.Error()
+}
+
 func (s *Service) RemoteSetMemberRoles(ctx context.Context, origin string, spaceID int64, user *auth.User, targetID int64, roleIDs []int64) error {
 	fid, err := s.fidOfLocal(ctx, targetID)
 	if err != nil {
@@ -1255,6 +1430,23 @@ func (s *Service) RemoteSetMemberRoles(ctx context.Context, origin string, space
 		p.Roles = append(p.Roles, id.Format(rid))
 	}
 	return s.manage(ctx, origin, spaceID, user, "member.roles", p, nil)
+}
+
+// RemoteChangeMemberRole gives a member one role at the origin, or takes it away, with
+// member.role: AddMemberRole / RemoveMemberRole there as the member, every check made, the
+// write one set operation. The member relay in the reply has updated the row here by the time
+// this returns. An origin that predates member.role answers "unknown action", passed back as
+// spaces.ErrOriginLacksOperation for the caller to send the whole list with member.roles.
+func (s *Service) RemoteChangeMemberRole(ctx context.Context, origin string, spaceID int64, user *auth.User, targetID, roleID int64, add bool) error {
+	fid, err := s.fidOfLocal(ctx, targetID)
+	if err != nil {
+		return err
+	}
+	err = s.manage(ctx, origin, spaceID, user, "member.role", manageMemberRole{User: fid, Role: id.Format(roleID), Add: &add}, nil)
+	if isUnknownAction(err) {
+		return fmt.Errorf("%w: member.role at %s", spaces.ErrOriginLacksOperation, origin)
+	}
+	return err
 }
 
 // RemoteUpdateMemberProfile changes a space profile at the origin, which makes every check;
