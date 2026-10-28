@@ -461,6 +461,9 @@ func (s *Service) memberWire(m *spaces.SpaceMember, u *auth.User) SpaceMemberWir
 	w := SpaceMemberWire{
 		User: s.ProfileOf(u), Roles: make([]string, 0, len(m.RoleIDs)), JoinedAt: m.JoinedAt,
 		Nickname: m.Nickname, Avatar: m.Avatar, Banner: m.Banner, AboutMe: m.AboutMe, Bio: m.Bio, Pronouns: m.Pronouns,
+		// Status only, never an activity: member relays go through the durable outbox (a
+		// ScyllaDB table), and a member may be a third instance's user, whose activity only
+		// their home instance may state (POST /users/presence).
 		Presence: auth.ToPublicPresence(u.Presence, true),
 	}
 	for _, rid := range m.RoleIDs {
@@ -743,7 +746,9 @@ func (s *Service) mirrorMember(ctx context.Context, origin string, w SpaceMember
 // applyRelayedPresence writes the status a peer reported for one of its (or a third
 // instance's) users onto their shadow row, when it differs from what is stored, and tells
 // local clients. Local users are never touched: their own gateway is the authority on
-// their presence. Reports whether anything changed.
+// their presence. Reports whether anything changed. p.Activities is ignored - neither
+// stored nor cleared, nor part of the comparison - because only the user's home instance
+// may say what they are doing (Handler.Presence).
 func (s *Service) applyRelayedPresence(ctx context.Context, u *auth.User, p auth.PublicPresence) bool {
 	if u == nil || !u.IsRemote() {
 		return false
@@ -1020,7 +1025,7 @@ func (s *Service) PreviewRemoteInvite(ctx context.Context, domain, code string) 
 
 func (s *Service) JoinRemoteSpace(ctx context.Context, domain, code string, user *auth.User) (*spaces.Space, error) {
 	var snap SpaceSnapshot
-	presence := auth.ToPublicPresence(user.Presence, true)
+	presence := auth.ToPublicPresence(user.Presence, true) // status only, as memberWire
 	req := SpaceJoinRequest{Code: code, User: s.ProfileOf(user), Presence: &presence}
 	if _, err := s.client.Do(ctx, domain, http.MethodPost, "/spaces/join", req, &snap); err != nil {
 		return nil, spaceOriginError(err, domain, "/spaces/join")

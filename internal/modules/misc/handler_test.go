@@ -2,8 +2,11 @@ package misc
 
 import (
 	"encoding/json"
+	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/gofiber/fiber/v3"
 
 	"github.com/StrafeChat/equinox/internal/config"
 )
@@ -152,5 +155,26 @@ func TestGifsFeature(t *testing.T) {
 	b, _ := json.Marshal(f)
 	if strings.Contains(string(b), "test-key") {
 		t.Errorf("a key reached the feature map: %s", b)
+	}
+}
+
+// GET / says the server takes activities, in the shape every feature has, so a client can
+// tell a server that understands op 9 from one that would answer it "unknown op".
+func TestActivitiesFeature(t *testing.T) {
+	app := fiber.New()
+	app.Get("/", NewHandler(&config.Config{}).Index)
+	res, err := app.Test(httptest.NewRequest("GET", "/", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	var body struct {
+		Features map[string]json.RawMessage `json:"features"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if got := string(body.Features["activities"]); got != `{"enabled":true}` {
+		t.Errorf("features.activities = %s", got)
 	}
 }

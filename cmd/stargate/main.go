@@ -415,6 +415,11 @@ func main() {
 		readyProvider.voice = voice.NewStore(redis, cfg.Database.Redis.CachePrefix)
 	}
 
+	// What people are playing (op 9), in Redis under the deployment's cache prefix - the
+	// same store the API reads, so a status change made there carries the activity.
+	activities := stargate.NewActivityStore(redis, cfg.Database.Redis.CachePrefix)
+	stargate.SetActivityStore(activities)
+
 	presenceNotifier := stargate.NewDefaultPresenceNotifier(userRepo, redis, cfg.Stargate.Region)
 	if cfg.Federation.Enabled {
 		// Connect/disconnect presence reaches remote friends' instances, signed with the
@@ -435,6 +440,11 @@ func main() {
 	// process are dropped). See stargate.OnlinePresenceKey.
 	if err := redis.Del(ctx, stargate.OnlinePresenceKey).Err(); err != nil {
 		logger.Warn("stargate", "could not reset online-presence set: %v", err)
+	}
+	// The same for the connections' activities: none of those sockets exist any more.
+	// Remote users' activities are the API's and stay.
+	if err := activities.PurgeConnections(ctx); err != nil {
+		logger.Warn("stargate", "could not reset connection activities: %v", err)
 	}
 	hub.Run(ctx)
 

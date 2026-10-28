@@ -263,7 +263,7 @@ func TestMemberWireBuilders(t *testing.T) {
 
 	s := NewService(nil, nil, nil, nil, nil)
 	u := &auth.User{ID: 4, Username: "turtle", DisplayName: "Global Name", Avatar: "https://cdn/v1/global.png", Bio: "global bio"}
-	j := s.memberJSON(m, u)
+	j := s.memberJSON(m, u, nil)
 	for _, k := range append([]string{"roles", "joined_at", "id", "username", "display_name", "avatar", "bio"}, keys...) {
 		if _, ok := j[k]; !ok {
 			t.Errorf("memberJSON lacks %q", k)

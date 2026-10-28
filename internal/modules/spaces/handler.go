@@ -14,6 +14,7 @@ import (
 	"github.com/StrafeChat/equinox/internal/logger"
 	"github.com/StrafeChat/equinox/internal/modules/auth"
 	"github.com/StrafeChat/equinox/internal/modules/rooms"
+	"github.com/StrafeChat/equinox/internal/stargate"
 )
 
 // spaceError maps a spaces-service sentinel error to an HTTP response. Centralized so a
@@ -399,9 +400,19 @@ func (h *Handler) Members(c fiber.Ctx) error {
 	if err != nil {
 		return spaceError(c, err, map[string]any{"space_id": spaceID})
 	}
+	// What members are playing, in one read for the whole list.
+	users := make([]*auth.User, 0, len(members))
+	for i := range members {
+		users = append(users, members[i].User)
+	}
+	acts := stargate.VisibleActivities(c.Context(), users)
 	out := make([]fiber.Map, 0, len(members))
 	for i := range members {
-		out = append(out, fiber.Map(h.svc.memberJSON(&members[i].Member, members[i].User)))
+		var mine []auth.Activity
+		if u := members[i].User; u != nil {
+			mine = acts[u.ID]
+		}
+		out = append(out, fiber.Map(h.svc.memberJSON(&members[i].Member, members[i].User, mine)))
 	}
 	return c.JSON(out)
 }

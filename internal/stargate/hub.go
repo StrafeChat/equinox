@@ -11,6 +11,7 @@ import (
 	"github.com/redis/go-redis/v9"
 
 	"github.com/StrafeChat/equinox/internal/logger"
+	"github.com/StrafeChat/equinox/internal/safego"
 )
 
 const redisPrefix = "stargate"
@@ -57,13 +58,17 @@ func NewHubWithConfig(cfg HubConfig) *Hub {
 		cfg.Region = "default"
 	}
 	h := &Hub{
-		region:         cfg.Region,
-		redis:          cfg.Redis,
-		presenceNotify: cfg.PresenceNotifier,
-		authorizer:     cfg.Authorizer,
-		clients:        make(map[*Client]struct{}),
-		subs:           make(map[string]map[*Client]struct{}),
-		pendingOffline: make(map[int64]int64),
+		region:            cfg.Region,
+		redis:             cfg.Redis,
+		presenceNotify:    cfg.PresenceNotifier,
+		authorizer:        cfg.Authorizer,
+		clients:           make(map[*Client]struct{}),
+		subs:              make(map[string]map[*Client]struct{}),
+		pendingOffline:    make(map[int64]int64),
+		grace:             presenceGrace,
+		activityRefill:    activityRefillInterval,
+		activityRetry:     activityRetryDelay,
+		activityKeepalive: activityKeepaliveInterval,
 	}
 	return h
 }
@@ -81,6 +86,16 @@ type Hub struct {
 	// period); a reconnect deletes the entry to cancel it. Guarded by regMu.
 	pendingOffline map[int64]int64
 	offlineGen     int64
+
+	// grace is presenceGrace: how long a user's last socket is gone before they go offline,
+	// and how long a closed connection's activity outlives it, so a reconnect flickers
+	// neither. activityRefill is op 9's token interval, activityRetry the wait before a
+	// failed activity write is tried again, activityKeepalive how often a held activity is
+	// renewed. All are fields only so tests can shorten them.
+	grace             time.Duration
+	activityRefill    time.Duration
+	activityRetry     time.Duration
+	activityKeepalive time.Duration
 }
 
 // authorizeSubscribe reports whether userID may subscribe to (and send into) typ:id.
@@ -318,7 +333,11 @@ func (h *Hub) register(c *Client) {
 }
 
 func (h *Hub) unregister(c *Client) {
-	userID := c.userID
+	userID, connID := c.userID, c.connID
+	// From here on nothing is written for the connection's activity. dirty: the store may
+	// still hold an entry for it, which goes after the same grace a status gets, so a
+	// socket that reconnects right away (and re-reports) never shows the game ending.
+	dirty := c.closeActivity()
 	h.regMu.Lock()
 	delete(h.clients, c)
 	// Only schedule offline when no other clients for this user remain.
@@ -331,11 +350,17 @@ func (h *Hub) unregister(c *Client) {
 	}
 	h.regMu.Unlock()
 
+	// The user keeps another socket (or nothing here tracks presence): the entry is cleared
+	// on its own timer, and the change published to the user's other sockets' audience.
+	if dirty && gen < 0 {
+		h.scheduleActivityCleanup(userID, connID)
+	}
+
 	// Grace period before going offline (see presenceGrace). A reconnect within the window
 	// deletes the map entry in register(); a newer disconnect bumps the generation - either
 	// way this timer then no-ops, so only the last disconnect that is still pending fires.
 	if gen >= 0 {
-		time.AfterFunc(presenceGrace, func() {
+		time.AfterFunc(h.grace, func() {
 			h.regMu.Lock()
 			cur, ok := h.pendingOffline[userID]
 			act := ok && cur == gen && !h.hasAnyClientLocked(userID)
@@ -343,6 +368,19 @@ func (h *Hub) unregister(c *Client) {
 				delete(h.pendingOffline, userID)
 			}
 			h.regMu.Unlock()
+			if dirty {
+				if act {
+					// Going offline: the entry goes first, unannounced. The offline below
+					// carries no activity, and an activity publish built from the user
+					// record - still online until OnDisconnect writes it - could land after
+					// that offline, here or on another instance, and show them online again.
+					safego.Run("stargate", func() { h.clearConnActivity(userID, connID, 1) })
+				} else {
+					// Back (or gone again, with a newer timer pending): an ordinary cleanup,
+					// which publishes only while the user has a socket.
+					h.activityCleanupAfter(0, userID, connID, 1)
+				}
+			}
 			if act {
 				h.presenceNotify.OnDisconnect(context.Background(), userID)
 			}

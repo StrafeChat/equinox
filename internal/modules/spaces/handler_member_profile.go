@@ -15,6 +15,7 @@ import (
 	"github.com/StrafeChat/equinox/internal/logger"
 	"github.com/StrafeChat/equinox/internal/modules/auth"
 	"github.com/StrafeChat/equinox/internal/nebula"
+	"github.com/StrafeChat/equinox/internal/stargate"
 )
 
 // memberTarget reads :userId, where "@me" is the caller (Discord's spelling for your own
@@ -52,7 +53,7 @@ func (h *Handler) GetMember(c fiber.Ctx) error {
 	if err != nil {
 		return spaceError(c, err, map[string]any{"space_id": spaceID})
 	}
-	return c.JSON(h.svc.memberJSON(m, u))
+	return c.JSON(h.svc.memberJSON(m, u, stargate.VisibleActivitiesOf(c.Context(), u)))
 }
 
 // PatchMember PATCH /spaces/:id/members/:userId - set your own space profile (any of nick,
@@ -95,7 +96,7 @@ func (h *Handler) PatchMember(c fiber.Ctx) error {
 			return spaceError(c, ErrMemberNotFound, nil)
 		}
 	}
-	return c.JSON(h.svc.memberJSON(m, u))
+	return c.JSON(h.svc.memberJSON(m, u, stargate.VisibleActivitiesOf(c.Context(), u)))
 }
 
 // notOwnProfile is the 403 for setting a value on someone else's space profile, with a code
@@ -189,7 +190,7 @@ func (h *Handler) postMemberImage(c fiber.Ctx, kind string) error {
 		}
 		return spaceError(c, err, map[string]any{"space_id": spaceID})
 	}
-	return c.JSON(h.svc.memberJSON(m, user))
+	return c.JSON(h.svc.memberJSON(m, user, stargate.VisibleActivitiesOf(c.Context(), user)))
 }
 
 // profileWriteRefused reports whether err means a space-profile write certainly did not

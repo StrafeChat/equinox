@@ -156,6 +156,22 @@ Go identifiers, error strings, docs:
   service account), never by instances. Its only config is `PUSHGW_*`. It must never decrypt
   or log push bodies, device tokens or sealed endpoints; instances speak plain Web Push to it
   and its endpoints are sealed (AES-GCM) so an instance never learns a device token.
+- **Activities ("Playing X": `auth/activity.go`, `stargate/activity*.go`)** are presence,
+  not profile. A client reports one over gateway op 9 (at most one, type `playing`, the name
+  cleaned by `auth.SanitizeActivityName` - the display-text rule space nicknames share -
+  `started_at` clamped); the per-connection worker applies reports in order, coalescing over
+  budget. They live in Redis only: a hash `<prefix>presence:activity:<user>` with one field
+  per gateway connection (`Client.connID`, never the session id), cleared a grace period
+  after the socket closes and purged at gateway start, and a remote user's relayed one under
+  `...:fed:<user>`, written only by `POST /federation/v1/users/presence`. Never put one in
+  ScyllaDB, `UserPresence`, the user cache, the outbox or a log line. Both binaries read
+  through the store `stargate.SetActivityStore` installs (same Redis, same prefix). Attach
+  with `auth.WithActivities` (nothing while the presence reads offline) on exactly these
+  surfaces: READY's own user, `GET /users/@me` (not to OAuth2 tokens), friend relationship
+  entries (never requests or blocks), space member payloads, `PRESENCE_UPDATE` and the
+  outbound `/users/presence`. A change while the user reads offline to others goes to their
+  own channel only (`stargate.PublishActivityChange`): no frame to friends, spaces or peers,
+  which would give an invisible user away.
 - **One-shot data fixes** (`spaces/backfill.go`): claim a name in `data_migrations` with
   `ClaimDataMigration` (a lightweight transaction), do the work, release the claim on
   failure. CQL migrations cannot express "OR a bit into every existing row"; this can.

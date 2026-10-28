@@ -5,6 +5,10 @@ package auth
 type PublicPresence struct {
 	Status       string `json:"status"`                  // "online" | "idle" | "dnd" | "offline"
 	CustomStatus string `json:"custom_status,omitempty"` // Optional status text
+	// Activities is what the user is doing right now ("Playing X"): ephemeral, kept in
+	// Redis only, attached with WithActivities - never by ToPublicPresence, which knows
+	// nothing about it - and absent whenever the status reads offline.
+	Activities []Activity `json:"activities,omitempty"`
 }
 
 // ToPublicPresence converts UserPresence to PublicPresence for API/WS responses.

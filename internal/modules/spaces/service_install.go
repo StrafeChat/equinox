@@ -437,7 +437,7 @@ func (s *Service) publishMemberAdd(ctx context.Context, sp *Space, userID int64)
 	if u == nil {
 		return
 	}
-	payload := s.memberUserFields(u)
+	payload := s.memberUserFields(u, stargate.VisibleActivitiesOf(ctx, u))
 	payload["space_id"] = id.Format(sp.ID)
 	if mem, _ := s.repo.GetMember(ctx, sp.ID, userID); mem != nil {
 		payload["role_ids"] = formatRoleIDStrings(mem.RoleIDs)

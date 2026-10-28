@@ -222,7 +222,7 @@ func (s *Service) JoinListedSpace(ctx context.Context, domain string, originSpac
 	if user == nil || user.IsRemote() {
 		return nil, ErrRemoteUserNotFound
 	}
-	presence := auth.ToPublicPresence(user.Presence, true)
+	presence := auth.ToPublicPresence(user.Presence, true) // status only, as memberWire
 	req := SpaceJoinListedRequest{
 		Space:    SpaceRef{OriginDomain: domain, OriginSpaceID: id.Format(originSpaceID)},
 		User:     s.ProfileOf(user),

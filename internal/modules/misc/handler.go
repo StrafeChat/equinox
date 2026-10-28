@@ -56,6 +56,9 @@ type Features struct {
 	// otherwise.
 	Voice Feature     `json:"voice"`
 	Gifs  GifsFeature `json:"gifs"`
+	// Activities: the gateway takes op 9 (what the user is playing) and presence carries
+	// it. Always on; a client only reports one when its user turned sharing on.
+	Activities Feature `json:"activities"`
 }
 
 // Service is one component that makes up a running instance, advertised on GET / so clients
@@ -164,6 +167,13 @@ func services(cfg *config.Config) Services {
 	return s
 }
 
+// activitiesFeature says this server understands activities. There is no operator switch:
+// nothing is stored beyond the gateway's short-lived Redis entries, and sharing is each
+// user's choice on their own device.
+func activitiesFeature() Feature {
+	return Feature{Enabled: true}
+}
+
 func (h *Handler) Index(c fiber.Ctx) error {
 	return c.JSON(Response{
 		Strafe: Strafe{
@@ -175,6 +185,7 @@ func (h *Handler) Index(c fiber.Ctx) error {
 			InviteOnly: Feature{Enabled: h.cfg.Flags.InviteOnly},
 			Voice:      Feature{Enabled: h.cfg.Voice.Enabled},
 			Gifs:       gifsFeature(h.cfg),
+			Activities: activitiesFeature(),
 		},
 		Services: services(h.cfg),
 		Federation: Federation{

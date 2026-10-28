@@ -514,13 +514,13 @@ func mirrorMemberDiffers(existing SpaceMember, m MirrorMember) bool {
 
 // StripNicknameControls removes what a nickname may never hold - control characters
 // (newlines, tabs), the line and paragraph separators U+2028/U+2029, and bidi embeddings,
-// overrides and isolates: forbiddenNicknameRune, the set validNickname refuses - from one
+// overrides and isolates: auth.ForbiddenTextRune, the set validNickname refuses - from one
 // another instance relayed. The origin already refuses these; a mirror strips rather than
 // refuses, so one bad value from a peer costs a few characters of a nickname instead of
 // the whole member.
 func StripNicknameControls(s string) string {
 	return strings.Map(func(r rune) rune {
-		if forbiddenNicknameRune(r) {
+		if auth.ForbiddenTextRune(r) {
 			return -1
 		}
 		return r
@@ -1258,8 +1258,9 @@ func (s *Service) createRemoteInvite(ctx context.Context, actorID, spaceID int64
 
 // memberUserFields is the public profile part of a member payload; with federation on it
 // carries the user's home instance so clients can show name@domain and build the
-// E2EE identity.
-func (s *Service) memberUserFields(u *auth.User) map[string]interface{} {
+// E2EE identity. acts is what the member is doing (stargate.VisibleActivities, read once for
+// a whole list), shown only while their presence is not offline.
+func (s *Service) memberUserFields(u *auth.User, acts []auth.Activity) map[string]interface{} {
 	m := map[string]interface{}{
 		"id":           id.Format(u.ID),
 		"username":     u.Username,
@@ -1271,7 +1272,7 @@ func (s *Service) memberUserFields(u *auth.User) map[string]interface{} {
 		"pronouns":     u.Pronouns,
 		"bot":          u.Bot,
 		"public_flags": auth.PublicFlags(u),
-		"presence":     auth.ToPublicPresence(u.Presence, true),
+		"presence":     auth.WithActivities(auth.ToPublicPresence(u.Presence, true), acts),
 	}
 	if local := s.localDomain(); local != "" {
 		m["home_domain"] = local

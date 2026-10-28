@@ -209,7 +209,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if b := auth.BirthdayMMDD(user); b != "" {
 		readyUser["birthday"] = b
 	}
-	if p := auth.ToPublicPresence(user.Presence, false); p.Status != "" || p.CustomStatus != "" {
+	if p := connectedSelfPresence(r.Context(), user); p.Status != "" || p.CustomStatus != "" {
 		readyUser["presence"] = p
 	}
 	readyPayload := ReadyPayload{

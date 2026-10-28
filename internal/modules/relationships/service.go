@@ -279,12 +279,21 @@ func (s *Service) publishAdd(ctx context.Context, to, about *auth.User, relType 
 	if to.IsRemote() {
 		return
 	}
-	payload := map[string]interface{}{
+	stargate.PublishToUser(ctx, s.redis, to.ID, "RELATIONSHIP_ADD", relationshipAddPayload(ctx, about, relType), s.cfg.Stargate.Region)
+}
+
+// relationshipAddPayload is RELATIONSHIP_ADD's data. A new friend's presence carries what
+// they are playing, as the friends list does; a block never does.
+func relationshipAddPayload(ctx context.Context, about *auth.User, relType int) map[string]interface{} {
+	var acts []auth.Activity
+	if relType == TypeFriend {
+		acts = stargate.VisibleActivitiesOf(ctx, about)
+	}
+	return map[string]interface{}{
 		"id":   id.Format(about.ID),
 		"type": relType,
-		"user": partialUser(about),
+		"user": partialUserWith(about, acts),
 	}
-	stargate.PublishToUser(ctx, s.redis, to.ID, "RELATIONSHIP_ADD", payload, s.cfg.Stargate.Region)
 }
 
 // publishRemoveTo sends toID a RELATIONSHIP_REMOVE about aboutID. `to` is the row for toID
@@ -433,8 +442,16 @@ func (s *Service) Unblock(ctx context.Context, actorID, targetID int64) error {
 	return nil
 }
 
-// partialUser builds a partial user object. Presence uses status/custom_status only (never online).
+// partialUser builds a partial user object. Presence uses status/custom_status only (never
+// online), and never an activity: see partialUserWith.
 func partialUser(u *auth.User) map[string]interface{} {
+	return partialUserWith(u, nil)
+}
+
+// partialUserWith is partialUser with the person's activities in their presence, for a
+// friend only - never a pending request either way, nor a block: what someone plays is
+// shown to the people who see their status, and sending a friend request is not consent.
+func partialUserWith(u *auth.User, acts []auth.Activity) map[string]interface{} {
 	if u == nil {
 		return nil
 	}
@@ -451,19 +468,23 @@ func partialUser(u *auth.User) map[string]interface{} {
 	if u.HomeDomain != "" {
 		m["home_domain"] = u.HomeDomain
 	}
-	pub := auth.ToPublicPresence(u.Presence, true)
-	m["presence"] = pub
+	m["presence"] = auth.WithActivities(auth.ToPublicPresence(u.Presence, true), acts)
 	return m
 }
 
-func buildRelationshipFromUser(u *auth.User, targetID int64, relType int, since *time.Time, nickname *string, userIgnored bool) *Relationship {
+// buildRelationshipFromUser builds one relationship entry; acts is attached to a friend's
+// presence and ignored for every other type.
+func buildRelationshipFromUser(u *auth.User, targetID int64, relType int, since *time.Time, nickname *string, userIgnored bool, acts []auth.Activity) *Relationship {
 	if u == nil {
 		return nil
+	}
+	if relType != TypeFriend {
+		acts = nil
 	}
 	rel := &Relationship{
 		ID:              id.Format(targetID),
 		Type:            relType,
-		User:            partialUser(u),
+		User:            partialUserWith(u, acts),
 		Nickname:        nickname,
 		UserIgnored:     userIgnored,
 		IsSpamRequest:   false,
@@ -522,28 +543,36 @@ func (s *Service) ListRelationships(ctx context.Context, actorID int64) ([]Relat
 		return nil, err
 	}
 
+	// What friends are playing, in one read for the whole list. Friends only: pending
+	// requests (either way) and blocks never carry an activity.
+	friends := make([]*auth.User, 0, len(u.Relationships))
+	for _, friendID := range u.Relationships {
+		friends = append(friends, byID[friendID])
+	}
+	acts := stargate.VisibleActivities(ctx, friends)
+
 	var out []Relationship
 	for _, friendID := range u.Relationships {
 		var nick *string
 		if n, ok := nicknames[friendID]; ok {
 			nick = &n
 		}
-		if r := buildRelationshipFromUser(byID[friendID], friendID, TypeFriend, nil, nick, false); r != nil {
+		if r := buildRelationshipFromUser(byID[friendID], friendID, TypeFriend, nil, nick, false, acts[friendID]); r != nil {
 			out = append(out, *r)
 		}
 	}
 	for _, blockedID := range u.Blocks {
-		if r := buildRelationshipFromUser(byID[blockedID], blockedID, TypeBlocked, nil, nil, false); r != nil {
+		if r := buildRelationshipFromUser(byID[blockedID], blockedID, TypeBlocked, nil, nil, false, nil); r != nil {
 			out = append(out, *r)
 		}
 	}
 	for _, req := range inReqs {
-		if r := buildRelationshipFromUser(byID[req.FromUserID], req.FromUserID, TypeIncomingRequest, &req.CreatedAt, nil, false); r != nil {
+		if r := buildRelationshipFromUser(byID[req.FromUserID], req.FromUserID, TypeIncomingRequest, &req.CreatedAt, nil, false, nil); r != nil {
 			out = append(out, *r)
 		}
 	}
 	for _, req := range outReqs {
-		if r := buildRelationshipFromUser(byID[req.ToUserID], req.ToUserID, TypeOutgoingRequest, &req.CreatedAt, nil, false); r != nil {
+		if r := buildRelationshipFromUser(byID[req.ToUserID], req.ToUserID, TypeOutgoingRequest, &req.CreatedAt, nil, false, nil); r != nil {
 			out = append(out, *r)
 		}
 	}

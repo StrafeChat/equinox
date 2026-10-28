@@ -1019,8 +1019,15 @@ func (h *Handler) PinUpdate(c fiber.Ctx) error {
 const maxRelayedCustomStatus = 128
 
 // Presence POST /users/presence - how a user on the requesting instance now appears to
-// others. Applied to their shadow row (so lists and READY carry it) and fanned out to
-// their local friends like a local presence change.
+// others. The status goes on their shadow row (so lists and READY carry it); what they are
+// doing goes in the activity store's federated entry, in Redis only, never on the row.
+// Either change is fanned out to their local friends and spaces like a local one.
+//
+// This is the only path that writes or clears a remote user's activity: it is the user's
+// home instance speaking (the FID must be the requester's), and a missing or empty
+// activities field means "doing nothing", which is also what a peer from before activities
+// sends. A space's snapshot, member pages and joins describe members of any instance, so
+// applyRelayedPresence never reads activities from them.
 func (h *Handler) Presence(c fiber.Ctx) error {
 	var body PresenceEvent
 	if err := json.Unmarshal(c.Body(), &body); err != nil {
@@ -1039,6 +1046,11 @@ func (h *Handler) Presence(c fiber.Ctx) error {
 	if utf8.RuneCountInString(body.Presence.CustomStatus) > maxRelayedCustomStatus {
 		return fail(c, ErrPayloadTooLarge, nil)
 	}
+	now := time.Now()
+	acts, err := relayedActivities(body.Presence.Activities, now)
+	if err != nil {
+		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "invalid activities"})
+	}
 	ctx := c.Context()
 	shadow, err := h.svc.users.GetByRemote(ctx, requester, originID)
 	if err != nil {
@@ -1051,16 +1063,64 @@ func (h *Handler) Presence(c fiber.Ctx) error {
 	online := body.Presence.Status != "offline"
 	status := body.Presence.Status
 	custom := strings.TrimSpace(body.Presence.CustomStatus)
-	updated, err := h.svc.users.UpdateProfile(ctx, shadow.ID, &auth.ProfileUpdate{
-		Presence: &auth.PresenceUpdate{Online: &online, Status: &status, CustomStatus: &custom},
-	})
-	if err != nil {
-		return fail(c, err, map[string]any{"peer": requester, "user_id": shadow.ID})
+	updated := shadow
+	// An activity-only relay leaves the row as it is: no write for what did not change.
+	statusChanged := shadow.Presence.Online != online || shadow.Presence.Status != status || shadow.Presence.CustomStatus != custom
+	if statusChanged {
+		updated, err = h.svc.users.UpdateProfile(ctx, shadow.ID, &auth.ProfileUpdate{
+			Presence: &auth.PresenceUpdate{Online: &online, Status: &status, CustomStatus: &custom},
+		})
+		if err != nil {
+			return fail(c, err, map[string]any{"peer": requester, "user_id": shadow.ID})
+		}
 	}
-	if updated != nil {
-		stargate.PublishPresenceUpdate(ctx, h.svc.redis, h.svc.cfg.Stargate.Region, updated)
+	// Someone who reads offline is doing nothing anyone may see; their entry goes.
+	var act *auth.Activity
+	if online && len(acts) > 0 {
+		act = &acts[0]
+	}
+	activityChanged := false
+	if st := stargate.CurrentActivityStore(); st != nil {
+		if activityChanged, err = st.SetFederated(ctx, shadow.ID, act, now.UnixMilli()); err != nil {
+			logger.Warn("federation", "relayed activity not stored: peer=%s user_id=%d: %v", requester, shadow.ID, err)
+		}
+	}
+	if updated == nil {
+		return c.SendStatus(http.StatusNoContent)
+	}
+	region := h.svc.cfg.Stargate.Region
+	switch {
+	case statusChanged:
+		stargate.PublishPresenceUpdate(ctx, h.svc.redis, region, updated)
+	case activityChanged:
+		stargate.PublishActivityChange(ctx, h.svc.redis, region, updated)
+	case online && act == nil:
+		// "Playing nothing", and nothing changed here: either nothing was stored, or what
+		// was stored lapsed (the 12 h expiry, outlasting a home that went quiet) while local
+		// clients still show the game they were told about. The two look the same from
+		// here, so the end is published either way - cheap, because a home sends such a
+		// relay when a game ends or when it introduces a user, not as a matter of course.
+		stargate.PublishActivityChange(ctx, h.svc.redis, region, updated)
 	}
 	return c.SendStatus(http.StatusNoContent)
+}
+
+// relayedActivities re-checks what a peer says its user is doing with the rules the
+// gateway applies to op 9 (auth.NormalizeActivity: the type, the sanitised name, the
+// clamped start). More than auth.MaxActivities is refused outright. An entry that fails
+// the rules is dropped rather than failing the relay, so a newer peer's type this instance
+// does not know costs the activity, not the status that came with it.
+func relayedActivities(in []auth.Activity, now time.Time) ([]auth.Activity, error) {
+	if len(in) > auth.MaxActivities {
+		return nil, auth.ErrInvalidActivity
+	}
+	var out []auth.Activity
+	for _, a := range in {
+		if n, err := auth.NormalizeActivity(a, now); err == nil {
+			out = append(out, n)
+		}
+	}
+	return out, nil
 }
 
 // Peers GET /federation/peers (client-authenticated, not S2S): instances we've talked to.

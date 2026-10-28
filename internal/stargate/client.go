@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/StrafeChat/equinox/internal/id"
 	"github.com/StrafeChat/equinox/internal/logger"
 )
 
@@ -46,12 +47,19 @@ type Client struct {
 	subs      map[string]struct{} // "space:123" or "user:456"
 	mu        sync.RWMutex
 
+	// connID names this one socket (several share a session: browser tabs, and every bot
+	// connection has session 0). It keys the connection's activity entry.
+	connID int64
+
 	// token bucket for op 2 sends; only touched from readPump.
 	sendTokens   int
 	sendRefilled time.Time
 	// token bucket for op 1 subscribes that need authorizing; only touched from readPump.
 	subTokens   int
 	subRefilled time.Time
+
+	// act is op 9's state (activity.go), shared by readPump and the connection's worker.
+	act clientActivity
 }
 
 // Each new subscription costs the authorizer several reads, so a client gets a burst and
@@ -67,6 +75,7 @@ func newClient(hub *Hub, conn Conn, userID, sessionID int64) *Client {
 		conn:         conn,
 		userID:       userID,
 		sessionID:    sessionID,
+		connID:       id.Next(),
 		send:         make(chan []byte, 512),
 		subs:         make(map[string]struct{}),
 		sendTokens:   sendBurst,
@@ -196,6 +205,8 @@ func (c *Client) readPump(ctx context.Context) {
 			c.handleUnsubscribe(msg.D)
 		case OpSend:
 			c.handleSend(msg.D)
+		case OpActivity:
+			c.handleActivity(raw)
 		default:
 			c.sendError(4001, "unknown op")
 		}

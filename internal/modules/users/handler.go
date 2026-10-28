@@ -55,8 +55,17 @@ func (h *Handler) Me(c fiber.Ctx) error {
 	// An OAuth2 access token only sees the account's email if it was granted the email
 	// scope; a session (no scopes recorded) sees everything, as before.
 	email, verified := user.Email, user.VerifiedEmail
-	if scopes, ok := c.Locals(middleware.LocalsKeyScopes).([]string); ok && !oauth.HasScope(scopes, oauth.ScopeEmail) {
+	scopes, thirdParty := c.Locals(middleware.LocalsKeyScopes).([]string)
+	if thirdParty && !oauth.HasScope(scopes, oauth.ScopeEmail) {
 		email, verified = "", false
+	}
+
+	// The self view of presence, with what the user's devices report they are doing (shown
+	// to the user themselves even while invisible). A third-party application holding an
+	// OAuth2 token sees the status but not the game: no scope asks for it.
+	presence := auth.ToPublicPresence(user.Presence, false)
+	if !thirdParty {
+		presence = stargate.SelfPresence(c.Context(), user)
 	}
 
 	return c.JSON(fiber.Map{
@@ -77,7 +86,7 @@ func (h *Handler) Me(c fiber.Ctx) error {
 		"bot":             user.Bot,
 		// The account's age decides whether a space's verification level lets it talk.
 		"created_at": user.CreatedAt,
-		"presence":   auth.ToPublicPresence(user.Presence, false),
+		"presence":   presence,
 	})
 }
 

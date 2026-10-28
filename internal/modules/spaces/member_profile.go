@@ -9,7 +9,6 @@ import (
 	"regexp"
 	"strings"
 	"time"
-	"unicode"
 	"unicode/utf8"
 
 	"github.com/StrafeChat/equinox/internal/id"
@@ -190,35 +189,14 @@ func validNickname(s string) bool {
 	}
 	visible := false
 	for _, r := range s {
-		if forbiddenNicknameRune(r) {
+		if auth.ForbiddenTextRune(r) {
 			return false
 		}
-		if !unicode.IsSpace(r) && !unicode.In(r, unicode.Cf, unicode.Mn, unicode.Me) && !isBlankFiller(r) {
+		if auth.IsVisibleRune(r) {
 			visible = true
 		}
 	}
 	return visible
-}
-
-// forbiddenNicknameRune is what a nickname may never hold anywhere in it: control
-// characters, U+2028/U+2029 (which break the line as a newline does) and bidi controls.
-func forbiddenNicknameRune(r rune) bool {
-	return unicode.IsControl(r) || unicode.In(r, unicode.Zl, unicode.Zp) || isBidiControl(r)
-}
-
-// isBidiControl is U+202A-202E (embeddings and overrides) and U+2066-2069 (isolates).
-func isBidiControl(r rune) bool {
-	return (r >= 0x202A && r <= 0x202E) || (r >= 0x2066 && r <= 0x2069)
-}
-
-// isBlankFiller: letters and symbols that render as nothing (the Hangul fillers, the blank
-// braille pattern) - the usual way to fake an empty name once whitespace is refused.
-func isBlankFiller(r rune) bool {
-	switch r {
-	case 0x115F, 0x1160, 0x3164, 0xFFA0, 0x2800:
-		return true
-	}
-	return false
 }
 
 func validProfileImageURL(s string) bool {
@@ -514,8 +492,9 @@ func memberProfileFields(m *SpaceMember) map[string]interface{} {
 
 // memberJSON is the REST member object: the global profile (memberUserFields, unchanged -
 // the global keys are always the global profile), the membership, and the space profile.
-func (s *Service) memberJSON(m *SpaceMember, u *auth.User) map[string]interface{} {
-	out := s.memberUserFields(u)
+// acts is the member's activities (see memberUserFields).
+func (s *Service) memberJSON(m *SpaceMember, u *auth.User, acts []auth.Activity) map[string]interface{} {
+	out := s.memberUserFields(u, acts)
 	out["joined_at"] = m.JoinedAt
 	out["roles"] = formatRoleIDStrings(m.RoleIDs)
 	for k, v := range memberProfileFields(m) {

@@ -25,6 +25,7 @@ import (
 	"github.com/StrafeChat/equinox/internal/modules/spaces"
 	"github.com/StrafeChat/equinox/internal/modules/voice"
 	"github.com/StrafeChat/equinox/internal/safego"
+	"github.com/StrafeChat/equinox/internal/stargate"
 )
 
 // Service is the federation engine: outbound relays (implements rooms.Federator,
@@ -1035,8 +1036,15 @@ func (s *Service) AfterMessagePinned(ctx context.Context, roomID int64, particip
 
 // ---- presence (stargate.PresenceFederator, users.ProfileFederator) --------------------
 
-func (s *Service) presenceEvent(u *auth.User) PresenceEvent {
-	return PresenceEvent{User: s.LocalFID(u.ID), Presence: auth.ToPublicPresence(u.Presence, true)}
+// presenceEvent is how a local user appears to others right now: their status (invisible
+// reads as offline) and, unless that reads offline, what they are doing - the activity
+// store's effective entry, which the gateway and the API share.
+func (s *Service) presenceEvent(ctx context.Context, u *auth.User) PresenceEvent {
+	p := auth.ToPublicPresence(u.Presence, true)
+	if p.Status != "offline" {
+		p = auth.WithActivities(p, stargate.ActivitiesOf(ctx, u.ID))
+	}
+	return PresenceEvent{User: s.LocalFID(u.ID), Presence: p}
 }
 
 // AfterPresenceChanged tells the home instance of each remote friend, and every instance
@@ -1055,7 +1063,7 @@ func (s *Service) AfterPresenceChanged(ctx context.Context, u *auth.User) {
 	if len(domains) == 0 {
 		return
 	}
-	s.fanOut(ctx, domains, http.MethodPost, "/users/presence", s.presenceEvent(u))
+	s.fanOut(ctx, domains, http.MethodPost, "/users/presence", s.presenceEvent(ctx, u))
 }
 
 // sendPresence tells one instance how a local user appears right now.
@@ -1063,7 +1071,9 @@ func (s *Service) sendPresence(u *auth.User, domain string) {
 	if u == nil || u.IsRemote() || !s.fcfg.IsAllowedPeer(domain) {
 		return
 	}
-	s.send(domain, http.MethodPost, "/users/presence", s.presenceEvent(u))
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	s.send(domain, http.MethodPost, "/users/presence", s.presenceEvent(ctx, u))
 }
 
 func (s *Service) AfterRelationshipRequested(_ context.Context, actor, target *auth.User) {

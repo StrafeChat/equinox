@@ -1,5 +1,7 @@
 package stargate
 
+import "github.com/StrafeChat/equinox/internal/modules/auth"
+
 // Opcodes: client -> server
 const (
 	OpHeartbeat   = 0
@@ -7,6 +9,9 @@ const (
 	OpSend        = 2
 	OpUnsubscribe = 5
 	OpPing        = 6
+	// OpActivity sets or clears what this connection reports the user is doing
+	// ({"activities": [{"type": "playing", "name": ..., "started_at": ...}]}; null or [] clears).
+	OpActivity = 9
 )
 
 // Opcodes: server -> client
@@ -35,6 +40,12 @@ type SendPayload struct {
 	Type    string      `json:"type,omitempty"` // e.g. "message", "typing"
 	Content interface{} `json:"content"`
 	ReplyTo string      `json:"reply_to,omitempty"`
+}
+
+// ActivityPayload is op 9's d. At most auth.MaxActivities entries; see auth.NormalizeActivity
+// for the rules each one must meet.
+type ActivityPayload struct {
+	Activities []auth.Activity `json:"activities"`
 }
 
 // Unsubscribe payload

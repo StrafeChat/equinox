@@ -81,21 +81,118 @@ func (p *DefaultPresenceNotifier) setOnline(ctx context.Context, userID int64, o
 	}
 }
 
+// ActivityChanged publishes a user's changed activity (op 9, a closed connection's cleanup)
+// under the invisible rule (PublishActivityChange), and relays it to other instances only
+// when the people here were told too.
+func (p *DefaultPresenceNotifier) ActivityChanged(ctx context.Context, userID int64) {
+	if p.userRepo == nil {
+		return
+	}
+	u, err := p.userRepo.GetByID(ctx, userID)
+	if err != nil {
+		logger.Err("stargate", err, map[string]any{"user_id": userID})
+		return
+	}
+	if u == nil {
+		return
+	}
+	if PublishActivityChange(ctx, p.redis, p.region, u) && p.federator != nil {
+		p.federator.AfterPresenceChanged(ctx, u)
+	}
+}
+
+// RelayActivity sends the user's presence, with what they are playing, to other instances
+// again - the hourly keepalive's every activityRelayTicks-th tick - so the copy a peer keeps
+// (12 h) outlives a long game. Nobody here is told: nothing changed for them. A user who
+// reads offline to others is not relayed, as an activity change would not be.
+func (p *DefaultPresenceNotifier) RelayActivity(ctx context.Context, userID int64) {
+	if p.userRepo == nil || p.federator == nil {
+		return
+	}
+	u, err := p.userRepo.GetByID(ctx, userID)
+	if err != nil {
+		logger.Err("stargate", err, map[string]any{"user_id": userID})
+		return
+	}
+	if visibleToOthers(u) {
+		p.federator.AfterPresenceChanged(ctx, u)
+	}
+}
+
+// PublishActivityChange publishes a change of the user's activity alone - their status is
+// what it was - and reports whether anyone but the user was told, which is when the change
+// may go on to other instances as well.
+//
+// While others see the user as offline (invisible, or not connected) only the user's own
+// devices hear about it. A user who really is offline produces no frame at all, so a
+// PRESENCE_UPDATE reaching friends, spaces or another instance for an activity change -
+// even one saying "offline" - would give an invisible user away, and tell when they switch
+// games. A user who is not connected anywhere is told nothing either: the connect or
+// disconnect publishes their presence, activity included, on its own.
+func PublishActivityChange(ctx context.Context, rdb *redis.Client, region string, u *auth.User) bool {
+	if u == nil {
+		return false
+	}
+	if !visibleToOthers(u) {
+		if rdb != nil && auth.ToPublicPresence(u.Presence, false).Status != "offline" {
+			self, _ := presencePayloads(ctx, u)
+			PublishToUser(ctx, rdb, u.ID, presenceUpdateEvent, self, defaultRegion(region))
+		}
+		return false
+	}
+	PublishPresenceUpdate(ctx, rdb, region, u)
+	return true
+}
+
+// SelfPresence is the user's own view of their presence (READY, GET /users/@me): their real status,
+// invisible included, with what their devices report they are doing.
+func SelfPresence(ctx context.Context, user *auth.User) auth.PublicPresence {
+	p := auth.ToPublicPresence(user.Presence, false)
+	if p.Status != "offline" {
+		p = auth.WithActivities(p, ActivitiesOf(ctx, user.ID))
+	}
+	return p
+}
+
+// connectedSelfPresence is SelfPresence for the READY of a socket that is open: the user
+// was read before it registered, and OnConnect writes "online" in the background, so the
+// record may still say offline - which READY must never tell a live socket.
+func connectedSelfPresence(ctx context.Context, user *auth.User) auth.PublicPresence {
+	u := *user
+	u.Presence.Online = true
+	return SelfPresence(ctx, &u)
+}
+
+// presencePayloads builds PRESENCE_UPDATE's data for the user's own devices (real status)
+// and for everyone else (invisible reads as offline), each with the user's current
+// activity unless that view is offline.
+func presencePayloads(ctx context.Context, user *auth.User) (self, others map[string]interface{}) {
+	presenceSelf := auth.ToPublicPresence(user.Presence, false)
+	presenceOthers := auth.ToPublicPresence(user.Presence, true)
+	if presenceSelf.Status != "offline" {
+		acts := ActivitiesOf(ctx, user.ID)
+		presenceSelf = auth.WithActivities(presenceSelf, acts)
+		presenceOthers = auth.WithActivities(presenceOthers, acts)
+	}
+	self = map[string]interface{}{"user_id": id.Format(user.ID), "presence": presenceSelf}
+	others = map[string]interface{}{"user_id": id.Format(user.ID), "presence": presenceOthers}
+	return self, others
+}
+
 // PublishPresenceUpdate broadcasts a user's presence to everyone who should see it: the
 // user themselves (their real status, so multiple devices stay in sync), their friends, and
 // every space they belong to (reaching all co-members subscribed to that space). Friends and
 // spaces get the "others" view, where invisible reads as offline. Broadcasting to spaces -
 // not just friends - is what keeps a member's status correct for people who share a space
 // with them but are not friends; without it those statuses only ever reflected load time.
+// Both views carry the user's current activity (the activity store, which both binaries
+// share), the others view only while it is not offline.
 func PublishPresenceUpdate(ctx context.Context, rdb *redis.Client, region string, user *auth.User) {
 	if rdb == nil || user == nil {
 		return
 	}
 	region = defaultRegion(region)
-	presenceSelf := auth.ToPublicPresence(user.Presence, false)
-	presenceOthers := auth.ToPublicPresence(user.Presence, true)
-	payloadSelf := map[string]interface{}{"user_id": id.Format(user.ID), "presence": presenceSelf}
-	payloadOthers := map[string]interface{}{"user_id": id.Format(user.ID), "presence": presenceOthers}
+	payloadSelf, payloadOthers := presencePayloads(ctx, user)
 
 	// The user's own devices (real status).
 	PublishToUser(ctx, rdb, user.ID, presenceUpdateEvent, payloadSelf, region)

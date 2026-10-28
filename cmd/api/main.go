@@ -8,6 +8,7 @@ import (
 	"github.com/StrafeChat/equinox/internal/config"
 	"github.com/StrafeChat/equinox/internal/id"
 	"github.com/StrafeChat/equinox/internal/logger"
+	"github.com/StrafeChat/equinox/internal/stargate"
 	"github.com/joho/godotenv"
 )
 
@@ -36,6 +37,10 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	// The gateway writes what people are playing; the API reads it for member lists, the
+	// friends list, PATCH /users/@me's PRESENCE_UPDATE and federation, and writes remote
+	// users' relayed activities. Same Redis, same prefix as the gateway.
+	stargate.SetActivityStore(stargate.NewActivityStore(a.Redis, cfg.Database.Redis.CachePrefix))
 
 	if err := a.Start(); err != nil {
 		log.Fatal(err)
