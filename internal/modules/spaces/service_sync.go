@@ -209,7 +209,7 @@ func (s *Service) republishRoomVisibility(ctx context.Context, spaceID int64, ro
 		canView, cannotView := snap.splitViewers(room.ID, members, bases, inThread)
 		s.publishRoomCreate(ctx, snap, room, feds[room.ID], canView, inThread)
 		if len(cannotView) > 0 {
-			stargate.PublishToUsers(ctx, s.redis, cannotView, "SPACE_ROOM_DELETE", map[string]interface{}{"room_id": id.Format(room.ID), "space_id": id.Format(spaceID)}, region)
+			stargate.PublishToUsersIn(ctx, s.redis, cannotView, stargate.InSpace(spaceID).About(room.ID), "SPACE_ROOM_DELETE", map[string]interface{}{"room_id": id.Format(room.ID), "space_id": id.Format(spaceID)}, region)
 		}
 		s.lostAccess(ctx, spaceID, room.ID, cannotView)
 	}
@@ -268,7 +268,7 @@ func (s *Service) republishViewChanges(ctx context.Context, spaceID int64, befor
 	}
 	for roomID, users := range lost {
 		if s.redis != nil {
-			stargate.PublishToUsers(ctx, s.redis, users, "SPACE_ROOM_DELETE", map[string]interface{}{"room_id": id.Format(roomID), "space_id": id.Format(spaceID)}, s.stargateRegion())
+			stargate.PublishToUsersIn(ctx, s.redis, users, stargate.InSpace(spaceID).About(roomID), "SPACE_ROOM_DELETE", map[string]interface{}{"room_id": id.Format(roomID), "space_id": id.Format(spaceID)}, s.stargateRegion())
 		}
 		s.lostAccess(ctx, spaceID, roomID, users)
 	}
@@ -340,7 +340,7 @@ func (s *Service) republishMemberVisibility(ctx context.Context, spaceID, userID
 		}
 	}
 	for _, roomID := range lost {
-		stargate.PublishToUser(ctx, s.redis, userID, "SPACE_ROOM_DELETE", map[string]interface{}{"room_id": id.Format(roomID), "space_id": id.Format(spaceID)}, s.stargateRegion())
+		stargate.PublishToUserIn(ctx, s.redis, userID, stargate.InSpace(spaceID).About(roomID), "SPACE_ROOM_DELETE", map[string]interface{}{"room_id": id.Format(roomID), "space_id": id.Format(spaceID)}, s.stargateRegion())
 		s.lostAccess(ctx, spaceID, roomID, []int64{userID})
 	}
 }
@@ -357,8 +357,10 @@ func (s *Service) publishRoomCreate(ctx context.Context, snap *Snapshot, room *r
 	payload := AttachFederation(AttachOverrides(RoomMap(room), snap.RoomOverridesFor(room.ID)), fed)
 	payload["room_id"] = id.Format(room.ID)
 	region := s.stargateRegion()
+	// The event gives each recipient the room: the gateway subscribes them as it delivers it.
+	sc := stargate.InRoom(room.SpaceID, room.ID).Subscribing(room.ID)
 	if room.Type != rooms.TypeThread {
-		stargate.PublishToUsers(ctx, s.redis, users, "SPACE_ROOM_CREATE", payload, region)
+		stargate.PublishToUsersIn(ctx, s.redis, users, sc, "SPACE_ROOM_CREATE", payload, region)
 		return
 	}
 	states, _ := s.ThreadStates(ctx, 0, []int64{room.ID})
@@ -372,10 +374,10 @@ func (s *Service) publishRoomCreate(ctx context.Context, snap *Snapshot, room *r
 		}
 	}
 	AttachThreadState(payload, state)
-	stargate.PublishToUsers(ctx, s.redis, others, "SPACE_ROOM_CREATE", payload, region)
+	stargate.PublishToUsersIn(ctx, s.redis, others, sc, "SPACE_ROOM_CREATE", payload, region)
 	state.Joined = true
 	AttachThreadState(payload, state)
-	stargate.PublishToUsers(ctx, s.redis, joined, "SPACE_ROOM_CREATE", payload, region)
+	stargate.PublishToUsersIn(ctx, s.redis, joined, sc, "SPACE_ROOM_CREATE", payload, region)
 }
 
 // threadRoster answers the view rule's "is this user in the thread" for any number of members

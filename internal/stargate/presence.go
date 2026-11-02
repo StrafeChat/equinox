@@ -201,8 +201,10 @@ func PublishPresenceUpdate(ctx context.Context, rdb *redis.Client, region string
 		PublishToUsers(ctx, rdb, user.Relationships, presenceUpdateEvent, payloadOthers, region)
 	}
 	// Every space the user is a member of - one publish per space, received by every
-	// co-member subscribed to it. user.Spaces is maintained on join/leave.
+	// co-member subscribed to it. user.Spaces is maintained on join/leave. These copies carry
+	// the space (Discord's guild_id); the user's own copy and their friends' stay unscoped,
+	// which is how a client tells its own real status from the others view of it.
 	for _, spaceID := range user.Spaces {
-		PublishToSpace(ctx, rdb, spaceID, presenceUpdateEvent, payloadOthers, region)
+		PublishToSpaceChannel(ctx, rdb, InSpace(spaceID), presenceUpdateEvent, payloadOthers, region)
 	}
 }

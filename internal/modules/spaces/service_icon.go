@@ -47,7 +47,7 @@ func (s *Service) UpdateSpaceIcon(ctx context.Context, actorID, spaceID int64, i
 		return nil, ErrSpaceNotFound
 	}
 	if s.redis != nil {
-		stargate.PublishToSpace(ctx, s.redis, spaceID, "SPACE_UPDATE", spaceToEventPayload(sp), s.stargateRegion())
+		s.publishToSpaceChannel(ctx, stargate.InSpace(spaceID), "SPACE_UPDATE", spaceToEventPayload(sp))
 	}
 	s.fedSpaceUpdated(ctx, sp)
 	s.audit(ctx, spaceID, actorID, AuditSpaceUpdate, id.Format(spaceID), map[string]change{"icon": {New: iconURL}}, "")
@@ -77,7 +77,7 @@ func (s *Service) UpdateSpaceBanner(ctx context.Context, actorID, spaceID int64,
 		return nil, ErrSpaceNotFound
 	}
 	if s.redis != nil {
-		stargate.PublishToSpace(ctx, s.redis, spaceID, "SPACE_UPDATE", spaceToEventPayload(sp), s.stargateRegion())
+		s.publishToSpaceChannel(ctx, stargate.InSpace(spaceID), "SPACE_UPDATE", spaceToEventPayload(sp))
 	}
 	s.fedSpaceUpdated(ctx, sp)
 	s.audit(ctx, spaceID, actorID, AuditSpaceUpdate, id.Format(spaceID), map[string]change{"banner": {New: bannerURL}}, "")

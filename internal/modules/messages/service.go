@@ -306,6 +306,28 @@ func (s *Service) region() string {
 	return s.cfg.Stargate.Region
 }
 
+// publishRoom sends an event on a room's channel, scoped to the room and its space: a space
+// room's (or thread's) message events carry space_id, Discord's guild_id; a PM's do not.
+func (s *Service) publishRoom(ctx context.Context, room *rooms.Room, roomID int64, eventType string, data map[string]interface{}) {
+	stargate.PublishToRoom(ctx, s.redis, s.roomScope(ctx, room, roomID), eventType, data, s.region())
+}
+
+// roomScope is what an event about roomID is scoped to. A caller without the room loaded
+// passes nil and it is read here (one primary-key read); a failed read scopes the event to
+// the room alone, so it still goes out rather than being lost.
+func (s *Service) roomScope(ctx context.Context, room *rooms.Room, roomID int64) stargate.Scope {
+	if room == nil || room.ID != roomID {
+		room = nil
+		if r, err := s.rooms.GetByID(ctx, roomID); err == nil {
+			room = r
+		}
+	}
+	if room == nil {
+		return stargate.InRoom(nil, roomID)
+	}
+	return stargate.InRoom(room.SpaceID, roomID)
+}
+
 // CreateFederated stores a message relayed by another instance. `m` arrives with a local
 // id, sender (a shadow user or 0 for system messages), already-mapped mentions and the
 // origin's created_at; this does the same bookkeeping as Create (last message, mention
@@ -364,7 +386,7 @@ func (s *Service) CreateFederated(ctx context.Context, roomID int64, participant
 	}
 	s.pushFederated(ctx, roomID, participants, m, notifyUserIDs)
 	if s.redis != nil && s.cfg != nil {
-		stargate.PublishToSpace(ctx, s.redis, roomID, "MESSAGE_CREATE", s.messageEventPayloadEnriched(ctx, m), s.region())
+		s.publishRoom(ctx, room, roomID, "MESSAGE_CREATE", s.messageEventPayloadEnriched(ctx, m))
 	}
 	s.publishRoleMentionCounts(room, m.ID, roleMentioned)
 	return nil
@@ -386,7 +408,7 @@ func (s *Service) EditFederated(ctx context.Context, roomID, msgID int64, cipher
 		return nil, ErrMessageNotFound
 	}
 	if s.redis != nil && s.cfg != nil {
-		stargate.PublishToSpace(ctx, s.redis, roomID, "MESSAGE_UPDATE", s.messageEventPayloadEnriched(ctx, updated), s.region())
+		s.publishRoom(ctx, nil, roomID, "MESSAGE_UPDATE", s.messageEventPayloadEnriched(ctx, updated))
 	}
 	return updated, nil
 }
@@ -441,7 +463,7 @@ func (s *Service) DeleteFederated(ctx context.Context, roomID, msgID int64) erro
 		return err
 	}
 	if merr == nil {
-		s.dropPinOnDelete(ctx, roomID, msg, 0)
+		s.dropPinOnDelete(ctx, room, roomID, msg, 0)
 		s.cleanupSenderUploads(ctx, roomID, msg)
 	}
 	// No thread hook here: a thread's count lives on its origin, which runs Delete. This is a
@@ -477,7 +499,7 @@ func (s *Service) DeleteFederated(ctx context.Context, roomID, msgID int64) erro
 				payload["last_message_id"] = nil
 			}
 		}
-		stargate.PublishToSpace(ctx, s.redis, roomID, "MESSAGE_DELETE", payload, s.region())
+		s.publishRoom(ctx, room, roomID, "MESSAGE_DELETE", payload)
 	}
 	return nil
 }
@@ -814,7 +836,7 @@ func (s *Service) create(ctx context.Context, userID, roomID int64, in *CreateMe
 		// What the origin cannot do for us: the files are on this instance's CDN, and so is
 		// the sender's read state. Refused, the uploads stay unclaimed for another try.
 		s.claimUploads(ctx, roomID, m.ID, attachments)
-		if s.markOwnMessageRead(ctx, userID, roomID, m.ID) {
+		if s.markOwnMessageRead(ctx, userID, room, roomID, m.ID) {
 			s.pushRead(ctx, userID, room, m.ID)
 		}
 		return m, nil
@@ -903,7 +925,7 @@ func (s *Service) create(ctx context.Context, userID, roomID int64, in *CreateMe
 	if err := s.rooms.UpdateLastMessageID(ctx, roomID, participants, msgID); err != nil {
 		// non-fatal: message is stored
 	}
-	if s.markOwnMessageRead(ctx, userID, roomID, msgID) {
+	if s.markOwnMessageRead(ctx, userID, room, roomID, msgID) {
 		s.pushRead(ctx, userID, room, msgID)
 	}
 	// Role mentions (<@&roleId>) were parsed into mentionRoleIDs above but, until this
@@ -928,9 +950,9 @@ func (s *Service) create(ctx context.Context, userID, roomID int64, in *CreateMe
 	s.pushMessage(ctx, room, m, participants, notifyUserIDs, mentionEveryone, len(attachments))
 	if s.redis != nil && s.cfg != nil {
 		if deliverToUser != 0 {
-			stargate.PublishToUser(ctx, s.redis, deliverToUser, "MESSAGE_CREATE", s.messageEventPayloadEnriched(ctx, m), s.cfg.Stargate.Region)
+			stargate.PublishToUserIn(ctx, s.redis, deliverToUser, s.roomScope(ctx, room, roomID), "MESSAGE_CREATE", s.messageEventPayloadEnriched(ctx, m), s.region())
 		} else {
-			stargate.PublishToSpace(ctx, s.redis, roomID, "MESSAGE_CREATE", s.messageEventPayloadEnriched(ctx, m), s.cfg.Stargate.Region)
+			s.publishRoom(ctx, room, roomID, "MESSAGE_CREATE", s.messageEventPayloadEnriched(ctx, m))
 		}
 	}
 	// Role holders' badges, which their clients cannot work out from MESSAGE_CREATE alone.
@@ -949,7 +971,7 @@ func (s *Service) create(ctx context.Context, userID, roomID int64, in *CreateMe
 // other device they're signed into) until they re-open it, since nothing else ever advances
 // *their* read cursor past a message they wrote themselves. MESSAGE_ACK is the same event
 // multi-device read-sync already uses, so no separate client-side handling is needed for this.
-func (s *Service) markOwnMessageRead(ctx context.Context, userID, roomID, msgID int64) bool {
+func (s *Service) markOwnMessageRead(ctx context.Context, userID int64, room *rooms.Room, roomID, msgID int64) bool {
 	if err := s.rooms.UpdateReadState(ctx, userID, roomID, msgID); err != nil {
 		return false
 	}
@@ -964,11 +986,11 @@ func (s *Service) markOwnMessageRead(ctx context.Context, userID, roomID, msgID 
 		_ = s.rooms.SetMentionCountBaseline(ctx, userID, roomID, int64(total))
 	}
 	if s.redis != nil && s.cfg != nil {
-		stargate.PublishToUser(ctx, s.redis, userID, "MESSAGE_ACK", map[string]interface{}{
+		stargate.PublishToUserIn(ctx, s.redis, userID, s.roomScope(ctx, room, roomID), "MESSAGE_ACK", map[string]interface{}{
 			"room_id":              id.Format(roomID),
 			"message_id":           id.Format(msgID),
 			"last_read_message_id": id.Format(msgID),
-		}, s.cfg.Stargate.Region)
+		}, s.region())
 	}
 	return true
 }
@@ -1182,7 +1204,7 @@ func (s *Service) Edit(ctx context.Context, userID, roomID, msgID int64, in *Edi
 		return nil, err
 	}
 	if s.redis != nil && s.cfg != nil && updated != nil {
-		stargate.PublishToSpace(ctx, s.redis, roomID, "MESSAGE_UPDATE", s.messageEventPayloadEnriched(ctx, updated), s.cfg.Stargate.Region)
+		s.publishRoom(ctx, room, roomID, "MESSAGE_UPDATE", s.messageEventPayloadEnriched(ctx, updated))
 	}
 	if s.federator != nil && updated != nil {
 		s.federator.AfterMessageEdited(ctx, roomID, participants, updated)
@@ -1214,7 +1236,7 @@ func (s *Service) Delete(ctx context.Context, userID, roomID, msgID int64) error
 	if err := s.repo.SoftDelete(ctx, roomID, msgID); err != nil {
 		return err
 	}
-	s.dropPinOnDelete(ctx, roomID, msg, userID)
+	s.dropPinOnDelete(ctx, room, roomID, msg, userID)
 	if room.Type == rooms.TypeThread && s.threads != nil {
 		s.threads.OnThreadMessageDeleted(ctx, room)
 	}
@@ -1253,10 +1275,6 @@ func (s *Service) Delete(ctx context.Context, userID, roomID, msgID int64) error
 	}
 	s.cleanupAttachments(ctx, roomID, msg.Attachments())
 	if s.redis != nil && s.cfg != nil {
-		region := s.cfg.Stargate.Region
-		if region == "" {
-			region = "default"
-		}
 		payload := map[string]interface{}{
 			"room_id":    id.Format(roomID),
 			"message_id": id.Format(msgID),
@@ -1268,7 +1286,7 @@ func (s *Service) Delete(ctx context.Context, userID, roomID, msgID int64) error
 				payload["last_message_id"] = nil
 			}
 		}
-		stargate.PublishToSpace(ctx, s.redis, roomID, "MESSAGE_DELETE", payload, s.cfg.Stargate.Region)
+		s.publishRoom(ctx, room, roomID, "MESSAGE_DELETE", payload)
 	}
 	if s.federator != nil {
 		s.federator.AfterMessageDeleted(ctx, roomID, participants, msgID)
@@ -1326,15 +1344,12 @@ func (s *Service) rollbackDeletedMentions(ctx context.Context, room *rooms.Room,
 	if s.redis == nil || s.cfg == nil {
 		return
 	}
-	region := s.cfg.Stargate.Region
-	if region == "" {
-		region = "default"
-	}
+	sc := s.roomScope(ctx, room, room.ID)
 	for _, uid := range toDecrement {
-		stargate.PublishToUser(ctx, s.redis, uid, "MESSAGE_MENTION_UPDATE", map[string]interface{}{
+		stargate.PublishToUserIn(ctx, s.redis, uid, sc, "MESSAGE_MENTION_UPDATE", map[string]interface{}{
 			"room_id":       id.Format(room.ID),
 			"mention_count": newCounts[uid],
-		}, region)
+		}, s.region())
 	}
 }
 

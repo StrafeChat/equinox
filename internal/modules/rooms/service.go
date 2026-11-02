@@ -310,16 +310,24 @@ func (s *Service) RoomEventPayload(rwp *RoomWithParticipants) map[string]interfa
 	return payload
 }
 
-// PublishRoomEvent pushes a room event to the given local users.
+// PublishRoomEvent pushes a room event to the given local users. ROOM_CREATE gives them the
+// room (roomCreateScope).
 func (s *Service) PublishRoomEvent(ctx context.Context, rwp *RoomWithParticipants, eventType string, userIDs []int64) {
 	if s.redis == nil || s.cfg == nil {
 		return
 	}
-	payload := s.RoomEventPayload(rwp)
-	region := s.stargateRegion()
-	for _, uid := range userIDs {
-		stargate.PublishToUser(ctx, s.redis, uid, eventType, payload, region)
+	sc := stargate.InRoom(rwp.SpaceID, rwp.ID)
+	if eventType == "ROOM_CREATE" {
+		sc = roomCreateScope(rwp.SpaceID, rwp.ID)
 	}
+	stargate.PublishToUsersIn(ctx, s.redis, userIDs, sc, eventType, s.RoomEventPayload(rwp), s.stargateRegion())
+}
+
+// roomCreateScope is ROOM_CREATE's scope: the event subscribes its recipients' sockets to the
+// room as the gateway delivers it, so the room's next events (the official message, the
+// "added" notice, the first reply) reach them without waiting for their client to subscribe.
+func roomCreateScope(spaceID *int64, roomID int64) stargate.Scope {
+	return stargate.InRoom(spaceID, roomID).Subscribing(roomID)
 }
 
 // PublishTypingFrom pushes TYPING_START for a (possibly remote) user without the
@@ -333,7 +341,13 @@ func (s *Service) PublishTypingFrom(ctx context.Context, roomID, userID int64) {
 		"user_id":   id.Format(userID),
 		"timestamp": time.Now().Unix(),
 	}
-	stargate.PublishToSpace(ctx, s.redis, roomID, "TYPING_START", payload, s.cfg.Stargate.Region)
+	// The relay names only the room; its space is one read away. A failed read still
+	// delivers the event, without a space.
+	sc := stargate.InRoom(nil, roomID)
+	if room, err := s.repo.GetByID(ctx, roomID); err == nil && room != nil {
+		sc = stargate.InRoom(room.SpaceID, roomID)
+	}
+	stargate.PublishToRoom(ctx, s.redis, sc, "TYPING_START", payload, s.cfg.Stargate.Region)
 }
 
 // CreateMirror stores a room announced by another instance, with the given local
@@ -409,17 +423,16 @@ func (s *Service) ApplyParticipants(ctx context.Context, roomID int64, target []
 		s.PublishRoomEvent(ctx, rwp, "ROOM_UPDATE", remaining)
 		if s.redis != nil && s.cfg != nil {
 			region := s.stargateRegion()
+			sc := stargate.InRoom(room.SpaceID, roomID)
 			for _, uid := range removed {
-				stargate.PublishToUser(ctx, s.redis, uid, "ROOM_LEAVE", map[string]interface{}{"room_id": id.Format(roomID)}, region)
+				stargate.PublishToUserIn(ctx, s.redis, uid, sc, "ROOM_LEAVE", map[string]interface{}{"room_id": id.Format(roomID)}, region)
 				if s.participantRemoved != nil {
 					s.participantRemoved(ctx, roomID, uid)
 				}
 			}
 			if len(removed) > 0 && (room.E2EEEnabled == nil || *room.E2EEEnabled) {
 				rotate := map[string]interface{}{"room_id": id.Format(roomID)}
-				for _, uid := range rwp.ParticipantIDs {
-					stargate.PublishToUser(ctx, s.redis, uid, "SESSION_ROTATE", rotate, region)
-				}
+				stargate.PublishToUsersIn(ctx, s.redis, rwp.ParticipantIDs, sc, "SESSION_ROTATE", rotate, region)
 			}
 		}
 	}
@@ -549,8 +562,10 @@ func (s *Service) CreatePM(ctx context.Context, actorID, targetID int64) (*RoomW
 		ParticipantIDs: participantIDs,
 	}
 	s.enrich(ctx, rwp)
-	// Real-time: notify target user of new PM with full room (skip for notes room)
-	if actorID != targetID && s.redis != nil && s.cfg != nil {
+	// Real-time: the new PM with the full room goes to both participants - the creator's
+	// other sessions learn of it too, as Discord sends CHANNEL_CREATE to the creator - or to
+	// the creator alone for their notes room.
+	if s.redis != nil && s.cfg != nil {
 		recipients := make([]string, len(participantIDs))
 		for i, pid := range participantIDs {
 			recipients[i] = id.Format(pid)
@@ -562,7 +577,7 @@ func (s *Service) CreatePM(ctx context.Context, actorID, targetID int64) (*RoomW
 			"created_at":   room.CreatedAt,
 			"participants": rwp.Participants,
 		}
-		stargate.PublishToUser(ctx, s.redis, targetID, "ROOM_CREATE", payload, s.stargateRegion())
+		stargate.PublishToUsersIn(ctx, s.redis, participantIDs, roomCreateScope(nil, room.ID), "ROOM_CREATE", payload, s.stargateRegion())
 	}
 	if actorID != targetID {
 		s.fedRoomCreated(ctx, rwp)
@@ -603,7 +618,7 @@ func (s *Service) EnsureSystemPM(ctx context.Context, systemID, userID int64) (*
 			"participants": rwp.Participants,
 			"e2ee_enabled": false,
 		}
-		stargate.PublishToUser(ctx, s.redis, userID, "ROOM_CREATE", payload, s.stargateRegion())
+		stargate.PublishToUserIn(ctx, s.redis, userID, roomCreateScope(nil, room.ID), "ROOM_CREATE", payload, s.stargateRegion())
 	}
 	return rwp, true, nil
 }
@@ -668,10 +683,7 @@ func (s *Service) CreateGroupPM(ctx context.Context, actorID int64, name string,
 			"created_at":   room.CreatedAt,
 			"participants": rwp.Participants,
 		}
-		region := s.stargateRegion()
-		for _, uid := range allIDs {
-			stargate.PublishToUser(ctx, s.redis, uid, "ROOM_CREATE", payload, region)
-		}
+		stargate.PublishToUsersIn(ctx, s.redis, allIDs, roomCreateScope(nil, room.ID), "ROOM_CREATE", payload, s.stargateRegion())
 	}
 	s.fedRoomCreated(ctx, rwp)
 	return rwp, nil
@@ -718,15 +730,10 @@ func (s *Service) AddParticipant(ctx context.Context, actorID, roomID, targetID 
 		return err
 	}
 	newIDs, _ := s.repo.GetParticipants(ctx, roomID)
-	// System message: X added Y
-	if s.onSystemEvent != nil {
-		payload := `{"actor_id":"` + id.Format(actorID) + `","user_id":"` + id.Format(targetID) + `"}`
-		if msgID, err := s.onSystemEvent(ctx, roomID, newIDs, "member_added", payload); err == nil {
-			_ = s.repo.UpdateLastMessageID(ctx, roomID, newIDs, msgID)
-		}
-	}
 	rwp := &RoomWithParticipants{Room: *room, ParticipantIDs: newIDs}
 	s.enrich(ctx, rwp)
+	// The room before the notice: ROOM_CREATE subscribes the person added as it reaches them,
+	// so "X added Y" below arrives live on every socket they have.
 	if s.redis != nil && s.cfg != nil {
 		recipients := make([]string, len(newIDs))
 		for i, pid := range newIDs {
@@ -741,9 +748,14 @@ func (s *Service) AddParticipant(ctx context.Context, actorID, roomID, targetID 
 			"participants": rwp.Participants,
 		}
 		region := s.stargateRegion()
-		stargate.PublishToUser(ctx, s.redis, targetID, "ROOM_CREATE", payload, region)
-		for _, uid := range ids {
-			stargate.PublishToUser(ctx, s.redis, uid, "ROOM_UPDATE", payload, region)
+		stargate.PublishToUserIn(ctx, s.redis, targetID, roomCreateScope(room.SpaceID, room.ID), "ROOM_CREATE", payload, region)
+		stargate.PublishToUsersIn(ctx, s.redis, ids, stargate.InRoom(room.SpaceID, room.ID), "ROOM_UPDATE", payload, region)
+	}
+	// System message: X added Y
+	if s.onSystemEvent != nil {
+		payload := `{"actor_id":"` + id.Format(actorID) + `","user_id":"` + id.Format(targetID) + `"}`
+		if msgID, err := s.onSystemEvent(ctx, roomID, newIDs, "member_added", payload); err == nil {
+			_ = s.repo.UpdateLastMessageID(ctx, roomID, newIDs, msgID)
 		}
 	}
 	s.fedParticipantsChanged(ctx, rwp, nil)
@@ -826,10 +838,9 @@ func (s *Service) RemoveParticipant(ctx context.Context, actorID, roomID, target
 			"participants": rwp.Participants,
 		}
 		region := s.stargateRegion()
-		for _, uid := range remaining {
-			stargate.PublishToUser(ctx, s.redis, uid, "ROOM_UPDATE", payload, region)
-		}
-		stargate.PublishToUser(ctx, s.redis, targetID, "ROOM_LEAVE", map[string]interface{}{"room_id": id.Format(roomID)}, region)
+		sc := stargate.InRoom(room.SpaceID, roomID)
+		stargate.PublishToUsersIn(ctx, s.redis, remaining, sc, "ROOM_UPDATE", payload, region)
+		stargate.PublishToUserIn(ctx, s.redis, targetID, sc, "ROOM_LEAVE", map[string]interface{}{"room_id": id.Format(roomID)}, region)
 		if s.participantRemoved != nil {
 			s.participantRemoved(ctx, roomID, targetID)
 		}
@@ -839,9 +850,7 @@ func (s *Service) RemoveParticipant(ctx context.Context, actorID, roomID, target
 		// outbound session afterward; this tells their clients to do that.
 		if room.E2EEEnabled == nil || *room.E2EEEnabled {
 			rotatePayload := map[string]interface{}{"room_id": id.Format(roomID)}
-			for _, uid := range remaining {
-				stargate.PublishToUser(ctx, s.redis, uid, "SESSION_ROTATE", rotatePayload, region)
-			}
+			stargate.PublishToUsersIn(ctx, s.redis, remaining, sc, "SESSION_ROTATE", rotatePayload, region)
 		}
 	}
 	s.fedParticipantsChanged(ctx, rwp, []int64{targetID})
@@ -908,10 +917,7 @@ func (s *Service) UpdateRoomName(ctx context.Context, actorID, roomID int64, nam
 			"created_at":   room.CreatedAt,
 			"participants": rwp.Participants,
 		}
-		region := s.stargateRegion()
-		for _, uid := range ids {
-			stargate.PublishToUser(ctx, s.redis, uid, "ROOM_UPDATE", payload, region)
-		}
+		stargate.PublishToUsersIn(ctx, s.redis, ids, stargate.InRoom(room.SpaceID, room.ID), "ROOM_UPDATE", payload, s.stargateRegion())
 	}
 	s.fedRoomUpdated(ctx, rwp)
 	return nil
@@ -958,10 +964,7 @@ func (s *Service) UpdateRoomE2EEEnabled(ctx context.Context, actorID, roomID int
 		// Same reasoning as spaces.Service.UpdateRoom: a Megolm session left over from an
 		// earlier E2EE stint may still be shared with people who have since left.
 		rotate := map[string]interface{}{"room_id": id.Format(roomID)}
-		region := s.stargateRegion()
-		for _, uid := range ids {
-			stargate.PublishToUser(ctx, s.redis, uid, "SESSION_ROTATE", rotate, region)
-		}
+		stargate.PublishToUsersIn(ctx, s.redis, ids, stargate.InRoom(room.SpaceID, roomID), "SESSION_ROTATE", rotate, s.stargateRegion())
 	}
 	s.fedRoomUpdated(ctx, rwp)
 	return nil
@@ -1122,7 +1125,7 @@ func (s *Service) Typing(ctx context.Context, userID, roomID int64) error {
 		"user_id":   id.Format(userID),
 		"timestamp": time.Now().Unix(),
 	}
-	stargate.PublishToSpace(ctx, s.redis, roomID, "TYPING_START", payload, s.cfg.Stargate.Region)
+	stargate.PublishToRoom(ctx, s.redis, stargate.InRoom(room.SpaceID, roomID), "TYPING_START", payload, s.cfg.Stargate.Region)
 	if s.federator != nil {
 		s.federator.AfterTyping(ctx, roomID, userID)
 	}
@@ -1159,27 +1162,34 @@ func (s *Service) canAccessLoaded(ctx context.Context, userID int64, room *Room,
 // canAccessLoaded, a space room's permission error comes back as the error (a member who
 // is not one is spaces.ErrNotMember), so a caller can tell a refusal from a failed read.
 func (s *Service) CanAccess(ctx context.Context, userID, roomID int64) (bool, error) {
+	_, ok, err := s.CheckAccess(ctx, userID, roomID)
+	return ok, err
+}
+
+// CheckAccess is CanAccess that also returns the room it read, so the gateway learns which
+// space a channel belongs to from the same read (nil when the room is missing or unread).
+func (s *Service) CheckAccess(ctx context.Context, userID, roomID int64) (*Room, bool, error) {
 	room, err := s.repo.GetByID(ctx, roomID)
 	if err != nil {
-		return false, err
+		return nil, false, err
 	}
 	if room == nil {
-		return false, ErrRoomNotFound
+		return nil, false, ErrRoomNotFound
 	}
 	if room.SpaceID != nil && s.spaceChecker != nil {
 		// Here a failed read is an error, not a "no": the gateway re-checks every subscription
 		// a member holds after a permission change, and must not drop one over a timeout.
 		perms, err := s.spaceChecker.EffectiveChannelPermissions(ctx, userID, *room.SpaceID, room.ID)
 		if err != nil {
-			return false, err
+			return room, false, err
 		}
-		return permissions.Has(perms, permissions.PermViewRoom), nil
+		return room, permissions.Has(perms, permissions.PermViewRoom), nil
 	}
 	ids, err := s.repo.GetParticipants(ctx, roomID)
 	if err != nil {
-		return false, err
+		return room, false, err
 	}
-	return s.canAccessLoaded(ctx, userID, room, ids), nil
+	return room, s.canAccessLoaded(ctx, userID, room, ids), nil
 }
 
 // GetRoom returns a room by ID if the user is a participant or (for space rooms) a space member.
@@ -1256,7 +1266,7 @@ func (s *Service) Ack(ctx context.Context, userID, roomID, messageID int64) erro
 		// the room finally clears it - this is what retires ghosts that predate the delete-time
 		// rollback.
 		if messageID <= *row.LastReadMessageID {
-			s.clearStrandedMentions(ctx, userID, roomID, row)
+			s.clearStrandedMentions(ctx, userID, room, row)
 			return nil
 		}
 	}
@@ -1279,7 +1289,7 @@ func (s *Service) Ack(ctx context.Context, userID, roomID, messageID int64) erro
 			"message_id":           id.Format(messageID),
 			"last_read_message_id": id.Format(messageID),
 		}
-		stargate.PublishToUser(ctx, s.redis, userID, "MESSAGE_ACK", payload, region)
+		stargate.PublishToUserIn(ctx, s.redis, userID, stargate.InRoom(room.SpaceID, roomID), "MESSAGE_ACK", payload, region)
 	}
 	// Read on one device: clear what a closed app is still showing on the others.
 	var spaceID int64
@@ -1295,7 +1305,8 @@ func (s *Service) Ack(ctx context.Context, userID, roomID, messageID int64) erro
 // other sessions. Called from a non-advancing ack: the only way displayed mentions can be > 0
 // while the room is already caught up is a mention whose message was deleted, which is always
 // safe to clear.
-func (s *Service) clearStrandedMentions(ctx context.Context, userID, roomID int64, row *RoomRow) {
+func (s *Service) clearStrandedMentions(ctx context.Context, userID int64, room *Room, row *RoomRow) {
+	roomID := room.ID
 	total, err := s.repo.GetMentionCount(ctx, userID, roomID)
 	if err != nil {
 		return
@@ -1315,7 +1326,7 @@ func (s *Service) clearStrandedMentions(ctx context.Context, userID, roomID int6
 		if region == "" {
 			region = "default"
 		}
-		stargate.PublishToUser(ctx, s.redis, userID, "MESSAGE_MENTION_UPDATE", map[string]interface{}{
+		stargate.PublishToUserIn(ctx, s.redis, userID, stargate.InRoom(room.SpaceID, roomID), "MESSAGE_MENTION_UPDATE", map[string]interface{}{
 			"room_id":       id.Format(roomID),
 			"mention_count": int64(0),
 		}, region)
@@ -1363,7 +1374,7 @@ func (s *Service) SetRoomNotifySettings(ctx context.Context, userID, roomID int6
 		if mutedUntil != nil {
 			payload["muted_until"] = *mutedUntil
 		}
-		stargate.PublishToUser(ctx, s.redis, userID, "ROOM_NOTIFY_SETTINGS_UPDATE", payload, region)
+		stargate.PublishToUserIn(ctx, s.redis, userID, stargate.InRoom(room.SpaceID, roomID), "ROOM_NOTIFY_SETTINGS_UPDATE", payload, region)
 	}
 	return nil
 }

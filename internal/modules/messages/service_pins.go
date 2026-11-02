@@ -9,7 +9,6 @@ import (
 	"github.com/StrafeChat/equinox/internal/id"
 	"github.com/StrafeChat/equinox/internal/modules/permissions"
 	"github.com/StrafeChat/equinox/internal/modules/rooms"
-	"github.com/StrafeChat/equinox/internal/stargate"
 )
 
 // Pinned messages, Discord's model. A room keeps up to MaxPinsPerRoom pinned messages that
@@ -69,7 +68,7 @@ func (s *Service) Pin(ctx context.Context, userID, roomID, msgID int64) (time.Ti
 	if err := s.repo.Pin(ctx, roomID, msgID, userID, now); err != nil {
 		return time.Time{}, err
 	}
-	s.publishPinsUpdate(ctx, roomID, msgID, userID, &now, true)
+	s.publishPinsUpdate(ctx, room, roomID, msgID, userID, &now, true)
 	s.postPinNotice(ctx, room, participants, userID, msgID)
 	if s.federator != nil {
 		s.federator.AfterMessagePinned(ctx, roomID, participants, msgID, userID, now, false)
@@ -101,7 +100,7 @@ func (s *Service) Unpin(ctx context.Context, userID, roomID, msgID int64) error 
 	if err := s.repo.Unpin(ctx, roomID, msgID, at); err != nil {
 		return err
 	}
-	s.publishPinsUpdate(ctx, roomID, msgID, userID, nil, false)
+	s.publishPinsUpdate(ctx, room, roomID, msgID, userID, nil, false)
 	if s.federator != nil {
 		s.federator.AfterMessagePinned(ctx, roomID, participants, msgID, userID, at, true)
 	}
@@ -166,7 +165,7 @@ func (s *Service) PinFederated(ctx context.Context, roomID, msgID, userID int64,
 				return err
 			}
 		}
-		s.publishPinsUpdate(ctx, roomID, msgID, userID, nil, false)
+		s.publishPinsUpdate(ctx, nil, roomID, msgID, userID, nil, false)
 		return nil
 	}
 	// A mirror may not hold the message at all (it stores only what was relayed since one of
@@ -177,7 +176,7 @@ func (s *Service) PinFederated(ctx context.Context, roomID, msgID, userID int64,
 			return err
 		}
 	}
-	s.publishPinsUpdate(ctx, roomID, msgID, userID, &at, true)
+	s.publishPinsUpdate(ctx, nil, roomID, msgID, userID, &at, true)
 	return nil
 }
 
@@ -190,18 +189,19 @@ func (s *Service) checkPinPerms(ctx context.Context, userID, roomID int64, room 
 }
 
 // dropPinOnDelete removes a deleted message's pin (Discord drops it too) and tells clients,
-// since MESSAGE_DELETE alone would leave their pin lists stale.
-func (s *Service) dropPinOnDelete(ctx context.Context, roomID int64, msg *Message, actorID int64) {
+// since MESSAGE_DELETE alone would leave their pin lists stale. room may be nil (see roomScope).
+func (s *Service) dropPinOnDelete(ctx context.Context, room *rooms.Room, roomID int64, msg *Message, actorID int64) {
 	if msg == nil || msg.PinnedAt == nil || msg.PinnedAt.IsZero() {
 		return
 	}
 	_ = s.repo.Unpin(ctx, roomID, msg.ID, *msg.PinnedAt)
-	s.publishPinsUpdate(ctx, roomID, msg.ID, actorID, nil, false)
+	s.publishPinsUpdate(ctx, room, roomID, msg.ID, actorID, nil, false)
 }
 
 // publishPinsUpdate is ROOM_PINS_UPDATE: Discord's CHANNEL_PINS_UPDATE (room + the time of the
-// newest remaining pin) plus the message concerned and whether it is now pinned.
-func (s *Service) publishPinsUpdate(ctx context.Context, roomID, msgID, userID int64, at *time.Time, pinned bool) {
+// newest remaining pin) plus the message concerned and whether it is now pinned. room may be
+// nil (see roomScope).
+func (s *Service) publishPinsUpdate(ctx context.Context, room *rooms.Room, roomID, msgID, userID int64, at *time.Time, pinned bool) {
 	if s.redis == nil || s.cfg == nil {
 		return
 	}
@@ -221,7 +221,7 @@ func (s *Service) publishPinsUpdate(ctx context.Context, roomID, msgID, userID i
 			payload["last_pin_timestamp"] = nil
 		}
 	}
-	stargate.PublishToSpace(ctx, s.redis, roomID, "ROOM_PINS_UPDATE", payload, s.cfg.Stargate.Region)
+	s.publishRoom(ctx, room, roomID, "ROOM_PINS_UPDATE", payload)
 }
 
 // postPinNotice stores and announces the "X pinned a message" system message, the way Discord
@@ -236,7 +236,7 @@ func (s *Service) postPinNotice(ctx context.Context, room *rooms.Room, participa
 	fanout := s.spaceParticipants(ctx, room, participants)
 	_ = s.rooms.UpdateLastMessageID(ctx, room.ID, fanout, notice.ID)
 	if s.redis != nil && s.cfg != nil {
-		stargate.PublishToSpace(ctx, s.redis, room.ID, "MESSAGE_CREATE", messageEventPayload(notice), s.cfg.Stargate.Region)
+		s.publishRoom(ctx, room, room.ID, "MESSAGE_CREATE", messageEventPayload(notice))
 	}
 	if s.federator != nil {
 		s.federator.AfterMessageCreated(ctx, room.ID, participants, notice)

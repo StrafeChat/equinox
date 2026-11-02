@@ -14,12 +14,18 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-// Event is one gateway event as it was published.
+// Event is one gateway event as it was published. UserID / SpaceID are the channel it went
+// out on (a user's, or a room's or space's); the Scope fields what it is about.
 type Event struct {
 	Type    string
 	UserID  string
 	SpaceID string
 	Data    map[string]any
+
+	Scoped       bool
+	ScopeSpaceID string
+	ScopeRoomID  string
+	Subscribe    []string
 }
 
 // Redis is the memory behind a client from New.
@@ -234,16 +240,23 @@ func (r *Redis) run(cmd redis.Cmder) {
 		cmd.(*redis.StringCmd).SetVal("0-0")
 	case "publish":
 		var env struct {
-			Type    string         `json:"t"`
-			Data    map[string]any `json:"d"`
-			UserID  string         `json:"user_id"`
-			SpaceID string         `json:"space_id"`
+			Type         string         `json:"t"`
+			Data         map[string]any `json:"d"`
+			UserID       string         `json:"user_id"`
+			SpaceID      string         `json:"space_id"`
+			Scoped       bool           `json:"scoped"`
+			ScopeSpaceID string         `json:"scope_space_id"`
+			ScopeRoomID  string         `json:"scope_room_id"`
+			Subscribe    []string       `json:"subscribe"`
 		}
 		if err := json.Unmarshal([]byte(text(args[2])), &env); err != nil {
 			cmd.SetErr(err)
 			return
 		}
-		r.events = append(r.events, Event{Type: env.Type, UserID: env.UserID, SpaceID: env.SpaceID, Data: env.Data})
+		r.events = append(r.events, Event{
+			Type: env.Type, UserID: env.UserID, SpaceID: env.SpaceID, Data: env.Data,
+			Scoped: env.Scoped, ScopeSpaceID: env.ScopeSpaceID, ScopeRoomID: env.ScopeRoomID, Subscribe: env.Subscribe,
+		})
 		cmd.(*redis.IntCmd).SetVal(1)
 	default:
 		cmd.SetErr(errors.New("redistest: " + cmd.Name() + " is not implemented"))

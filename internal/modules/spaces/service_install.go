@@ -178,6 +178,9 @@ func (s *Service) InstallBot(ctx context.Context, actorID, spaceID, botUserID, p
 		}
 		roleIDs = append(roleIDs, role.ID)
 		roleCreated = true
+		// Before the member write: the rooms SPACE_CREATE gives the bot are resolved from the
+		// snapshot, which must already know the role.
+		s.invalidateSnapshot(ctx, spaceID)
 	}
 	if err := s.addMember(ctx, sp, botUserID, roleIDs); err != nil {
 		return 0, err
@@ -185,7 +188,6 @@ func (s *Service) InstallBot(ctx context.Context, actorID, spaceID, botUserID, p
 	if roleCreated {
 		// The bot's role went in at the bottom, pushing up the run of roles directly above
 		// it: one SPACE_UPDATE with the full role list brings every client both.
-		s.invalidateSnapshot(ctx, spaceID)
 		if roles, err := s.SpaceRoles(ctx, spaceID); err == nil {
 			s.publishRoleOrder(ctx, sp, eid, roles)
 		}
@@ -407,10 +409,10 @@ func (s *Service) AddMemberViaOAuth(ctx context.Context, actorID, spaceID, userI
 }
 
 // addMember is the one place a member row is created: the membership itself, the user's
-// space set, the "history before you joined is read" bookkeeping, the join notice in the
-// system room, SPACE_MEMBER_ADD to everyone in the space, and SPACE_CREATE to the new
+// space set, the "history before you joined is read" bookkeeping, SPACE_CREATE to the new
 // member's own channel so their other sessions (or a bot's gateway connection) learn of
-// the space without a refresh.
+// the space without a refresh, the join notice in the system room, and SPACE_MEMBER_ADD to
+// everyone in the space.
 func (s *Service) addMember(ctx context.Context, sp *Space, userID int64, roleIDs []int64) error {
 	if err := s.repo.AddMember(ctx, sp.ID, userID, roleIDs, MemberProfile{}); err != nil {
 		return err
@@ -419,17 +421,29 @@ func (s *Service) addMember(ctx context.Context, sp *Space, userID int64, roleID
 		return err
 	}
 	s.markPreJoinHistoryRead(ctx, sp.ID, userID)
+	// SPACE_CREATE first, the way Discord sends GUILD_CREATE before the join message: it
+	// subscribes the member's sockets to the space, so their own join notice and member add
+	// reach them live.
+	s.publishSpaceCreate(ctx, sp, userID)
 	// Tell the other instances first: a mirror must know the member before the join
 	// notice (relayed as a message in the same per-peer order) names them.
 	s.fedMemberAdded(ctx, sp.ID, userID)
 	s.postSystemMessage(ctx, sp, SystemRoomFlagSuppressJoin, SystemMemberJoin, map[string]interface{}{
 		"user_id": id.Format(userID),
 	})
-	s.publishMemberAdd(ctx, sp, userID)
+	s.publishMemberJoined(ctx, sp, userID)
 	return nil
 }
 
+// publishMemberAdd announces a member already stored (a mirror's copy): SPACE_CREATE to
+// them, then SPACE_MEMBER_ADD to the space, in addMember's order.
 func (s *Service) publishMemberAdd(ctx context.Context, sp *Space, userID int64) {
+	s.publishSpaceCreate(ctx, sp, userID)
+	s.publishMemberJoined(ctx, sp, userID)
+}
+
+// publishMemberJoined sends SPACE_MEMBER_ADD for a member to everyone in the space.
+func (s *Service) publishMemberJoined(ctx context.Context, sp *Space, userID int64) {
 	if s.redis == nil {
 		return
 	}
@@ -447,15 +461,5 @@ func (s *Service) publishMemberAdd(ctx context.Context, sp *Space, userID int64)
 			payload[k] = v
 		}
 	}
-	stargate.PublishToSpace(ctx, s.redis, sp.ID, "SPACE_MEMBER_ADD", payload, s.stargateRegion())
-
-	s.attachFederation(ctx, sp)
-	space := spaceToEventPayload(sp)
-	if roles, err := s.SpaceRoles(ctx, sp.ID); err == nil {
-		space["roles"] = RoleMaps(roles)
-	}
-	if sp.EveryoneRoleID != 0 {
-		space["everyone_role_id"] = id.Format(sp.EveryoneRoleID)
-	}
-	stargate.PublishToUser(ctx, s.redis, userID, "SPACE_CREATE", space, s.stargateRegion())
+	s.publishToSpaceChannel(ctx, stargate.InSpace(sp.ID), "SPACE_MEMBER_ADD", payload)
 }

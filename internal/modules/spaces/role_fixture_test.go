@@ -538,6 +538,11 @@ type sentEvent struct {
 	Data map[string]any
 	// UserID is set for an event on one user's own channel, SpaceID for one on a whole space's.
 	UserID, SpaceID string
+	// The space and room the event is about (stargate.Scope), as the frame will carry them.
+	Scoped                    bool
+	ScopeSpaceID, ScopeRoomID string
+	// Subscribe is the channels the event opens to its recipients.
+	Subscribe []string
 }
 
 func (l *eventLog) DialHook(next redis.DialHook) redis.DialHook { return next }
@@ -557,17 +562,25 @@ func (l *eventLog) ProcessHook(redis.ProcessHook) redis.ProcessHook {
 			raw = []byte(v)
 		}
 		var env struct {
-			Type    string         `json:"t"`
-			Data    map[string]any `json:"d"`
-			UserID  string         `json:"user_id"`
-			SpaceID string         `json:"space_id"`
+			Type         string         `json:"t"`
+			Data         map[string]any `json:"d"`
+			UserID       string         `json:"user_id"`
+			SpaceID      string         `json:"space_id"`
+			Scoped       bool           `json:"scoped"`
+			ScopeSpaceID string         `json:"scope_space_id"`
+			ScopeRoomID  string         `json:"scope_room_id"`
+			Subscribe    []string       `json:"subscribe"`
 		}
 		if err := json.Unmarshal(raw, &env); err != nil {
 			cmd.SetErr(err)
 			return err
 		}
 		l.mu.Lock()
-		l.events = append(l.events, sentEvent{Type: env.Type, Data: env.Data, UserID: env.UserID, SpaceID: env.SpaceID})
+		l.events = append(l.events, sentEvent{
+			Type: env.Type, Data: env.Data, UserID: env.UserID, SpaceID: env.SpaceID,
+			Scoped: env.Scoped, ScopeSpaceID: env.ScopeSpaceID, ScopeRoomID: env.ScopeRoomID,
+			Subscribe: env.Subscribe,
+		})
 		l.mu.Unlock()
 		return nil
 	}

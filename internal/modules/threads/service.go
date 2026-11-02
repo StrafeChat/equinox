@@ -891,12 +891,13 @@ func (s *Service) publishTo(ctx context.Context, room *rooms.Room, to recipientS
 	if room.ParentID != nil {
 		payload["parent_id"] = id.Format(*room.ParentID)
 	}
+	sc := threadScope(room, eventType, payload)
 	if to.everyone {
-		stargate.PublishToSpace(ctx, s.redis, *room.SpaceID, eventType, payload, s.spaces.Region())
+		stargate.PublishToSpaceChannel(ctx, s.redis, sc, eventType, payload, s.spaces.Region())
 		return
 	}
 	if len(to.users) > 0 {
-		stargate.PublishToUsers(ctx, s.redis, to.users, eventType, payload, s.spaces.Region())
+		stargate.PublishToUsersIn(ctx, s.redis, to.users, sc, eventType, payload, s.spaces.Region())
 	}
 }
 
@@ -906,7 +907,21 @@ func (s *Service) publishToUser(ctx context.Context, userID int64, room *rooms.R
 	}
 	payload["space_id"] = id.Format(*room.SpaceID)
 	payload["room_id"] = id.Format(room.ID)
-	stargate.PublishToUser(ctx, s.redis, userID, eventType, payload, s.spaces.Region())
+	stargate.PublishToUserIn(ctx, s.redis, userID, threadScope(room, eventType, payload), eventType, payload, s.spaces.Region())
+}
+
+// threadScope is the scope of an event about a thread. THREAD_CREATE, and joining or being
+// added to one (THREAD_MEMBER_UPDATE joined), give the recipients the thread: the gateway
+// subscribes them as it delivers the event, so its next messages reach them live. Only a
+// public thread of a room everyone may view goes out space-wide (recipients), so the gateway
+// need not re-check that grant for each member.
+func threadScope(room *rooms.Room, eventType string, payload map[string]interface{}) stargate.Scope {
+	sc := stargate.InRoom(room.SpaceID, room.ID)
+	joined, _ := payload["joined"].(bool)
+	if eventType == "THREAD_CREATE" || (eventType == "THREAD_MEMBER_UPDATE" && joined) {
+		sc = sc.Subscribing(room.ID)
+	}
+	return sc
 }
 
 // postNotice stores a system message in room (the parent channel for thread_created, the

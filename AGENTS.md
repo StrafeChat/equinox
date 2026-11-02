@@ -57,9 +57,19 @@ Go identifiers, error strings, docs:
   (`internal/modules/spaces/audit.go`) — best-effort, logs on failure, never blocks the
   request. High-frequency, non-moderation actions (reactions, typing, read receipts)
   deliberately skip this.
-- **Realtime events**: `internal/stargate.PublishToSpace(ctx, redis, roomID, "EVENT_TYPE",
-  data, region)` / `PublishToUser(...)` publish to Redis, which every Stargate instance
-  fans out to subscribed WebSocket clients as an `op:3 EVENT` frame. Event types are
+- **Realtime events**: the scoped helpers in `internal/stargate/publish_scoped.go` publish to
+  Redis, which every Stargate instance fans out to subscribed WebSocket clients as an
+  `op:3 EVENT` frame: `PublishToRoom(ctx, redis, stargate.InRoom(room.SpaceID, roomID), "EVENT_TYPE",
+  data, region)` for a room's channel, `PublishToSpaceChannel(..., stargate.InSpace(spaceID), ...)`
+  for a space's own, `PublishToUserIn` / `PublishToUsersIn` for an event about a space or room
+  sent to users' own channels. The scope is what the frame's `space_id` / `room_id` say (and a
+  map payload gets them too); the channel stays the routing. An event that gives its recipients a
+  channel (SPACE_CREATE with its `rooms`, ROOM_CREATE, SPACE_ROOM_CREATE, THREAD_CREATE, joining a
+  thread) names it with `Scope.Subscribing(...)`: the gateway subscribes every socket the event
+  reaches before it reads the next message, then checks a per-user grant off the receive loop
+  (`stargate/grant.go`). Publish such an event right after the write and before anything else
+  about the change (a join notice, SPACE_MEMBER_ADD), and give any new way of gaining access one. Plain `PublishToUser` is for
+  account-only events; `PublishToSpace` is legacy and a test keeps its callers at zero. Event types are
   `SCREAMING_SNAKE_CASE` verbs (`SPACE_UPDATE`, `MESSAGE_REACTION_ADD`). `docs/STARGATE.md`
   documents the READY payload shape and every event type — keep it updated when you add
   one.
@@ -120,7 +130,8 @@ Go identifiers, error strings, docs:
   with the bot); `spaces.join` lets a bot with Create Invite add an authorising user
   (`PUT /spaces/:id/members/:user_id`). Bots use the gateway with `Authorization: Bot`
   on the handshake (header only) and are auto-subscribed to everything in READY
-  (`ReadyData.ChannelIDs`). The developer documentation for all of this is the docs site
+  (`ReadyData.ChannelIDs`), and to what they gain later by the same grants as everyone (a
+  bot installed while connected hears the space at once). The developer documentation for all of this is the docs site
   in `web.strafe.chat/docs/pages/` (served at `/docs/` on every instance) - update it in
   the same change when an endpoint, scope, event or permission changes.
 - **Profile badges** are a `public_flags` bitfield on the user

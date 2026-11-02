@@ -45,7 +45,16 @@ type Client struct {
 	sessionID int64
 	send      chan []byte
 	subs      map[string]struct{} // "space:123" or "user:456"
-	mu        sync.RWMutex
+	// scopes says what a subscribed "space" channel is (by channel id), for op 2 sends;
+	// a channel subscribed without one is missing. Guarded by mu, like subs.
+	scopes map[string]Scope
+	// granted stamps a "space" channel the server granted (grant.go) with the grant's
+	// sequence number until a check that read after it has settled it, so an older pass
+	// cannot drop it. gone is set once unregister starts, after which nothing is granted.
+	// Both guarded by mu.
+	granted map[string]uint64
+	gone    bool
+	mu      sync.RWMutex
 
 	// connID names this one socket (several share a session: browser tabs, and every bot
 	// connection has session 0). It keys the connection's activity entry.
@@ -144,7 +153,69 @@ func (c *Client) unsubscribe(typ, id string) bool {
 		return false
 	}
 	delete(c.subs, k)
+	if typ == "space" {
+		delete(c.scopes, id)
+		delete(c.granted, id)
+	}
 	return true
+}
+
+// join subscribes the client and adds it to the hub's fan-out in one critical section, as
+// grantTo and revoke do: done in two steps, a drop of the same channel landing between them
+// left the socket in the hub's map but not the client's, so unregister missed it and the next
+// event on that channel was sent on the closed send channel. Nothing is added once gone.
+func (c *Client) join(typ, id string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	k := c.subKey(typ, id)
+	if c.gone || len(c.subs) >= maxSubsPerClient {
+		return false
+	}
+	if _, ok := c.subs[k]; ok {
+		return false
+	}
+	c.subs[k] = struct{}{}
+	c.hub.subscribe(c, typ, id)
+	return true
+}
+
+// leave is join's opposite, under the same lock.
+func (c *Client) leave(typ, id string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	k := c.subKey(typ, id)
+	if _, ok := c.subs[k]; !ok {
+		return false
+	}
+	delete(c.subs, k)
+	if typ == "space" {
+		delete(c.scopes, id)
+		delete(c.granted, id)
+	}
+	c.hub.unsubscribe(c, typ, id)
+	return true
+}
+
+// recordScope notes what a "space" channel the client holds is; nothing for one it does not
+// hold (an unsubscribe that won the race).
+func (c *Client) recordScope(id string, sc Scope) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if _, ok := c.subs[c.subKey("space", id)]; !ok {
+		return
+	}
+	if c.scopes == nil {
+		c.scopes = make(map[string]Scope)
+	}
+	c.scopes[id] = Scope{SpaceID: sc.SpaceID, RoomID: sc.RoomID}
+}
+
+// scopeOf is what recordScope noted for a "space" channel.
+func (c *Client) scopeOf(id string) (Scope, bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	sc, ok := c.scopes[id]
+	return sc, ok
 }
 
 func (c *Client) hasSub(typ, id string) bool {
@@ -225,17 +296,19 @@ func (c *Client) handleSubscribe(d interface{}) {
 	if sid, ok := m["space_id"].(string); ok && sid != "" && !c.hasSub("space", sid) {
 		if !c.allowSubscribe() {
 			c.sendError(4029, "rate limited")
-		} else if !c.hub.authorizeSubscribe(context.Background(), c.userID, "space", sid) {
+		} else if allowed, sc := c.hub.authorizeSubscribe(context.Background(), c.userID, "space", sid); !allowed {
 			c.sendError(4403, "not authorized to subscribe to this channel")
-		} else if c.subscribe("space", sid) {
-			c.hub.subscribe(c, "space", sid)
+		} else if c.join("space", sid) {
+			if sc != nil {
+				c.recordScope(sid, *sc)
+			}
 		}
 	}
 	if uid, ok := m["user_id"].(string); ok && uid != "" && !c.hasSub("user", uid) {
-		if !c.hub.authorizeSubscribe(context.Background(), c.userID, "user", uid) {
+		if allowed, _ := c.hub.authorizeSubscribe(context.Background(), c.userID, "user", uid); !allowed {
 			c.sendError(4403, "not authorized to subscribe to this channel")
-		} else if c.subscribe("user", uid) {
-			c.hub.subscribe(c, "user", uid)
+		} else {
+			c.join("user", uid)
 		}
 	}
 }
@@ -246,14 +319,10 @@ func (c *Client) handleUnsubscribe(d interface{}) {
 		return
 	}
 	if sid, ok := m["space_id"].(string); ok && sid != "" {
-		if c.unsubscribe("space", sid) {
-			c.hub.unsubscribe(c, "space", sid)
-		}
+		c.leave("space", sid)
 	}
 	if uid, ok := m["user_id"].(string); ok && uid != "" {
-		if c.unsubscribe("user", uid) {
-			c.hub.unsubscribe(c, "user", uid)
-		}
+		c.leave("user", uid)
 	}
 }
 

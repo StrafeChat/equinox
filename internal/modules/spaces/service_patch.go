@@ -252,7 +252,7 @@ func (s *Service) PatchSpace(ctx context.Context, actorID, spaceID int64, in *Pa
 		return nil, ErrSpaceNotFound
 	}
 	if s.redis != nil {
-		stargate.PublishToSpace(ctx, s.redis, spaceID, "SPACE_UPDATE", spaceToEventPayload(sp), s.stargateRegion())
+		s.publishToSpaceChannel(ctx, stargate.InSpace(spaceID), "SPACE_UPDATE", spaceToEventPayload(sp))
 	}
 	s.fedSpaceUpdated(ctx, sp)
 	return sp, nil

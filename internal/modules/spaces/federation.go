@@ -1341,7 +1341,7 @@ func (s *Service) announceMirrorChanges(ctx context.Context, spaceID int64, c *m
 			if feds := s.RoomFederations(ctx, []int64{updated.ID}); feds != nil {
 				AttachFederation(payload, feds[updated.ID])
 			}
-			s.publishSpaceEvent(ctx, spaceID, "SPACE_ROOM_CREATE", payload)
+			s.publishOpenRoomCreate(ctx, spaceID, updated.ID, payload)
 			continue
 		}
 		if ch.metadata {

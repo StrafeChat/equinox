@@ -42,7 +42,13 @@ func newSystemMessenger(d Deps, roomRepo rooms.Repository, msgRepo messages.Repo
 				"created_at":     msg.CreatedAt,
 				"updated_at":     msg.UpdatedAt,
 			}
-			stargate.PublishToSpace(ctx, d.Redis, roomID, "MESSAGE_CREATE", pl, region)
+			// The callers name only the room; a space's notice carries its space, one read
+			// away. A failed read still delivers the notice, scoped to the room alone.
+			sc := stargate.InRoom(nil, roomID)
+			if room, err := roomRepo.GetByID(ctx, roomID); err == nil && room != nil {
+				sc = stargate.InRoom(room.SpaceID, roomID)
+			}
+			stargate.PublishToRoom(ctx, d.Redis, sc, "MESSAGE_CREATE", pl, region)
 		}
 		if d.Federation != nil {
 			// "X added Y" and friends need to show up on every instance in the room.

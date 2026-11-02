@@ -197,13 +197,29 @@ func (h *Handler) UserUpdated(c fiber.Ctx) error {
 			"pronouns":     u.Pronouns,
 		}
 		rows, _ := h.svc.roomRepo.ListByUser(c.Context(), u.ID)
+		// Each room's copy names its space: the rooms are read in one go, and one the read
+		// misses still gets its copy, scoped to the room alone.
+		roomIDs := make([]int64, 0, len(rows))
 		for _, row := range rows {
-			stargate.PublishToSpace(c.Context(), h.svc.redis, row.RoomID, "USER_UPDATE", payload, h.svc.cfg.Stargate.Region)
+			roomIDs = append(roomIDs, row.RoomID)
+		}
+		spaceOf := make(map[int64]*int64, len(roomIDs))
+		if len(roomIDs) > 0 {
+			if list, err := h.svc.roomRepo.GetByIDs(c.Context(), roomIDs); err == nil {
+				for _, r := range list {
+					if r != nil {
+						spaceOf[r.ID] = r.SpaceID
+					}
+				}
+			}
+		}
+		for _, rid := range roomIDs {
+			stargate.PublishToRoom(c.Context(), h.svc.redis, stargate.InRoom(spaceOf[rid], rid), "USER_UPDATE", payload, h.svc.cfg.Stargate.Region)
 		}
 		// Spaces they are in here (members of a mirrored space, or remote members of one
 		// hosted here) see the change in the member list too.
 		for _, spaceID := range u.Spaces {
-			stargate.PublishToSpace(c.Context(), h.svc.redis, spaceID, "USER_UPDATE", payload, h.svc.cfg.Stargate.Region)
+			stargate.PublishToSpaceChannel(c.Context(), h.svc.redis, stargate.InSpace(spaceID), "USER_UPDATE", payload, h.svc.cfg.Stargate.Region)
 		}
 	}
 	return c.SendStatus(http.StatusNoContent)

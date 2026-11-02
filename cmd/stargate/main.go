@@ -74,7 +74,7 @@ type readyDataProvider struct {
 // The "space" channel prefix is overloaded: clients subscribe to it with a room ID for
 // room/PM events, AND with a space's own ID for space-wide broadcast events (role
 // changes, member add/remove, space renames - see spaces.Service.publishSpaceEvent /
-// PublishToSpace(spaceID, ...)). Both go out on stargate:space:{id} using the raw id, so
+// stargate.PublishToSpaceChannel). Both go out on stargate:space:{id} using the raw id, so
 // the authorizer has to accept whichever kind of id it's actually looking at.
 type roomChannelAuthorizer struct {
 	roomSvc  *rooms.Service
@@ -82,22 +82,30 @@ type roomChannelAuthorizer struct {
 }
 
 func (a *roomChannelAuthorizer) CanAccessRoom(ctx context.Context, userID int64, roomID string) (bool, error) {
-	rid, err := id.Parse(roomID)
+	ok, _, err := a.CanAccessChannel(ctx, userID, roomID)
+	return ok, err
+}
+
+// CanAccessChannel implements stargate.ChannelScoper: the same check, which has read the
+// room (or found the id is a space's) and so also says what the channel is.
+func (a *roomChannelAuthorizer) CanAccessChannel(ctx context.Context, userID int64, channelID string) (bool, stargate.Scope, error) {
+	rid, err := id.Parse(channelID)
 	if err != nil {
-		return false, nil
+		return false, stargate.Scope{}, nil
 	}
-	ok, err := a.roomSvc.CanAccess(ctx, userID, rid)
+	room, ok, err := a.roomSvc.CheckAccess(ctx, userID, rid)
 	if err == nil {
-		return ok, nil
+		return ok, stargate.InRoom(room.SpaceID, room.ID), nil
 	}
 	if errors.Is(err, spaces.ErrNotMember) {
-		return false, nil
+		return false, stargate.Scope{}, nil
 	}
 	if err != rooms.ErrRoomNotFound {
-		return false, err
+		return false, stargate.Scope{}, err
 	}
 	// Not a room id - try it as a space id (space-wide broadcast channel).
-	return a.spaceSvc.IsMember(ctx, rid, userID)
+	ok, err = a.spaceSvc.IsMember(ctx, rid, userID)
+	return ok, stargate.InSpace(rid), err
 }
 
 func (p *readyDataProvider) GetReadyData(ctx context.Context, userID int64) (*stargate.ReadyData, error) {
@@ -113,8 +121,18 @@ func (p *readyDataProvider) GetReadyData(ctx context.Context, userID int64) (*st
 	// voice rooms of their spaces (collected below).
 	voiceRoomIDs := make([]int64, 0, len(roomList))
 	out := make([]map[string]interface{}, 0, len(roomList))
-	// Every "space" channel the user may subscribe to (see stargate.ReadyData.ChannelIDs).
+	// Every "space" channel the user may subscribe to, and what each is (see
+	// stargate.ReadyData.ChannelIDs / ChannelScopes).
 	channelIDs := make([]string, 0, len(roomList))
+	channelScopes := make(map[string]stargate.Scope, len(roomList))
+	addChannel := func(sc stargate.Scope) {
+		cid := sc.RoomID
+		if cid == 0 {
+			cid = sc.SpaceID
+		}
+		channelIDs = append(channelIDs, id.Format(cid))
+		channelScopes[id.Format(cid)] = sc
+	}
 	// A space's rooms and threads wait for the per-space visibility check below: a
 	// rooms_by_user row exists for every member a message fanned out to, whether or not
 	// they may view the room, so the row alone cannot admit a room to READY (or, for a bot,
@@ -129,7 +147,7 @@ func (p *readyDataProvider) GetReadyData(ctx context.Context, userID int64) (*st
 			voiceRoomIDs = append(voiceRoomIDs, r.ID)
 		}
 		out = append(out, readyRoomMap(r))
-		channelIDs = append(channelIDs, id.Format(r.ID))
+		addChannel(stargate.InRoom(r.SpaceID, r.ID))
 	}
 	visible := map[int64]struct{}{}
 
@@ -139,8 +157,7 @@ func (p *readyDataProvider) GetReadyData(ctx context.Context, userID int64) (*st
 	var spacesList []map[string]interface{}
 	spaceRoomsMap := make(map[string]interface{})
 	if p.spaceSvc != nil {
-		mentionCounts, _ := p.roomSvc.GetMentionCounts(ctx, userID)
-		userRows, _ := p.roomSvc.UserRoomRows(ctx, userID)
+		readState := p.spaceSvc.LoadReadState(ctx, userID)
 		spaceRows, err := p.spaceSvc.ListSpacesForUser(ctx, userID)
 		if err == nil {
 			ids := make([]int64, 0, len(spaceRows))
@@ -158,50 +175,20 @@ func (p *readyDataProvider) GetReadyData(ctx context.Context, userID int64) (*st
 				// Only the rooms this user may actually view: a channel they lack
 				// PermViewRoom for is neither advertised in space_rooms (so it never shows
 				// in their client) nor added to channelIDs (so a bot is never auto-
-				// subscribed to it). The realtime authorizer enforces the same gate.
-				roomListForSpace, snap, err := p.spaceSvc.VisibleSpaceRooms(ctx, userID, space.ID)
+				// subscribed to it). The realtime authorizer enforces the same gate. The
+				// entries are built by the code SPACE_CREATE's rooms are, so the two agree.
+				roomMaps, roomListForSpace, snap, err := p.spaceSvc.ViewerSpaceRooms(ctx, userID, space.ID, readState)
 				if err != nil {
 					continue
 				}
 				spacesList = append(spacesList, spaceToReadyMap(space, snap))
-				channelIDs = append(channelIDs, id.Format(space.ID))
-				roomIDs := make([]int64, 0, len(roomListForSpace))
-				var threadIDs []int64
+				addChannel(stargate.InSpace(space.ID))
 				for _, r := range roomListForSpace {
-					roomIDs = append(roomIDs, r.ID)
 					visible[r.ID] = struct{}{}
-					if r.Type == rooms.TypeThread {
-						threadIDs = append(threadIDs, r.ID)
-					}
-				}
-				roomFeds := p.spaceSvc.RoomFederations(ctx, roomIDs)
-				// Active threads ride in space_rooms (type 6) with their counts and whether this
-				// user joined - Discord's thread sync on READY.
-				threadStates, _ := p.spaceSvc.ThreadStates(ctx, userID, threadIDs)
-				roomMaps := make([]map[string]interface{}, 0, len(roomListForSpace))
-				for _, r := range roomListForSpace {
 					if r.Type == rooms.TypeSpaceVoice {
 						voiceRoomIDs = append(voiceRoomIDs, r.ID)
 					}
-					m := spaces.AttachOverrides(spaces.RoomMap(r), snap.RoomOverridesFor(r.ID))
-					spaces.AttachFederation(m, roomFeds[r.ID])
-					if r.Type == rooms.TypeThread {
-						spaces.AttachThreadState(m, threadStates[r.ID])
-					}
-					ur := userRows[r.ID]
-					if ur != nil {
-						if ur.LastReadMessageID != nil {
-							m["last_read_message_id"] = id.Format(*ur.LastReadMessageID)
-						}
-						if ur.LastMessageID != nil {
-							m["last_message_id"] = id.Format(*ur.LastMessageID)
-						}
-					}
-					if mc := ur.DisplayMentionCount(mentionCounts[r.ID]); mc > 0 {
-						m["mention_count"] = mc
-					}
-					roomMaps = append(roomMaps, m)
-					channelIDs = append(channelIDs, id.Format(r.ID))
+					addChannel(stargate.InSpace(space.ID).About(r.ID))
 				}
 				spaceRoomsMap[id.Format(space.ID)] = roomMaps
 			}
@@ -217,10 +204,10 @@ func (p *readyDataProvider) GetReadyData(ctx context.Context, userID int64) (*st
 			}
 		}
 		out = append(out, readyRoomMap(r))
-		channelIDs = append(channelIDs, id.Format(r.ID))
+		addChannel(stargate.InRoom(r.SpaceID, r.ID))
 	}
 
-	data := &stargate.ReadyData{Rooms: out, Relationships: relList, Spaces: spacesList, SpaceRooms: spaceRoomsMap, ChannelIDs: channelIDs}
+	data := &stargate.ReadyData{Rooms: out, Relationships: relList, Spaces: spacesList, SpaceRooms: spaceRoomsMap, ChannelIDs: channelIDs, ChannelScopes: channelScopes}
 	if p.voice != nil && len(voiceRoomIDs) > 0 {
 		states, calls, err := p.voice.StatesForRooms(ctx, voiceRoomIDs)
 		if err != nil {

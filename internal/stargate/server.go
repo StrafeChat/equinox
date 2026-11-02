@@ -177,8 +177,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	s.hub.register(client)
 
 	// Auto-subscribe to own user stream for relationship requests, PMs, etc.
-	client.subscribe("user", strconv.FormatInt(user.ID, 10))
-	s.hub.subscribe(client, "user", strconv.FormatInt(user.ID, 10))
+	client.join("user", strconv.FormatInt(user.ID, 10))
 
 	readyUser := map[string]interface{}{
 		"id":           id.Format(user.ID),
@@ -233,8 +232,10 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			// add and drop spaces live and already do this themselves).
 			if user.Bot {
 				for _, cid := range data.ChannelIDs {
-					if client.subscribe("space", cid) {
-						s.hub.subscribe(client, "space", cid)
+					if client.join("space", cid) {
+						if sc, ok := data.ChannelScopes[cid]; ok {
+							client.recordScope(cid, sc)
+						}
 					}
 				}
 			}

@@ -206,10 +206,10 @@ func (s *Service) CreateSpace(ctx context.Context, actorID int64, in *CreateSpac
 	if err := s.createDefaultSpaceRooms(ctx, spaceID); err != nil {
 		return nil, err
 	}
-	if s.redis != nil {
-		payload := spaceToEventPayload(space)
-		stargate.PublishToUser(ctx, s.redis, actorID, "SPACE_CREATE", payload, s.stargateRegion())
-	}
+	space.EveryoneRoleID = everyoneRID
+	// With its roles and rooms, like a join's: the owner's other sessions get the whole space,
+	// subscribed as it arrives.
+	s.publishSpaceCreate(ctx, space, actorID)
 	return space, nil
 }
 
@@ -651,7 +651,7 @@ func (s *Service) AckAll(ctx context.Context, actorID, spaceID int64) error {
 				"message_id":           id.Format(*room.LastMessageID),
 				"last_read_message_id": id.Format(*room.LastMessageID),
 			}
-			stargate.PublishToUser(ctx, s.redis, actorID, "MESSAGE_ACK", payload, s.stargateRegion())
+			stargate.PublishToUserIn(ctx, s.redis, actorID, stargate.InSpace(spaceID).About(room.ID), "MESSAGE_ACK", payload, s.stargateRegion())
 		}
 		// Clear the room's notification on the user's phones too (only when one was pushed).
 		push.EnqueueRead(ctx, s.redis, actorID, room.ID, room.Type, spaceID, *room.LastMessageID)
@@ -832,23 +832,23 @@ func (s *Service) publishMemberRemoved(ctx context.Context, spaceID, userID int6
 	if s.redis == nil {
 		return
 	}
-	region := s.stargateRegion()
-	stargate.PublishToSpace(ctx, s.redis, spaceID, "SPACE_MEMBER_REMOVE", map[string]interface{}{
+	sc := stargate.InSpace(spaceID)
+	s.publishToSpaceChannel(ctx, sc, "SPACE_MEMBER_REMOVE", map[string]interface{}{
 		"space_id": id.Format(spaceID),
 		"user_id":  id.Format(userID),
-	}, region)
-	stargate.PublishToUser(ctx, s.redis, userID, "SPACE_LEAVE", map[string]interface{}{
+	})
+	stargate.PublishToUserIn(ctx, s.redis, userID, sc, "SPACE_LEAVE", map[string]interface{}{
 		"space_id": id.Format(spaceID),
-	}, region)
+	}, s.stargateRegion())
 	// Same reasoning as rooms.Service.RemoveParticipant's SESSION_ROTATE: a Megolm
 	// session isn't cryptographically revoked by removing someone from the room list, so
 	// this tells remaining members' clients a membership change happened in this space -
 	// each client already knows which of its own space channels have E2EE on and decides
 	// there whether to rotate its outbound session, rather than the server enumerating
 	// every E2EE channel in the space here.
-	stargate.PublishToSpace(ctx, s.redis, spaceID, "SESSION_ROTATE", map[string]interface{}{
+	s.publishToSpaceChannel(ctx, sc, "SESSION_ROTATE", map[string]interface{}{
 		"space_id": id.Format(spaceID),
-	}, region)
+	})
 }
 
 // KickMember removes a member from the space. They can rejoin with a new invite.

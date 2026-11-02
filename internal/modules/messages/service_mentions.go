@@ -71,7 +71,7 @@ func (s *Service) publishRoleMentionCounts(room *rooms.Room, msgID int64, userID
 		ctx, cancel := context.WithTimeout(context.Background(), roleMentionUpdateTimeout)
 		defer cancel()
 		s.eachRoleMentionUpdate(ctx, room, msgID, userIDs, func(uid int64, payload map[string]interface{}) {
-			stargate.PublishToUser(ctx, s.redis, uid, "MESSAGE_MENTION_UPDATE", payload, region)
+			stargate.PublishToUserIn(ctx, s.redis, uid, stargate.InRoom(room.SpaceID, room.ID), "MESSAGE_MENTION_UPDATE", payload, region)
 		})
 	})
 }

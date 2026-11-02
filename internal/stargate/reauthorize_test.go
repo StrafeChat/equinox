@@ -100,3 +100,30 @@ func TestReauthorizeCoalescesABurst(t *testing.T) {
 		t.Fatalf("%d passes, want 2 (the first, and one for everything that came during it)", n)
 	}
 }
+
+// Subscribing and unsubscribing change the client's set and the hub's fan-out together.
+// Done in two steps, a drop of the same channel in between left the socket in the fan-out but
+// not in the client's set, so unregister missed it and the next event on the channel was sent
+// on the closed send channel.
+func TestJoinAndLeaveKeepBothMapsTogether(t *testing.T) {
+	f := &reauthFake{answers: map[string]error{}, calls: map[string]int{}}
+	h, c := reauthHub(t, f)
+	inHub := func(id string) bool {
+		h.subMu.RLock()
+		defer h.subMu.RUnlock()
+		_, ok := h.subs[redisChannel("space", id)][c]
+		return ok
+	}
+	if !c.join("space", "9") || !c.hasSub("space", "9") || !inHub("9") {
+		t.Fatal("join did not reach both maps")
+	}
+	if !c.leave("space", "9") || c.hasSub("space", "9") || inHub("9") {
+		t.Fatal("leave did not clear both maps")
+	}
+	c.mu.Lock()
+	c.gone = true
+	c.mu.Unlock()
+	if c.join("space", "10") || inHub("10") {
+		t.Fatal("a socket being unregistered was subscribed")
+	}
+}

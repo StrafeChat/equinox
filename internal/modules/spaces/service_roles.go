@@ -1369,7 +1369,7 @@ func (s *Service) CreateRoom(ctx context.Context, actorID, spaceID int64, in *Cr
 	// it. Announce it space-wide only when @everyone can view it; otherwise deliver it per-member
 	// (viewers get SPACE_ROOM_CREATE, everyone else nothing).
 	if s.everyoneCanView(ctx, spaceID, room.ID) {
-		s.publishSpaceEvent(ctx, spaceID, "SPACE_ROOM_CREATE", payload)
+		s.publishOpenRoomCreate(ctx, spaceID, room.ID, payload)
 	} else {
 		s.republishRoomVisibility(ctx, spaceID, []int64{room.ID})
 	}

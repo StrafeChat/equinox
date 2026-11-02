@@ -898,7 +898,7 @@ func (s *Service) publishCallLocal(ctx context.Context, room *rooms.RoomWithPart
 	if s.redis == nil {
 		return
 	}
-	stargate.PublishToUsers(ctx, s.redis, room.ParticipantIDs, event, data, s.region())
+	stargate.PublishToUsersIn(ctx, s.redis, room.ParticipantIDs, stargate.InRoom(room.SpaceID, room.ID), event, data, s.region())
 }
 
 func (s *Service) systemMessage(ctx context.Context, room *rooms.RoomWithParticipants, typ string, payload map[string]interface{}) {
@@ -948,11 +948,12 @@ func (s *Service) publishLocal(ctx context.Context, room *rooms.RoomWithParticip
 	if left {
 		data["left"] = true
 	}
+	sc := stargate.InRoom(room.SpaceID, room.ID)
 	if room.SpaceID == nil {
 		if movedTo != 0 {
 			data["moved_to"] = id.Format(movedTo)
 		}
-		stargate.PublishToUsers(ctx, s.redis, room.ParticipantIDs, EventVoiceStateUpdate, data, s.region())
+		stargate.PublishToUsersIn(ctx, s.redis, room.ParticipantIDs, sc, EventVoiceStateUpdate, data, s.region())
 		return
 	}
 	spaceID := *room.SpaceID
@@ -963,17 +964,17 @@ func (s *Service) publishLocal(ctx context.Context, room *rooms.RoomWithParticip
 		if s.spaces.OpenToEveryone(ctx, spaceID, movedTo) {
 			data = moved
 		} else {
-			stargate.PublishToUser(ctx, s.redis, st.UserID, EventVoiceStateUpdate, moved, s.region())
+			stargate.PublishToUserIn(ctx, s.redis, st.UserID, sc, EventVoiceStateUpdate, moved, s.region())
 			userTold = true
 		}
 	}
 	if s.spaces.OpenToEveryone(ctx, spaceID, room.ID) {
-		stargate.PublishToSpace(ctx, s.redis, spaceID, EventVoiceStateUpdate, data, s.region())
+		stargate.PublishToSpaceChannel(ctx, s.redis, sc, EventVoiceStateUpdate, data, s.region())
 		return
 	}
-	stargate.PublishToSpace(ctx, s.redis, room.ID, EventVoiceStateUpdate, data, s.region())
+	stargate.PublishToRoom(ctx, s.redis, sc, EventVoiceStateUpdate, data, s.region())
 	if !userTold {
-		stargate.PublishToUser(ctx, s.redis, st.UserID, EventVoiceStateUpdate, data, s.region())
+		stargate.PublishToUserIn(ctx, s.redis, st.UserID, sc, EventVoiceStateUpdate, data, s.region())
 	}
 }
 

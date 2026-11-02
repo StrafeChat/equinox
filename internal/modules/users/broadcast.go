@@ -44,6 +44,7 @@ func (h *Handler) broadcastUserProfile(ctx context.Context, u *auth.User) {
 		return
 	}
 	seen := make(map[int64]struct{})
+	roomIDs := make([]int64, 0, len(rows))
 	for _, row := range rows {
 		if row.RoomID == 0 {
 			continue
@@ -52,6 +53,19 @@ func (h *Handler) broadcastUserProfile(ctx context.Context, u *auth.User) {
 			continue
 		}
 		seen[row.RoomID] = struct{}{}
-		stargate.PublishToSpace(ctx, h.redis, row.RoomID, "USER_UPDATE", payload, region)
+		roomIDs = append(roomIDs, row.RoomID)
+	}
+	// Each copy names its room's space; the rooms are read in one go, and a room the read
+	// misses still gets its copy, scoped to the room alone.
+	spaceOf := make(map[int64]*int64, len(roomIDs))
+	if list, err := h.roomsRepo.GetByIDs(ctx, roomIDs); err == nil {
+		for _, r := range list {
+			if r != nil {
+				spaceOf[r.ID] = r.SpaceID
+			}
+		}
+	}
+	for _, rid := range roomIDs {
+		stargate.PublishToRoom(ctx, h.redis, stargate.InRoom(spaceOf[rid], rid), "USER_UPDATE", payload, region)
 	}
 }

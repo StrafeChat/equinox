@@ -919,6 +919,16 @@ func TestLosingViewIsReported(t *testing.T) {
 	})
 }
 
+// A room's caller saw it open, but a View deny landed before the announcement: the space-wide
+// grant must not stand for members who can no longer view it.
+func TestAnOpenRoomGrantIsWithdrawnIfTheRoomClosedMeanwhile(t *testing.T) {
+	w := privateWorld(t)
+	w.svc.publishOpenRoomCreate(context.Background(), rfSpace, roomStaff, map[string]interface{}{"id": id.Format(roomStaff)})
+	if lost, _ := w.sentTo("SPACE_ROOM_DELETE", roomStaff); !slices.Contains(lost, rfPlainID) {
+		t.Errorf("DELETE to %v, want the member who cannot view it", lost)
+	}
+}
+
 func TestReconcileMirrorAdoptsTheOriginsJoinDate(t *testing.T) {
 	w := privateWorld(t).mirror()
 	spec := w.spec(t, privateRooms()...)

@@ -75,7 +75,7 @@ func (s *Service) TransferOwnership(ctx context.Context, actorID, spaceID, newOw
 		return nil, ErrSpaceNotFound
 	}
 	if s.redis != nil {
-		stargate.PublishToSpace(ctx, s.redis, spaceID, "SPACE_UPDATE", spaceToEventPayload(updated), s.stargateRegion())
+		s.publishToSpaceChannel(ctx, stargate.InSpace(spaceID), "SPACE_UPDATE", spaceToEventPayload(updated))
 	}
 	s.fedSpaceUpdated(ctx, updated)
 	return updated, nil
@@ -147,9 +147,9 @@ func (s *Service) deleteSpaceCascade(ctx context.Context, actorID int64, sp *Spa
 	// Announce before the rows go, so a client that is listening drops the space in one
 	// step instead of noticing at the next reload.
 	if s.redis != nil {
-		stargate.PublishToSpace(ctx, s.redis, spaceID, "SPACE_DELETE", map[string]interface{}{
+		s.publishToSpaceChannel(ctx, stargate.InSpace(spaceID), "SPACE_DELETE", map[string]interface{}{
 			"space_id": id.Format(spaceID),
-		}, s.stargateRegion())
+		})
 	}
 	// Calls end ahead of the member rows: who hears the last voice states is read from them.
 	for _, row := range roomRows {
@@ -163,7 +163,7 @@ func (s *Service) deleteSpaceCascade(ctx context.Context, actorID int64, sp *Spa
 		if s.redis != nil {
 			// The per-user channel is what a session that is not subscribed to the space
 			// (another device, a reconnect in flight) hears.
-			stargate.PublishToUser(ctx, s.redis, m.UserID, "SPACE_LEAVE", map[string]interface{}{
+			stargate.PublishToUserIn(ctx, s.redis, m.UserID, stargate.InSpace(spaceID), "SPACE_LEAVE", map[string]interface{}{
 				"space_id": id.Format(spaceID),
 			}, s.stargateRegion())
 		}
@@ -227,7 +227,7 @@ func (s *Service) SetOfficial(ctx context.Context, spaceID int64, official bool)
 	}
 	sp.Official = official
 	if s.redis != nil {
-		stargate.PublishToSpace(ctx, s.redis, spaceID, "SPACE_UPDATE", spaceToEventPayload(sp), s.stargateRegion())
+		s.publishToSpaceChannel(ctx, stargate.InSpace(spaceID), "SPACE_UPDATE", spaceToEventPayload(sp))
 	}
 	return sp, nil
 }

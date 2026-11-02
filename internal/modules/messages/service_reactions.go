@@ -7,7 +7,7 @@ import (
 	"github.com/StrafeChat/equinox/internal/id"
 	"github.com/StrafeChat/equinox/internal/modules/auth"
 	"github.com/StrafeChat/equinox/internal/modules/permissions"
-	"github.com/StrafeChat/equinox/internal/stargate"
+	"github.com/StrafeChat/equinox/internal/modules/rooms"
 )
 
 // getLiveMessage fetches a message and rejects it if it's missing or soft-deleted -
@@ -56,16 +56,18 @@ func (s *Service) addReactionRow(ctx context.Context, roomID, msgID, userID int6
 	return existing, true, nil
 }
 
-func (s *Service) publishReaction(ctx context.Context, event string, roomID, msgID, userID int64, emoji string) {
+// publishReaction sends a reaction event on the room's channel; room is nil when the caller
+// has not loaded it (see roomScope).
+func (s *Service) publishReaction(ctx context.Context, room *rooms.Room, event string, roomID, msgID, userID int64, emoji string) {
 	if s.redis == nil || s.cfg == nil {
 		return
 	}
-	stargate.PublishToSpace(ctx, s.redis, roomID, event, map[string]interface{}{
+	s.publishRoom(ctx, room, roomID, event, map[string]interface{}{
 		"room_id":    id.Format(roomID),
 		"message_id": id.Format(msgID),
 		"user_id":    id.Format(userID),
 		"emoji":      emoji,
-	}, s.region())
+	})
 }
 
 // AddReaction adds userID's reaction to a message and returns the message's full,
@@ -98,7 +100,7 @@ func (s *Service) AddReaction(ctx context.Context, userID, roomID, msgID int64, 
 	if !added {
 		return summarize(existing, userID), nil
 	}
-	s.publishReaction(ctx, "MESSAGE_REACTION_ADD", roomID, msgID, userID, emoji)
+	s.publishReaction(ctx, room, "MESSAGE_REACTION_ADD", roomID, msgID, userID, emoji)
 	if s.federator != nil {
 		s.federator.AfterReactionAdded(ctx, roomID, participants, msgID, userID, emoji)
 	}
@@ -126,7 +128,7 @@ func (s *Service) RemoveReaction(ctx context.Context, userID, roomID, msgID int6
 	if err := s.repo.RemoveReaction(ctx, roomID, msgID, userID, emoji); err != nil {
 		return nil, err
 	}
-	s.publishReaction(ctx, "MESSAGE_REACTION_REMOVE", roomID, msgID, userID, emoji)
+	s.publishReaction(ctx, room, "MESSAGE_REACTION_REMOVE", roomID, msgID, userID, emoji)
 	if s.federator != nil {
 		s.federator.AfterReactionRemoved(ctx, roomID, participants, msgID, userID, emoji)
 	}
@@ -154,7 +156,7 @@ func (s *Service) AddReactionFederated(ctx context.Context, roomID, msgID, userI
 		return err
 	}
 	if added {
-		s.publishReaction(ctx, "MESSAGE_REACTION_ADD", roomID, msgID, userID, emoji)
+		s.publishReaction(ctx, nil, "MESSAGE_REACTION_ADD", roomID, msgID, userID, emoji)
 	}
 	return nil
 }
@@ -171,7 +173,7 @@ func (s *Service) RemoveReactionFederated(ctx context.Context, roomID, msgID, us
 	if err := s.repo.RemoveReaction(ctx, roomID, msgID, userID, emoji); err != nil {
 		return err
 	}
-	s.publishReaction(ctx, "MESSAGE_REACTION_REMOVE", roomID, msgID, userID, emoji)
+	s.publishReaction(ctx, nil, "MESSAGE_REACTION_REMOVE", roomID, msgID, userID, emoji)
 	return nil
 }
 
