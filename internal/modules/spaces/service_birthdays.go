@@ -100,6 +100,17 @@ func (s *Service) announceBirthday(ctx context.Context, spaceID int64, u *auth.U
 	if err != nil || !ok {
 		return
 	}
+	// The channel of a mirrored space lives at the origin, which cannot see a date of birth
+	// held here: a greeting written into the local copy would reach nobody else and be gone
+	// from the next history page, so the origin is asked to post it instead.
+	if origin := s.mirrorOrigin(ctx, spaceID); origin != "" {
+		if s.fed != nil {
+			if err := s.fed.RemoteBirthdayGreeting(ctx, origin, spaceID, u); err != nil {
+				logger.Err("spaces", err, map[string]any{"space_id": spaceID, "user_id": u.ID, "system_type": SystemBirthday})
+			}
+		}
+		return
+	}
 	memberIDs, err := s.ListSpaceMemberUserIDs(ctx, spaceID)
 	if err != nil {
 		return
@@ -114,4 +125,28 @@ func (s *Service) announceBirthday(ctx context.Context, spaceID int64, u *auth.U
 	if _, err := s.systemMessenger(ctx, room.ID, memberIDs, SystemBirthday, string(payload)); err != nil {
 		logger.Err("spaces", err, map[string]any{"space_id": spaceID, "user_id": u.ID, "system_type": SystemBirthday})
 	}
+}
+
+// GreetBirthday posts the greeting for a member whose home instance reports today is their
+// birthday. That instance holds the date and the opt-in and made the decision; all this adds
+// is the same limit a local member has, one greeting a day per space.
+func (s *Service) GreetBirthday(ctx context.Context, spaceID, userID int64) error {
+	ok, err := s.repo.IsMember(ctx, spaceID, userID)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return ErrNotMember
+	}
+	u, err := s.userRepo.GetByID(ctx, userID)
+	if err != nil {
+		return err
+	}
+	if u == nil {
+		return ErrNotMember
+	}
+	if s.redis != nil && s.systemMessenger != nil {
+		s.announceBirthday(ctx, spaceID, u, time.Now().UTC().Format("2006-01-02"))
+	}
+	return nil
 }

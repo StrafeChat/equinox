@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -112,6 +113,9 @@ type Federator interface {
 	// member who consented; RemoteAddMember is the spaces.join scope for such a space.
 	RemoteInstallBot(ctx context.Context, origin string, spaceID int64, user, bot *auth.User, permissions int64) (granted int64, err error)
 	RemoteAddMember(ctx context.Context, origin string, spaceID int64, actor, user *auth.User) (added bool, err error)
+	// RemoteBirthdayGreeting asks the origin to wish one of this instance's members a happy
+	// birthday in the space's birthday channel. Their date of birth stays here.
+	RemoteBirthdayGreeting(ctx context.Context, origin string, spaceID int64, user *auth.User) error
 	// ResyncRemote reconciles a mirror against a fresh snapshot from its origin.
 	ResyncRemote(ctx context.Context, origin string, spaceID int64) error
 }
@@ -587,9 +591,16 @@ func (s *Service) ApplyMirrorEmoji(ctx context.Context, spaceID int64, e MirrorE
 }
 
 // ReconcileMirror brings an existing mirror in line with a fresh description from the
-// origin: anything the origin no longer has goes, anything new or changed is applied,
-// with the usual gateway events. Returns the ids of rooms removed here so the caller
-// can drop their mappings.
+// origin: anything the origin no longer has goes, anything new or changed is applied, with
+// the usual gateway events. Returns the ids of rooms removed here so the caller can drop
+// their mappings.
+//
+// It works in two phases. Rooms are written first and silently, the snapshot is dropped once,
+// and who can view what is announced only when everything is written: room by room, a channel
+// applied before its newly private section would go out to the whole space. A room that did
+// not change announces nothing. One that did tells the members who lost it, which is what
+// ends their subscription, so the first pass after an upgrade also heals a mirror that was
+// missing the synced flag.
 func (s *Service) ReconcileMirror(ctx context.Context, spec *MirrorSpec) (removedRooms []int64, err error) {
 	if spec == nil || spec.Space == nil {
 		return nil, ErrSpaceNotFound
@@ -598,6 +609,26 @@ func (s *Service) ReconcileMirror(ctx context.Context, spec *MirrorSpec) (remove
 	if err := s.ApplyMirrorSpace(ctx, spec.Space); err != nil {
 		return nil, err
 	}
+	var changes mirrorChanges
+	changes.before, _ = s.Snapshot(ctx, spaceID)
+	removedRooms, err = s.reconcileRolesAndRooms(ctx, spec, &changes)
+	// Even after a failure: what was written stays written, and the next pass will find no
+	// difference left to announce.
+	s.invalidateSnapshot(ctx, spaceID)
+	if err == nil {
+		err = s.reconcileMembersAndEmoji(ctx, spec)
+	}
+	s.announceMirrorChanges(ctx, spaceID, &changes)
+	if err != nil {
+		return nil, err
+	}
+	s.dropMirrorInvites(ctx, spaceID)
+	return removedRooms, nil
+}
+
+// reconcileRolesAndRooms is ReconcileMirror's silent phase: everything the view rule reads.
+func (s *Service) reconcileRolesAndRooms(ctx context.Context, spec *MirrorSpec, changes *mirrorChanges) (removedRooms []int64, err error) {
+	spaceID := spec.Space.ID
 	// Roles.
 	haveRoles, err := s.repo.ListSpaceRoles(ctx, spaceID)
 	if err != nil {
@@ -607,15 +638,19 @@ func (s *Service) ReconcileMirror(ctx context.Context, spec *MirrorSpec) (remove
 	for i := range spec.Roles {
 		r := spec.Roles[i]
 		wantRoles[r.ID] = struct{}{}
-		if err := s.ApplyMirrorRole(ctx, spaceID, &r, false); err != nil {
+		viewChanged, err := s.storeMirrorRole(ctx, spaceID, &r, false)
+		if err != nil {
 			return nil, err
 		}
+		changes.allRooms = changes.allRooms || viewChanged
 	}
 	for i := range haveRoles {
 		if _, ok := wantRoles[haveRoles[i].ID]; !ok {
-			if err := s.ApplyMirrorRole(ctx, spaceID, &haveRoles[i], true); err != nil {
+			viewChanged, err := s.storeMirrorRole(ctx, spaceID, &haveRoles[i], true)
+			if err != nil {
 				return nil, err
 			}
+			changes.allRooms = changes.allRooms || viewChanged
 		}
 	}
 	// Rooms.
@@ -629,9 +664,11 @@ func (s *Service) ReconcileMirror(ctx context.Context, spec *MirrorSpec) (remove
 			continue
 		}
 		wantRooms[mr.Room.ID] = struct{}{}
-		if err := s.ApplyMirrorRoom(ctx, spaceID, mr, false); err != nil {
+		ch, err := s.putMirrorRoom(ctx, spaceID, mr)
+		if err != nil {
 			return nil, err
 		}
+		changes.add(mr, ch)
 	}
 	for _, row := range haveRooms {
 		if _, ok := wantRooms[row.RoomID]; !ok {
@@ -641,10 +678,17 @@ func (s *Service) ReconcileMirror(ctx context.Context, spec *MirrorSpec) (remove
 			removedRooms = append(removedRooms, row.RoomID)
 		}
 	}
+	return removedRooms, nil
+}
+
+// reconcileMembersAndEmoji is the rest of a pass: members read the snapshot for what a change
+// of roles opens or closes, so they follow the rooms.
+func (s *Service) reconcileMembersAndEmoji(ctx context.Context, spec *MirrorSpec) error {
+	spaceID := spec.Space.ID
 	// Members: the origin's list is the truth, local members included.
 	haveMembers, err := s.repo.ListMembers(ctx, spaceID)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	wantMembers := map[int64]struct{}{}
 	haveByID := make(map[int64]SpaceMember, len(haveMembers))
@@ -653,13 +697,23 @@ func (s *Service) ReconcileMirror(ctx context.Context, spec *MirrorSpec) (remove
 	}
 	for _, m := range spec.Members {
 		wantMembers[m.UserID] = struct{}{}
-		if existing, ok := haveByID[m.UserID]; !ok {
+		existing, ok := haveByID[m.UserID]
+		if !ok {
 			if err := s.AddMirrorMember(ctx, spaceID, m); err != nil {
-				return nil, err
+				return err
 			}
-		} else if mirrorMemberDiffers(existing, m) {
+			continue
+		}
+		if mirrorMemberDiffers(existing, m) {
 			if err := s.UpdateMirrorMember(ctx, spaceID, m); err != nil {
-				return nil, err
+				return err
+			}
+		}
+		// A row written before mirrors kept the origin's join date, which is only ever read
+		// from here on, so the rewrite happens once and tells nobody.
+		if !m.JoinedAt.IsZero() && !m.JoinedAt.Equal(existing.JoinedAt) {
+			if err := s.putMirrorMember(ctx, spaceID, m); err != nil {
+				return err
 			}
 		}
 	}
@@ -667,7 +721,7 @@ func (s *Service) ReconcileMirror(ctx context.Context, spec *MirrorSpec) (remove
 		for _, m := range haveMembers {
 			if _, ok := wantMembers[m.UserID]; !ok {
 				if err := s.RemoveMirrorMember(ctx, spaceID, m.UserID); err != nil {
-					return nil, err
+					return err
 				}
 			}
 		}
@@ -675,24 +729,38 @@ func (s *Service) ReconcileMirror(ctx context.Context, spec *MirrorSpec) (remove
 	// Emoji.
 	haveEmoji, err := s.repo.ListEmojis(ctx, spaceID)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	wantEmoji := map[int64]struct{}{}
 	for _, e := range spec.Emoji {
 		wantEmoji[e.ID] = struct{}{}
 		if err := s.ApplyMirrorEmoji(ctx, spaceID, e, false); err != nil {
-			return nil, err
+			return err
 		}
 	}
 	for _, e := range haveEmoji {
 		if _, ok := wantEmoji[e.ID]; !ok {
 			if err := s.ApplyMirrorEmoji(ctx, spaceID, MirrorEmoji{ID: e.ID}, true); err != nil {
-				return nil, err
+				return err
 			}
 		}
 	}
-	s.invalidateSnapshot(ctx, spaceID)
-	return removedRooms, nil
+	return nil
+}
+
+// dropMirrorInvites removes invites stored for a mirror. Only the origin admits anyone, so
+// none should exist, but a mirror's widget once minted them; JoinByInvite refuses those, and
+// a resync clears them away.
+func (s *Service) dropMirrorInvites(ctx context.Context, spaceID int64) {
+	invites, err := s.repo.ListInvites(ctx, spaceID)
+	logMirror(err, spaceID, "list invites stored for a mirror")
+	if len(invites) == 0 {
+		return
+	}
+	for _, inv := range invites {
+		logMirror(s.repo.DeleteInvite(ctx, spaceID, inv.Code), spaceID, "delete an invite stored for a mirror")
+	}
+	logMirror(s.repo.UpdateSpaceFields(ctx, spaceID, map[string]interface{}{"widget_invite_code": ""}), spaceID, "clear a mirror's widget invite")
 }
 
 // CreateMirror stores a space another instance hosts. Publishes nothing: the caller
@@ -719,7 +787,7 @@ func (s *Service) CreateMirror(ctx context.Context, spec *MirrorSpec) error {
 		}
 	}
 	for _, mr := range spec.Rooms {
-		if err := s.putMirrorRoom(ctx, sp.ID, mr, false); err != nil {
+		if _, err := s.putMirrorRoom(ctx, sp.ID, mr); err != nil {
 			return err
 		}
 	}
@@ -741,7 +809,13 @@ func (s *Service) CreateMirror(ctx context.Context, spec *MirrorSpec) error {
 // INSERT, every column bound - so a row left over from a membership the mirror missed the
 // end of (a lost remove relay, a rejoin) cannot keep its old nickname or images.
 func (s *Service) putMirrorMember(ctx context.Context, spaceID int64, m MirrorMember) error {
-	if err := s.repo.AddMember(ctx, spaceID, m.UserID, m.RoleIDs, m.profile()); err != nil {
+	// The origin's join date, not the moment this instance heard of the member: a repeated
+	// "add" must not rewrite it, and a new mirror must not date every member to its own birth.
+	joinedAt := m.JoinedAt
+	if joinedAt.IsZero() {
+		joinedAt = time.Now().UTC()
+	}
+	if err := s.repo.AddMemberAt(ctx, spaceID, m.UserID, m.RoleIDs, m.profile(), joinedAt); err != nil {
 		return err
 	}
 	// Shadows get the space in their users.spaces set too: that set is what presence
@@ -815,7 +889,8 @@ func (s *Service) UpdateMirrorMember(ctx context.Context, spaceID int64, m Mirro
 	if !mirrorMemberDiffers(*existing, m) {
 		return nil
 	}
-	if !multisetEqualInt64(existing.RoleIDs, m.RoleIDs) {
+	rolesChanged := !multisetEqualInt64(existing.RoleIDs, m.RoleIDs)
+	if rolesChanged {
 		if err := s.repo.SetMemberRoleIDs(ctx, spaceID, m.UserID, m.RoleIDs); err != nil {
 			return err
 		}
@@ -856,6 +931,9 @@ func (s *Service) UpdateMirrorMember(ctx context.Context, spaceID int64, m Mirro
 		return nil
 	}
 	s.publishMemberUpdate(ctx, spaceID, updated)
+	if rolesChanged {
+		s.republishMemberVisibility(ctx, spaceID, m.UserID, existing.RoleIDs, updated.RoleIDs)
+	}
 	return nil
 }
 
@@ -874,6 +952,10 @@ func (s *Service) RemoveMirrorMember(ctx context.Context, spaceID, userID int64)
 		return err
 	}
 	s.publishMemberRemoved(ctx, spaceID, userID)
+	// The removal is durable and the voice relay is not, so it must not depend on that relay.
+	if s.memberRemoved != nil {
+		s.memberRemoved(ctx, spaceID, userID)
+	}
 	return nil
 }
 
@@ -915,6 +997,12 @@ func (s *Service) ApplyMirrorSpace(ctx context.Context, sp *Space) error {
 	if existing == nil {
 		return ErrSpaceNotFound
 	}
+	// Zero never comes from a real origin, which always has an @everyone. Taking it would
+	// leave every @everyone override naming a role this space no longer has.
+	everyoneRoleID := sp.EveryoneRoleID
+	if everyoneRoleID == 0 {
+		everyoneRoleID = existing.EveryoneRoleID
+	}
 	set := map[string]interface{}{
 		"name":                          sp.Name,
 		"name_acronym":                  sp.NameAcronym,
@@ -937,11 +1025,13 @@ func (s *Service) ApplyMirrorSpace(ctx context.Context, sp *Space) error {
 		"preferred_locale":              sp.PreferredLocale,
 		"public_updates_room_id":        nullableID(sp.PublicUpdatesRoomID),
 		"max_video_room_users":          sp.MaxVideoRoomUsers,
-		"everyone_role_id":              sp.EveryoneRoleID,
+		"everyone_role_id":              everyoneRoleID,
 		"widget_enabled":                sp.WidgetEnabled,
 		"widget_room_id":                nullableID(sp.WidgetRoomID),
 		"automod_flags":                 sp.AutomodFlags,
 		"automod_mention_limit":         sp.AutomodMentionLimit,
+		"birthday_channel_id":           nullableID(sp.BirthdayChannelID),
+		"birthday_message":              sp.BirthdayMessage,
 		"updated_at":                    sp.UpdatedAt,
 	}
 	if err := s.repo.UpdateSpaceFields(ctx, sp.ID, set); err != nil {
@@ -958,26 +1048,50 @@ func (s *Service) ApplyMirrorSpace(ctx context.Context, sp *Space) error {
 	return nil
 }
 
-// ApplyMirrorRole stores or deletes a role the origin reported.
+// ApplyMirrorRole stores or deletes a role the origin reported, and tells members about the
+// rooms that change for them. The comparison is against the stored role, not the relay:
+// ReconcileMirror re-applies every role on every pass.
 func (s *Service) ApplyMirrorRole(ctx context.Context, spaceID int64, role *SpaceRole, deleted bool) error {
-	if role == nil {
-		return ErrRoleNotFound
-	}
-	if deleted {
-		if err := s.repo.DeleteSpaceRole(ctx, spaceID, role.ID); err != nil {
-			return err
+	// What everyone could see before, read only when this change can alter it (the same test
+	// storeMirrorRole answers with): most role relays are renames, colours and positions.
+	var before *Snapshot
+	if role != nil {
+		if existing, err := s.repo.GetSpaceRole(ctx, spaceID, role.ID); err == nil && existing != nil && (deleted || roleViewChanged(existing.Permissions, role.Permissions)) {
+			before, _ = s.Snapshot(ctx, spaceID)
 		}
-		s.invalidateSnapshot(ctx, spaceID)
-		s.publishSpaceEvent(ctx, spaceID, "SPACE_ROLE_DELETE", map[string]interface{}{"role_id": id.Format(role.ID)})
-		return nil
 	}
-	existing, err := s.repo.GetSpaceRole(ctx, spaceID, role.ID)
+	viewChanged, err := s.storeMirrorRole(ctx, spaceID, role, deleted)
 	if err != nil {
 		return err
 	}
+	if viewChanged {
+		bg := context.WithoutCancel(ctx)
+		s.later(func() { s.republishViewChanges(bg, spaceID, before) })
+	}
+	return nil
+}
+
+// storeMirrorRole is ApplyMirrorRole without the room announcements; it reports whether the
+// change could reach who sees which rooms.
+func (s *Service) storeMirrorRole(ctx context.Context, spaceID int64, role *SpaceRole, deleted bool) (viewChanged bool, err error) {
+	if role == nil {
+		return false, ErrRoleNotFound
+	}
+	if deleted {
+		if err := s.repo.DeleteSpaceRole(ctx, spaceID, role.ID); err != nil {
+			return false, err
+		}
+		s.invalidateSnapshot(ctx, spaceID)
+		s.publishSpaceEvent(ctx, spaceID, "SPACE_ROLE_DELETE", map[string]interface{}{"role_id": id.Format(role.ID)})
+		return true, nil
+	}
+	existing, err := s.repo.GetSpaceRole(ctx, spaceID, role.ID)
+	if err != nil {
+		return false, err
+	}
 	role.SpaceID = spaceID
 	if err := s.repo.InsertSpaceRole(ctx, role); err != nil {
-		return err
+		return false, err
 	}
 	s.invalidateSnapshot(ctx, spaceID)
 	event := "SPACE_ROLE_UPDATE"
@@ -985,20 +1099,69 @@ func (s *Service) ApplyMirrorRole(ctx context.Context, spaceID int64, role *Spac
 		event = "SPACE_ROLE_CREATE"
 	}
 	s.publishSpaceEvent(ctx, spaceID, event, spaceRoleEventData(role))
-	return nil
+	return existing != nil && roleViewChanged(existing.Permissions, role.Permissions), nil
 }
 
-// putMirrorRoom writes a room and its overrides; with publish set it emits the same
-// gateway events the origin's own clients saw.
-func (s *Service) putMirrorRoom(ctx context.Context, spaceID int64, mr MirrorRoom, publish bool) error {
+// mirrorEvent is a gateway event held back until a mirror's writes are done.
+type mirrorEvent struct {
+	eventType string
+	data      map[string]interface{}
+}
+
+// mirrorRoomChange is what putMirrorRoom changed, which is what decides what clients hear.
+type mirrorRoomChange struct {
+	created bool
+	// metadata: a field SPACE_ROOM_UPDATE carries differs.
+	metadata bool
+	// visibility: an override, the synced flag or the parent differs, so who can view the room
+	// may differ too.
+	visibility bool
+	// e2eeOn: E2EE went from off to on.
+	e2eeOn bool
+	// overrideEvents says what changed among the overrides, for clients that compute a room's
+	// permissions themselves. They carry only ids, and stay on the space channel as they do
+	// on the origin.
+	overrideEvents []mirrorEvent
+}
+
+func (c mirrorRoomChange) any() bool {
+	return c.created || c.metadata || c.visibility || c.e2eeOn
+}
+
+// mirrorRoomApplied is one room putMirrorRoom changed.
+type mirrorRoomApplied struct {
+	room   MirrorRoom
+	change mirrorRoomChange
+}
+
+// mirrorChanges collects what a pass over a mirror changed, for announceMirrorChanges.
+type mirrorChanges struct {
+	rooms []mirrorRoomApplied
+	// allRooms: a role's view bits changed, so any room's viewers may differ; before is the
+	// snapshot from before the pass, to tell each member only what changed for them.
+	allRooms bool
+	before   *Snapshot
+}
+
+func (c *mirrorChanges) add(mr MirrorRoom, ch mirrorRoomChange) {
+	if ch.any() {
+		c.rooms = append(c.rooms, mirrorRoomApplied{room: mr, change: ch})
+	}
+}
+
+// putMirrorRoom makes a room and its overrides what the origin reported, writing only what
+// differs, and reports what that was. It publishes nothing: the caller announces, after
+// invalidateSnapshot, because every announcement depends on who can view the room now.
+func (s *Service) putMirrorRoom(ctx context.Context, spaceID int64, mr MirrorRoom) (mirrorRoomChange, error) {
+	var ch mirrorRoomChange
 	if mr.Room == nil {
-		return ErrInvalidRoom
+		return ch, ErrInvalidRoom
 	}
 	room := mr.Room
 	room.SpaceID = &spaceID
 	existing, err := s.roomRepo.GetByID(ctx, room.ID)
 	if err != nil {
-		return err
+		return ch, err
 	}
 	if existing == nil {
 		var err error
@@ -1008,133 +1171,225 @@ func (s *Service) putMirrorRoom(ctx context.Context, spaceID int64, mr MirrorRoo
 			err = s.roomRepo.CreateSpaceRoom(ctx, room)
 		}
 		if err != nil {
-			return err
+			return ch, err
 		}
+		ch.created = true
 	} else {
 		if existing.Name != room.Name || existing.Topic != room.Topic || existing.SlowmodeSeconds != room.SlowmodeSeconds {
 			if err := s.roomRepo.UpdateSpaceRoom(ctx, room.ID, room.Name, room.Topic, room.SlowmodeSeconds); err != nil {
-				return err
+				return ch, err
 			}
+			ch.metadata = true
 		}
-		if room.E2EEEnabled != nil && (existing.E2EEEnabled == nil || *existing.E2EEEnabled != *room.E2EEEnabled) {
+		if room.E2EEEnabled != nil && existing.E2EEOn() != *room.E2EEEnabled {
 			if err := s.roomRepo.UpdateRoomE2EEEnabled(ctx, room.ID, *room.E2EEEnabled); err != nil {
-				return err
+				return ch, err
 			}
+			ch.metadata = true
+			ch.e2eeOn = *room.E2EEEnabled
 		}
 		if existing.UserLimit != room.UserLimit || existing.Bitrate != room.Bitrate {
 			if err := s.roomRepo.UpdateVoiceSettings(ctx, room.ID, room.UserLimit, room.Bitrate); err != nil {
-				return err
+				return ch, err
 			}
+			ch.metadata = true
 		}
 		if room.Type == rooms.TypeThread {
-			patch := rooms.ThreadPatch{Invitable: room.ThreadInvitable, LastActiveAt: room.ThreadLastActiveAt}
+			patch := rooms.ThreadPatch{}
+			if room.ThreadInvitable != nil && existing.ThreadIsInvitable() != *room.ThreadInvitable {
+				patch.Invitable = room.ThreadInvitable
+			}
+			if t := room.ThreadLastActiveAt; t != nil && (existing.ThreadLastActiveAt == nil || !existing.ThreadLastActiveAt.Equal(*t)) {
+				patch.LastActiveAt = t
+			}
 			if room.ThreadArchived != nil && existing.ThreadIsArchived() != *room.ThreadArchived {
 				patch.Archived = room.ThreadArchived
+				ch.metadata = true
 			}
 			if room.ThreadLocked != nil && existing.ThreadIsLocked() != *room.ThreadLocked {
 				patch.Locked = room.ThreadLocked
+				ch.metadata = true
 			}
 			if room.ThreadAutoArchiveMin > 0 && room.ThreadAutoArchiveMin != existing.ThreadAutoArchiveMin {
 				a := room.ThreadAutoArchiveMin
 				patch.AutoArchiveMinutes = &a
+				ch.metadata = true
 			}
-			if err := s.roomRepo.UpdateThread(ctx, room.ID, patch); err != nil {
-				return err
+			if patch != (rooms.ThreadPatch{}) {
+				if err := s.roomRepo.UpdateThread(ctx, room.ID, patch); err != nil {
+					return ch, err
+				}
 			}
 		}
-		if !int64PtrEqual(existing.ParentID, room.ParentID) || existing.Position != room.Position {
+		if parentChanged := !int64PtrEqual(existing.ParentID, room.ParentID); parentChanged || existing.Position != room.Position {
 			if err := s.roomRepo.UpdateSpaceRoomParentAndPosition(ctx, spaceID, room.ID, room.ParentID, room.Position); err != nil {
-				return err
+				return ch, err
 			}
+			ch.metadata = true
+			ch.visibility = ch.visibility || parentChanged
+		}
+		// Absent from an origin that predates the flag, which never clears anything here.
+		if room.PermissionsSynced != nil && (existing.PermissionsSynced != nil && *existing.PermissionsSynced) != *room.PermissionsSynced {
+			if err := s.roomRepo.UpdateRoomPermissionsSynced(ctx, room.ID, *room.PermissionsSynced); err != nil {
+				return ch, err
+			}
+			ch.metadata = true
+			ch.visibility = true
 		}
 	}
 	// Overrides: make the stored set equal to what the origin reported.
-	haveRoles, _ := s.repo.ListRoomRoleOverrides(ctx, spaceID, room.ID)
-	haveUsers, _ := s.repo.ListRoomUserOverrides(ctx, spaceID, room.ID)
+	haveRoles, err := s.repo.ListRoomRoleOverrides(ctx, spaceID, room.ID)
+	if err != nil {
+		return ch, err
+	}
+	haveUsers, err := s.repo.ListRoomUserOverrides(ctx, spaceID, room.ID)
+	if err != nil {
+		return ch, err
+	}
+	storedRoles := make(map[int64]*SpaceRoomRoleOverride, len(haveRoles))
+	for i := range haveRoles {
+		storedRoles[haveRoles[i].RoleID] = &haveRoles[i]
+	}
+	storedUsers := make(map[int64]*SpaceRoomUserOverride, len(haveUsers))
+	for i := range haveUsers {
+		storedUsers[haveUsers[i].UserID] = &haveUsers[i]
+	}
 	wantRoles := map[int64]struct{}{}
 	for i := range mr.Overrides.Roles {
 		o := mr.Overrides.Roles[i]
 		o.SpaceID, o.RoomID = spaceID, room.ID
 		wantRoles[o.RoleID] = struct{}{}
+		if cur := storedRoles[o.RoleID]; cur != nil && cur.Allow == o.Allow && cur.Deny == o.Deny {
+			continue
+		}
 		if err := s.repo.UpsertRoomRoleOverride(ctx, &o); err != nil {
-			return err
+			return ch, err
 		}
-		if publish {
-			s.publishSpaceEvent(ctx, spaceID, "SPACE_ROOM_OVERRIDE_UPDATE", roomOverrideEventData(&o))
-		}
+		ch.visibility = true
+		ch.overrideEvents = append(ch.overrideEvents, mirrorEvent{"SPACE_ROOM_OVERRIDE_UPDATE", roomOverrideEventData(&o)})
 	}
 	for _, o := range haveRoles {
 		if _, ok := wantRoles[o.RoleID]; ok {
 			continue
 		}
 		if err := s.repo.DeleteRoomRoleOverride(ctx, spaceID, room.ID, o.RoleID); err != nil {
-			return err
+			return ch, err
 		}
-		if publish {
-			s.publishSpaceEvent(ctx, spaceID, "SPACE_ROOM_OVERRIDE_DELETE", map[string]interface{}{
-				"room_id": id.Format(room.ID), "role_id": id.Format(o.RoleID),
-			})
-		}
+		ch.visibility = true
+		ch.overrideEvents = append(ch.overrideEvents, mirrorEvent{"SPACE_ROOM_OVERRIDE_DELETE", map[string]interface{}{
+			"room_id": id.Format(room.ID), "role_id": id.Format(o.RoleID),
+		}})
 	}
 	wantUsers := map[int64]struct{}{}
 	for i := range mr.Overrides.Users {
 		o := mr.Overrides.Users[i]
 		o.SpaceID, o.RoomID = spaceID, room.ID
 		wantUsers[o.UserID] = struct{}{}
+		if cur := storedUsers[o.UserID]; cur != nil && cur.Allow == o.Allow && cur.Deny == o.Deny {
+			continue
+		}
 		if err := s.repo.UpsertRoomUserOverride(ctx, &o); err != nil {
-			return err
+			return ch, err
 		}
-		if publish {
-			s.publishSpaceEvent(ctx, spaceID, "SPACE_ROOM_USER_OVERRIDE_UPDATE", roomUserOverrideEventData(&o))
-		}
+		ch.visibility = true
+		ch.overrideEvents = append(ch.overrideEvents, mirrorEvent{"SPACE_ROOM_USER_OVERRIDE_UPDATE", roomUserOverrideEventData(&o)})
 	}
 	for _, o := range haveUsers {
 		if _, ok := wantUsers[o.UserID]; ok {
 			continue
 		}
 		if err := s.repo.DeleteRoomUserOverride(ctx, spaceID, room.ID, o.UserID); err != nil {
-			return err
+			return ch, err
 		}
-		if publish {
-			s.publishSpaceEvent(ctx, spaceID, "SPACE_ROOM_USER_OVERRIDE_DELETE", map[string]interface{}{
-				"room_id": id.Format(room.ID), "user_id": id.Format(o.UserID),
-			})
+		ch.visibility = true
+		ch.overrideEvents = append(ch.overrideEvents, mirrorEvent{"SPACE_ROOM_USER_OVERRIDE_DELETE", map[string]interface{}{
+			"room_id": id.Format(room.ID), "user_id": id.Format(o.UserID),
+		}})
+	}
+	return ch, nil
+}
+
+// announceMirrorChanges tells clients what a pass over a mirror changed. Call it after
+// invalidateSnapshot: it asks who can view each room now.
+//
+// A new room goes space-wide only if nobody is kept out of it, otherwise to its viewers alone.
+// A changed one sends its update to its viewers, the flag first so a client never sees a
+// channel between its overrides being cleared and its section being followed. Where
+// visibility may have changed every member is told what they can see now, once, however many
+// rooms changed. Nothing goes out for what did not change.
+func (s *Service) announceMirrorChanges(ctx context.Context, spaceID int64, c *mirrorChanges) {
+	if s.redis == nil {
+		return
+	}
+	var republish, changed []int64
+	for _, applied := range c.rooms {
+		ch := applied.change
+		updated, _ := s.roomRepo.GetByID(ctx, applied.room.Room.ID)
+		if updated == nil {
+			continue
+		}
+		if ch.created {
+			if updated.Type == rooms.TypeThread && updated.ThreadIsArchived() {
+				continue // not in anyone's live list; fetched on demand
+			}
+			if !s.everyoneCanView(ctx, spaceID, updated.ID) {
+				republish = append(republish, updated.ID)
+				continue
+			}
+			payload := AttachOverrides(RoomMap(updated), applied.room.Overrides)
+			payload["room_id"] = id.Format(updated.ID)
+			if feds := s.RoomFederations(ctx, []int64{updated.ID}); feds != nil {
+				AttachFederation(payload, feds[updated.ID])
+			}
+			s.publishSpaceEvent(ctx, spaceID, "SPACE_ROOM_CREATE", payload)
+			continue
+		}
+		if ch.metadata {
+			s.publishRoomEvent(ctx, spaceID, updated.ID, "SPACE_ROOM_UPDATE", mirrorRoomUpdatePayload(updated))
+		}
+		for _, e := range ch.overrideEvents {
+			s.publishSpaceEvent(ctx, spaceID, e.eventType, e.data)
+		}
+		if ch.visibility {
+			changed = append(changed, updated.ID)
+		}
+		if ch.e2eeOn {
+			// See UpdateRoom: a client on a mirror must drop the outbound session it kept from an
+			// earlier E2EE stint just like one on the origin.
+			s.publishSpaceEvent(ctx, spaceID, "SESSION_ROTATE", map[string]interface{}{"room_id": id.Format(updated.ID)})
 		}
 	}
-	if !publish {
-		return nil
+	if c.allRooms {
+		s.republishViewChanges(ctx, spaceID, c.before)
+		return
 	}
-	updated, _ := s.roomRepo.GetByID(ctx, room.ID)
-	if updated == nil {
-		return nil
+	if len(changed) > 0 {
+		republish = append(republish, s.visibilityAffectedRooms(ctx, spaceID, changed...)...)
 	}
-	if existing == nil {
-		payload := AttachOverrides(RoomMap(updated), mr.Overrides)
-		payload["room_id"] = id.Format(updated.ID)
-		if feds := s.RoomFederations(ctx, []int64{updated.ID}); feds != nil {
-			AttachFederation(payload, feds[updated.ID])
-		}
-		s.publishSpaceEvent(ctx, spaceID, "SPACE_ROOM_CREATE", payload)
-		return nil
-	}
+	slices.Sort(republish)
+	s.republishRoomVisibility(ctx, spaceID, slices.Compact(republish))
+}
+
+// mirrorRoomUpdatePayload is a room's SPACE_ROOM_UPDATE on a mirror.
+func mirrorRoomUpdatePayload(r *rooms.Room) map[string]interface{} {
 	payload := map[string]interface{}{
-		"room_id":          id.Format(updated.ID),
-		"name":             updated.Name,
-		"topic":            updated.Topic,
-		"slowmode_seconds": updated.SlowmodeSeconds,
-		"e2ee_enabled":     updated.E2EEOn(),
-		"user_limit":       updated.UserLimit,
-		"bitrate":          updated.Bitrate,
-		"position":         updated.Position,
-		"updated_at":       updated.UpdatedAt,
+		"room_id":            id.Format(r.ID),
+		"name":               r.Name,
+		"topic":              r.Topic,
+		"slowmode_seconds":   r.SlowmodeSeconds,
+		"e2ee_enabled":       r.E2EEOn(),
+		"user_limit":         r.UserLimit,
+		"bitrate":            r.Bitrate,
+		"position":           r.Position,
+		"permissions_synced": r.PermissionsSynced != nil && *r.PermissionsSynced,
+		"updated_at":         r.UpdatedAt,
 	}
-	if updated.ParentID != nil {
-		payload["parent_id"] = id.Format(*updated.ParentID)
+	if r.ParentID != nil {
+		payload["parent_id"] = id.Format(*r.ParentID)
 	} else {
 		payload["parent_id"] = nil
 	}
-	s.publishSpaceEvent(ctx, spaceID, "SPACE_ROOM_UPDATE", payload)
-	return nil
+	return payload
 }
 
 // ApplyMirrorRoom stores, updates or deletes a room the origin reported.
@@ -1143,22 +1398,39 @@ func (s *Service) ApplyMirrorRoom(ctx context.Context, spaceID int64, mr MirrorR
 		return ErrInvalidRoom
 	}
 	if deleted {
-		if err := s.roomRepo.DeleteSpaceRoom(ctx, spaceID, mr.Room.ID); err != nil {
+		existing, err := s.roomRepo.GetByID(ctx, mr.Room.ID)
+		if err != nil {
+			return err
+		}
+		if existing != nil && existing.Type == rooms.TypeThread {
+			err = s.roomRepo.DeleteThread(ctx, spaceID, mr.Room.ID)
+		} else {
+			s.roomGoing(ctx, spaceID, mr.Room.ID)
+			err = s.roomRepo.DeleteSpaceRoom(ctx, spaceID, mr.Room.ID)
+		}
+		if err != nil {
 			return err
 		}
 		s.invalidateSnapshot(ctx, spaceID)
 		s.publishSpaceEvent(ctx, spaceID, "SPACE_ROOM_DELETE", map[string]interface{}{"room_id": id.Format(mr.Room.ID)})
 		return nil
 	}
-	if err := s.putMirrorRoom(ctx, spaceID, mr, true); err != nil {
+	ch, err := s.putMirrorRoom(ctx, spaceID, mr)
+	if err != nil {
 		return err
 	}
 	s.invalidateSnapshot(ctx, spaceID)
+	var changes mirrorChanges
+	changes.add(mr, ch)
+	s.announceMirrorChanges(ctx, spaceID, &changes)
 	return nil
 }
 
-// ApplyMirrorReorder moves rooms to the parents and positions the origin reported.
+// ApplyMirrorReorder moves rooms to the parents and positions the origin reported. The
+// snapshot holds each room's parent, so it is dropped before anyone is told, and each update
+// goes to who can view the room as it now stands.
 func (s *Service) ApplyMirrorReorder(ctx context.Context, spaceID int64, order []RoomOrder) error {
+	var moved []RoomOrder
 	for _, o := range order {
 		room, err := s.roomRepo.GetByID(ctx, o.RoomID)
 		if err != nil || room == nil || room.SpaceID == nil || *room.SpaceID != spaceID {
@@ -1168,8 +1440,18 @@ func (s *Service) ApplyMirrorReorder(ctx context.Context, spaceID int64, order [
 			continue
 		}
 		if err := s.roomRepo.UpdateSpaceRoomParentAndPosition(ctx, spaceID, o.RoomID, o.ParentID, o.Position); err != nil {
+			if len(moved) > 0 {
+				s.invalidateSnapshot(ctx, spaceID)
+			}
 			return err
 		}
+		moved = append(moved, o)
+	}
+	if len(moved) == 0 {
+		return nil
+	}
+	s.invalidateSnapshot(ctx, spaceID)
+	for _, o := range moved {
 		payload := map[string]interface{}{
 			"room_id":    id.Format(o.RoomID),
 			"position":   o.Position,
@@ -1180,7 +1462,7 @@ func (s *Service) ApplyMirrorReorder(ctx context.Context, spaceID int64, order [
 		} else {
 			payload["parent_id"] = nil
 		}
-		s.publishSpaceEvent(ctx, spaceID, "SPACE_ROOM_UPDATE", payload)
+		s.publishRoomEvent(ctx, spaceID, o.RoomID, "SPACE_ROOM_UPDATE", payload)
 	}
 	return nil
 }

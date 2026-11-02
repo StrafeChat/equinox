@@ -19,6 +19,7 @@ import (
 	"github.com/StrafeChat/equinox/internal/modules/permissions"
 	"github.com/StrafeChat/equinox/internal/modules/push"
 	"github.com/StrafeChat/equinox/internal/modules/rooms"
+	"github.com/StrafeChat/equinox/internal/safego"
 	"github.com/StrafeChat/equinox/internal/stargate"
 )
 
@@ -56,12 +57,56 @@ type Service struct {
 	fedInfo FederationInfo
 	// memberRemoved: see SetMemberRemovedHook.
 	memberRemoved func(ctx context.Context, spaceID, userID int64)
+	// roomRemoved: see SetRoomRemovedHook.
+	roomRemoved func(ctx context.Context, spaceID, roomID int64)
+	// accessLost: see SetRoomAccessLostHook.
+	accessLost func(ctx context.Context, spaceID, roomID int64, userIDs []int64)
+	// runLater runs work that must not hold up the request that caused it; nil is
+	// safego.Go. Tests set it to run in place.
+	runLater func(func())
 }
 
 // SetMemberRemovedHook is called after every removal of a member (kick, ban, leave); the
 // voice module uses it to end the person's voice connection in that space.
 func (s *Service) SetMemberRemovedHook(h func(ctx context.Context, spaceID, userID int64)) {
 	s.memberRemoved = h
+}
+
+// SetRoomRemovedHook is called as a room is about to be deleted, while it still loads and
+// who may view it can still be read; the voice module uses it to end the room's call.
+func (s *Service) SetRoomRemovedHook(h func(ctx context.Context, spaceID, roomID int64)) {
+	s.roomRemoved = h
+}
+
+// SetRoomAccessLostHook is called with members who can no longer view a room after a
+// permission change; the voice module uses it to end the call of any of them connected there,
+// as Discord does. Some of them may never have been able to see it.
+func (s *Service) SetRoomAccessLostHook(h func(ctx context.Context, spaceID, roomID int64, userIDs []int64)) {
+	s.accessLost = h
+}
+
+// lostAccess runs the access-lost hook, if any.
+func (s *Service) lostAccess(ctx context.Context, spaceID, roomID int64, userIDs []int64) {
+	if s.accessLost != nil && len(userIDs) > 0 {
+		s.accessLost(ctx, spaceID, roomID, userIDs)
+	}
+}
+
+// later runs fn off the request path: what a change tells every member can take a while in a
+// big space, and the person who made it does not wait for that.
+func (s *Service) later(fn func()) {
+	if s.runLater != nil {
+		s.runLater(fn)
+		return
+	}
+	safego.Go("spaces", fn)
+}
+
+// roomGoing runs the room-removed hook, if any.
+func (s *Service) roomGoing(ctx context.Context, spaceID, roomID int64) {
+	if s.roomRemoved != nil {
+		s.roomRemoved(ctx, spaceID, roomID)
+	}
 }
 
 func NewService(repo Repository, roomRepo rooms.Repository, userRepo auth.UserRepository, redis *redis.Client, cfg *config.Config) *Service {
@@ -462,10 +507,8 @@ func (s *Service) VisibleSpaceRooms(ctx context.Context, userID, spaceID int64) 
 	if err != nil {
 		return nil, nil, err
 	}
-	privileged := snap.OwnerID == userID
-	var base int64
 	var roleIDs []int64
-	if !privileged {
+	if snap.OwnerID != userID {
 		ids, ok, err := s.repo.MemberRoleIDs(ctx, spaceID, userID)
 		if err != nil {
 			return nil, snap, err
@@ -474,9 +517,8 @@ func (s *Service) VisibleSpaceRooms(ctx context.Context, userID, spaceID int64) 
 			return nil, snap, nil
 		}
 		roleIDs = ids
-		base = snap.basePermissions(roleIDs)
-		privileged = permissions.Has(base, permissions.PermAdministrator)
 	}
+	base := snap.basePermissions(roleIDs)
 	// Threads, the way Discord syncs them: an archived one is never in the live list (it is
 	// fetched on demand), a private one only for its members and Manage Threads holders.
 	joined := map[int64]struct{}{}
@@ -495,22 +537,20 @@ func (s *Service) VisibleSpaceRooms(ctx context.Context, userID, spaceID int64) 
 		if r.Type == rooms.TypeThread && r.ThreadIsArchived() {
 			continue
 		}
-		if !privileged {
-			// Effective overrides, so a channel synced to a private category inherits its denied
-			// View and is omitted too - not just the category itself; a thread resolves through
-			// its channel the same way.
-			ov := snap.EffectiveRoomOverrides(r.ID)
-			perms := resolveEffectiveRoomPermissions(base, snap.EveryoneRoleID, roleIDs, userID, ov.Roles, ov.Users)
-			if !permissions.Has(perms, permissions.PermViewRoom) {
-				continue
-			}
-			if r.ThreadIsPrivate() && !permissions.Has(perms, permissions.PermManageThreads) {
-				if _, ok := joined[r.ID]; !ok {
-					continue
-				}
-			}
+		// The list is read fresh and the snapshot may have been cached a moment before this room
+		// existed. It says nothing of a room it has not seen, whose overrides, parent and thread
+		// privacy are all unknown, so that room waits for the next rebuild rather than showing
+		// to everyone.
+		if _, known := snap.Meta[r.ID]; !known {
+			continue
 		}
-		visible = append(visible, r)
+		inThread := func(int64) bool {
+			_, ok := joined[r.ID]
+			return ok
+		}
+		if permissions.Has(snap.roomPermissions(r.ID, userID, base, roleIDs, inThread), permissions.PermViewRoom) {
+			visible = append(visible, r)
+		}
 	}
 	return visible, snap, nil
 }
@@ -656,7 +696,7 @@ func (s *Service) GetInvitePreview(ctx context.Context, raw string) (*InvitePrev
 	if domain != "" {
 		return s.fed.PreviewRemoteInvite(ctx, domain, code)
 	}
-	inv, err := s.consumeInvite(ctx, code, false)
+	inv, err := s.hostedInvite(ctx, code)
 	if err != nil {
 		return nil, err
 	}
@@ -687,7 +727,7 @@ func (s *Service) JoinByInvite(ctx context.Context, actorID int64, raw string) (
 	if domain != "" {
 		return s.joinRemote(ctx, actorID, domain, code)
 	}
-	inv, err := s.consumeInvite(ctx, code, false)
+	inv, err := s.hostedInvite(ctx, code)
 	if err != nil {
 		return nil, err
 	}
@@ -727,6 +767,20 @@ func (s *Service) JoinByInvite(ctx context.Context, actorID int64, raw string) (
 	}
 	s.attachFederation(ctx, space)
 	return space, nil
+}
+
+// hostedInvite looks up a live invite to a space hosted here. Only a space's origin admits
+// anyone, so a code stored for a mirror (a mirror's widget once minted them) leads nowhere:
+// redeeming it would add a member the origin never heard of, past its bans.
+func (s *Service) hostedInvite(ctx context.Context, code string) (*SpaceInvite, error) {
+	inv, err := s.consumeInvite(ctx, code, false)
+	if err != nil {
+		return nil, err
+	}
+	if s.mirrorOrigin(ctx, inv.SpaceID) != "" {
+		return nil, ErrInviteNotFound
+	}
+	return inv, nil
 }
 
 // canModerateMember checks actorID may kick/ban targetUserID: actor has `need` (or
@@ -1065,39 +1119,34 @@ func (s *Service) FedRoomChanged(ctx context.Context, spaceID, roomID int64, del
 	s.fedRoomChanged(ctx, spaceID, roomID, deleted)
 }
 
-// ViewersOf is who may view a room: (nil, true) when the default @everyone can, so an event
-// may go space-wide; otherwise the ids of the members who can (the owner, Administrators and
-// whoever the overrides let through), for per-member delivery.
+// ViewersOf is who may view a room: (nil, true) when @everyone can and no override keeps
+// anyone out, so an event may go space-wide; otherwise the ids of the members who can (the
+// owner, Administrators and whoever the overrides let through), for per-member delivery. It
+// fails closed: (nil, false) when the answer cannot be read.
 func (s *Service) ViewersOf(ctx context.Context, spaceID, roomID int64) ([]int64, bool) {
-	if s.everyoneCanView(ctx, spaceID, roomID) {
-		return nil, true
-	}
 	snap, err := s.Snapshot(ctx, spaceID)
 	if err != nil {
 		return nil, false
+	}
+	if _, known := snap.Meta[roomID]; !known {
+		// A snapshot cached by a rebuild that raced the room's creation: its empty overrides
+		// would list everyone. Read it fresh once, and fail closed if it is still unknown.
+		s.invalidateSnapshot(ctx, spaceID)
+		if snap, err = s.Snapshot(ctx, spaceID); err != nil {
+			return nil, false
+		}
+		if _, known := snap.Meta[roomID]; !known {
+			return nil, false
+		}
+	}
+	if snap.openToEveryone(roomID) {
+		return nil, true
 	}
 	members, err := s.repo.ListMembers(ctx, spaceID)
 	if err != nil {
 		return nil, false
 	}
-	ov := snap.EffectiveRoomOverrides(roomID)
-	var canView []int64
-	for i := range members {
-		m := &members[i]
-		if snap.OwnerID == m.UserID {
-			canView = append(canView, m.UserID)
-			continue
-		}
-		base := snap.basePermissions(m.RoleIDs)
-		if permissions.Has(base, permissions.PermAdministrator) {
-			canView = append(canView, m.UserID)
-			continue
-		}
-		perms := resolveEffectiveRoomPermissions(base, snap.EveryoneRoleID, m.RoleIDs, m.UserID, ov.Roles, ov.Users)
-		if permissions.Has(perms, permissions.PermViewRoom) {
-			canView = append(canView, m.UserID)
-		}
-	}
+	canView, _ := snap.splitViewers(roomID, members, snap.memberBases(members), s.threadRoster(ctx, roomID))
 	return canView, false
 }
 

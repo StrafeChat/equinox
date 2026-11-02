@@ -114,11 +114,15 @@ func (s *Service) SearchMessages(ctx context.Context, userID, roomID int64, opts
 		return &SearchResult{Searchable: false}, nil
 	}
 	// A channel hosted elsewhere is searched there: this copy only holds what was relayed
-	// since a local member joined. The origin being down falls back to that copy.
+	// since a local member joined. The origin being down falls back to that copy; its
+	// refusal stands (see ListWithReactions).
 	if origin := s.remoteOrigin(ctx, room); origin != "" {
 		res, rerr := s.federator.SearchRemote(ctx, origin, room, userID, opts)
 		if rerr == nil {
 			return res, nil
+		}
+		if !originDown(rerr) {
+			return nil, rerr
 		}
 		logger.Warn("messages", "search in room %d on %s: %v (searching the local copy)", roomID, origin, rerr)
 	}
@@ -225,6 +229,9 @@ func (s *Service) SearchSpaceMessages(ctx context.Context, userID, spaceID int64
 			res, rerr := s.federator.SearchSpaceRemote(ctx, origin, spaceID, userID, opts)
 			if rerr == nil {
 				return res, nil
+			}
+			if !originDown(rerr) {
+				return nil, rerr
 			}
 			logger.Warn("messages", "search in space %d on %s: %v (searching the local copy)", spaceID, origin, rerr)
 		}

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"github.com/StrafeChat/equinox/internal/modules/instance"
 	"log"
@@ -88,6 +89,9 @@ func (a *roomChannelAuthorizer) CanAccessRoom(ctx context.Context, userID int64,
 	ok, err := a.roomSvc.CanAccess(ctx, userID, rid)
 	if err == nil {
 		return ok, nil
+	}
+	if errors.Is(err, spaces.ErrNotMember) {
+		return false, nil
 	}
 	if err != rooms.ErrRoomNotFound {
 		return false, err

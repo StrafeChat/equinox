@@ -2,6 +2,7 @@ package spaces
 
 import (
 	"context"
+	"slices"
 	"time"
 
 	"github.com/StrafeChat/equinox/internal/id"
@@ -121,8 +122,9 @@ func (s *Service) applyPermissionsSync(ctx context.Context, spaceID int64, room 
 	// The snapshot carries each room's synced flag and its overrides, both of which just
 	// changed - drop it so the next permission check and room listing rebuild from the writes.
 	s.invalidateSnapshot(ctx, spaceID)
-	// Syncing changes the channel's effective View, so some members may gain or lose it.
-	s.republishRoomVisibility(ctx, spaceID, []int64{room.ID})
+	// Syncing changes the channel's effective View, so some members may gain or lose it, in
+	// the channel and in its threads.
+	s.republishRoomVisibility(ctx, spaceID, s.visibilityAffectedRooms(ctx, spaceID, room.ID))
 	return true, nil
 }
 
@@ -135,23 +137,40 @@ type roomForSync struct {
 }
 
 // visibilityAffectedRooms returns the rooms whose per-member View could change from a
-// permission change on roomID: the room itself, plus - when it is a section - every channel
-// synced to it (those inherit the section's overrides).
-func (s *Service) visibilityAffectedRooms(ctx context.Context, spaceID, roomID int64) []int64 {
-	ids := []int64{roomID}
-	room, err := s.roomRepo.GetByID(ctx, roomID)
-	if err != nil || room == nil || room.Type != rooms.TypeRoomSection {
-		return ids
-	}
+// permission change on the given rooms: those rooms, plus every channel synced to one of them
+// that is a section (those inherit the section's overrides), plus the threads of all of those
+// (a thread resolves through its channel).
+func (s *Service) visibilityAffectedRooms(ctx context.Context, spaceID int64, roomIDs ...int64) []int64 {
 	all, err := s.listRooms(ctx, spaceID)
 	if err != nil {
-		return ids
+		return roomIDs
+	}
+	affected := make(map[int64]struct{}, len(roomIDs))
+	for _, rid := range roomIDs {
+		affected[rid] = struct{}{}
+	}
+	parentAffected := func(r *rooms.Room) bool {
+		if r.ParentID == nil {
+			return false
+		}
+		_, ok := affected[*r.ParentID]
+		return ok
 	}
 	for _, r := range all {
-		if r.ParentID != nil && *r.ParentID == roomID && r.PermissionsSynced != nil && *r.PermissionsSynced {
-			ids = append(ids, r.ID)
+		if r.Type != rooms.TypeThread && r.PermissionsSynced != nil && *r.PermissionsSynced && parentAffected(r) {
+			affected[r.ID] = struct{}{}
 		}
 	}
+	for _, r := range all {
+		if r.Type == rooms.TypeThread && parentAffected(r) {
+			affected[r.ID] = struct{}{}
+		}
+	}
+	ids := make([]int64, 0, len(affected))
+	for rid := range affected {
+		ids = append(ids, rid)
+	}
+	slices.Sort(ids)
 	return ids
 }
 
@@ -159,8 +178,10 @@ func (s *Service) visibilityAffectedRooms(ctx context.Context, spaceID, roomID i
 // permission change adds or removes them from sidebars in real time (Discord-style) without a
 // reload - including for a member who never had the room because it was created private.
 // Members who can view get SPACE_ROOM_CREATE (the client upserts it); members who cannot get
-// SPACE_ROOM_DELETE (the client drops it, which also clears any metadata it had cached). Runs
-// only on override/sync changes, which are infrequent admin actions.
+// SPACE_ROOM_DELETE (the client drops it, which also clears any metadata it had cached, and
+// the gateway ends any subscription to the room). Runs on override, sync and role-permission
+// changes, which are infrequent admin actions, and reads the snapshot: call it after
+// invalidateSnapshot, or a room just made private still reads as public.
 func (s *Service) republishRoomVisibility(ctx context.Context, spaceID int64, roomIDs []int64) {
 	if s.redis == nil || len(roomIDs) == 0 {
 		return
@@ -173,53 +194,234 @@ func (s *Service) republishRoomVisibility(ctx context.Context, spaceID int64, ro
 	if err != nil || len(members) == 0 {
 		return
 	}
+	list, err := s.roomRepo.GetByIDs(ctx, roomIDs)
+	if err != nil {
+		return
+	}
+	feds := s.RoomFederations(ctx, roomIDs)
+	bases := snap.memberBases(members)
 	region := s.stargateRegion()
-	for _, rid := range roomIDs {
-		room, err := s.roomRepo.GetByID(ctx, rid)
-		if err != nil || room == nil || room.SpaceID == nil || *room.SpaceID != spaceID {
+	for _, room := range list {
+		if room == nil || room.SpaceID == nil || *room.SpaceID != spaceID {
 			continue
 		}
-		payload := AttachOverrides(RoomMap(room), snap.RoomOverridesFor(rid))
-		payload["room_id"] = id.Format(rid)
-		ov := snap.EffectiveRoomOverrides(rid)
-		var canView, cannotView []int64
-		for i := range members {
-			m := &members[i]
-			visible := snap.OwnerID == m.UserID
-			if !visible {
-				base := snap.basePermissions(m.RoleIDs)
-				if permissions.Has(base, permissions.PermAdministrator) {
-					visible = true
-				} else {
-					perms := resolveEffectiveRoomPermissions(base, snap.EveryoneRoleID, m.RoleIDs, m.UserID, ov.Roles, ov.Users)
-					visible = permissions.Has(perms, permissions.PermViewRoom)
-				}
-			}
-			if visible {
-				canView = append(canView, m.UserID)
-			} else {
-				cannotView = append(cannotView, m.UserID)
-			}
-		}
-		if len(canView) > 0 {
-			stargate.PublishToUsers(ctx, s.redis, canView, "SPACE_ROOM_CREATE", payload, region)
-		}
+		inThread := s.threadRoster(ctx, room.ID)
+		canView, cannotView := snap.splitViewers(room.ID, members, bases, inThread)
+		s.publishRoomCreate(ctx, snap, room, feds[room.ID], canView, inThread)
 		if len(cannotView) > 0 {
-			stargate.PublishToUsers(ctx, s.redis, cannotView, "SPACE_ROOM_DELETE", map[string]interface{}{"room_id": id.Format(rid), "space_id": id.Format(spaceID)}, region)
+			stargate.PublishToUsers(ctx, s.redis, cannotView, "SPACE_ROOM_DELETE", map[string]interface{}{"room_id": id.Format(room.ID), "space_id": id.Format(spaceID)}, region)
 		}
+		s.lostAccess(ctx, spaceID, room.ID, cannotView)
 	}
 }
 
-// everyoneCanView reports whether the default @everyone role can view a room (its effective
-// overrides, so a synced channel is judged by its section). Used to decide whether a new room
-// is safe to announce space-wide or must be delivered only to members who can see it.
+// republishViewChanges tells each member about the rooms a role change opened or closed for
+// them, and nothing else: before is the space's snapshot from before the change. Telling every
+// member about every room instead would send a SPACE_ROOM_DELETE for each room they never
+// could see, and each one has the gateway re-check every subscription they hold. With no
+// before, it falls back to doing exactly that.
+func (s *Service) republishViewChanges(ctx context.Context, spaceID int64, before *Snapshot) {
+	if before == nil {
+		s.republishAllRooms(ctx, spaceID)
+		return
+	}
+	after, err := s.Snapshot(ctx, spaceID)
+	if err != nil {
+		return
+	}
+	members, err := s.repo.ListMembers(ctx, spaceID)
+	if err != nil || len(members) == 0 {
+		return
+	}
+	wasBases, nowBases := before.memberBases(members), after.memberBases(members)
+	gained, lost := map[int64][]int64{}, map[int64][]int64{}
+	rosters := map[int64]func(int64) bool{}
+	for roomID := range after.Meta {
+		roster := s.threadRoster(ctx, roomID)
+		rosters[roomID] = roster
+		for i := range members {
+			m := &members[i]
+			was := permissions.Has(before.roomPermissions(roomID, m.UserID, wasBases[i], m.RoleIDs, roster), permissions.PermViewRoom)
+			now := permissions.Has(after.roomPermissions(roomID, m.UserID, nowBases[i], m.RoleIDs, roster), permissions.PermViewRoom)
+			switch {
+			case now && !was:
+				gained[roomID] = append(gained[roomID], m.UserID)
+			case was && !now:
+				lost[roomID] = append(lost[roomID], m.UserID)
+			}
+		}
+	}
+	if s.redis != nil && len(gained) > 0 {
+		ids := make([]int64, 0, len(gained))
+		for rid := range gained {
+			ids = append(ids, rid)
+		}
+		slices.Sort(ids)
+		if list, err := s.roomRepo.GetByIDs(ctx, ids); err == nil {
+			feds := s.RoomFederations(ctx, ids)
+			for _, room := range list {
+				if room != nil {
+					s.publishRoomCreate(ctx, after, room, feds[room.ID], gained[room.ID], rosters[room.ID])
+				}
+			}
+		}
+	}
+	for roomID, users := range lost {
+		if s.redis != nil {
+			stargate.PublishToUsers(ctx, s.redis, users, "SPACE_ROOM_DELETE", map[string]interface{}{"room_id": id.Format(roomID), "space_id": id.Format(spaceID)}, s.stargateRegion())
+		}
+		s.lostAccess(ctx, spaceID, roomID, users)
+	}
+}
+
+// republishAllRooms is republishRoomVisibility over the whole space, for a change that can
+// reach any room: a role's view bits, or the role itself going.
+func (s *Service) republishAllRooms(ctx context.Context, spaceID int64) {
+	if s.redis == nil {
+		return
+	}
+	rows, err := s.roomRepo.ListBySpace(ctx, spaceID)
+	if err != nil {
+		return
+	}
+	ids := make([]int64, 0, len(rows))
+	for _, row := range rows {
+		ids = append(ids, row.RoomID)
+	}
+	s.republishRoomVisibility(ctx, spaceID, ids)
+}
+
+// republishMemberVisibility tells one member about the rooms a change of their roles opened
+// or closed, and nothing else. The SPACE_ROOM_DELETE also ends their subscription to the
+// room, since the gateway authorizes a subscription only when it is made.
+func (s *Service) republishMemberVisibility(ctx context.Context, spaceID, userID int64, before, after []int64) {
+	if s.redis == nil {
+		return
+	}
+	snap, err := s.Snapshot(ctx, spaceID)
+	if err != nil {
+		return
+	}
+	var joined map[int64]struct{}
+	wasBase, nowBase := snap.basePermissions(before), snap.basePermissions(after)
+	var gained, lost []int64
+	for roomID := range snap.Meta {
+		inThread := func(int64) bool {
+			if joined == nil {
+				joined = map[int64]struct{}{}
+				if ids, err := s.roomRepo.ListUserThreadIDs(ctx, userID); err == nil {
+					for _, tid := range ids {
+						joined[tid] = struct{}{}
+					}
+				}
+			}
+			_, ok := joined[roomID]
+			return ok
+		}
+		was := permissions.Has(snap.roomPermissions(roomID, userID, wasBase, before, inThread), permissions.PermViewRoom)
+		now := permissions.Has(snap.roomPermissions(roomID, userID, nowBase, after, inThread), permissions.PermViewRoom)
+		switch {
+		case now && !was:
+			gained = append(gained, roomID)
+		case was && !now:
+			lost = append(lost, roomID)
+		}
+	}
+	slices.Sort(gained)
+	slices.Sort(lost)
+	if len(gained) > 0 {
+		if list, err := s.roomRepo.GetByIDs(ctx, gained); err == nil {
+			feds := s.RoomFederations(ctx, gained)
+			for _, room := range list {
+				if room != nil {
+					s.publishRoomCreate(ctx, snap, room, feds[room.ID], []int64{userID}, s.threadRoster(ctx, room.ID))
+				}
+			}
+		}
+	}
+	for _, roomID := range lost {
+		stargate.PublishToUser(ctx, s.redis, userID, "SPACE_ROOM_DELETE", map[string]interface{}{"room_id": id.Format(roomID), "space_id": id.Format(spaceID)}, s.stargateRegion())
+		s.lostAccess(ctx, spaceID, roomID, []int64{userID})
+	}
+}
+
+// publishRoomCreate sends SPACE_ROOM_CREATE to members who can view a room. The payload names
+// the room's global identity, which a client needs to key an E2EE channel's sessions on a
+// mirror. The client takes the event as the room's whole state, so a thread carries its
+// counts and each member's own `joined`, which a bare thread block would reset. An archived
+// thread goes to nobody: like READY, it is left for clients to fetch on demand.
+func (s *Service) publishRoomCreate(ctx context.Context, snap *Snapshot, room *rooms.Room, fed *rooms.Federation, users []int64, inThread func(userID int64) bool) {
+	if len(users) == 0 || (room.Type == rooms.TypeThread && room.ThreadIsArchived()) {
+		return
+	}
+	payload := AttachFederation(AttachOverrides(RoomMap(room), snap.RoomOverridesFor(room.ID)), fed)
+	payload["room_id"] = id.Format(room.ID)
+	region := s.stargateRegion()
+	if room.Type != rooms.TypeThread {
+		stargate.PublishToUsers(ctx, s.redis, users, "SPACE_ROOM_CREATE", payload, region)
+		return
+	}
+	states, _ := s.ThreadStates(ctx, 0, []int64{room.ID})
+	state := states[room.ID]
+	var joined, others []int64
+	for _, uid := range users {
+		if inThread(uid) {
+			joined = append(joined, uid)
+		} else {
+			others = append(others, uid)
+		}
+	}
+	AttachThreadState(payload, state)
+	stargate.PublishToUsers(ctx, s.redis, others, "SPACE_ROOM_CREATE", payload, region)
+	state.Joined = true
+	AttachThreadState(payload, state)
+	stargate.PublishToUsers(ctx, s.redis, joined, "SPACE_ROOM_CREATE", payload, region)
+}
+
+// threadRoster answers the view rule's "is this user in the thread" for any number of members
+// from one read of the thread's member list, made only if someone asks. A failed read leaves
+// nobody in it, so a private thread fails closed.
+func (s *Service) threadRoster(ctx context.Context, roomID int64) func(userID int64) bool {
+	var roster map[int64]struct{}
+	return func(userID int64) bool {
+		if roster == nil {
+			roster = map[int64]struct{}{}
+			if ids, err := s.roomRepo.ListThreadMemberIDs(ctx, roomID); err == nil {
+				for _, uid := range ids {
+					roster[uid] = struct{}{}
+				}
+			}
+		}
+		_, ok := roster[userID]
+		return ok
+	}
+}
+
+// everyoneCanView reports whether a room is safe to announce space-wide: @everyone can view it
+// (its effective overrides, so a synced channel is judged by its section) and no override
+// keeps a role or user out. Used to decide whether a new room must be delivered only to the
+// members who can see it. When the snapshot cannot be read the answer is no: a room wrongly
+// held back shows up on the next reload, while one wrongly announced has leaked its name.
+// OpenToEveryone reports whether every member of the space can view the room, without reading
+// the members: false on any doubt, so a caller that publishes space-wide only when it is true
+// never tells someone who is kept out.
+func (s *Service) OpenToEveryone(ctx context.Context, spaceID, roomID int64) bool {
+	return s.everyoneCanView(ctx, spaceID, roomID)
+}
+
 func (s *Service) everyoneCanView(ctx context.Context, spaceID, roomID int64) bool {
 	snap, err := s.Snapshot(ctx, spaceID)
 	if err != nil {
-		return true
+		return false
 	}
-	base := snap.basePermissions(nil)
-	ov := snap.EffectiveRoomOverrides(roomID)
-	perms := resolveEffectiveRoomPermissions(base, snap.EveryoneRoleID, nil, 0, ov.Roles, ov.Users)
-	return permissions.Has(perms, permissions.PermViewRoom)
+	return snap.openToEveryone(roomID)
+}
+
+// roleViewBits are the role permissions the view rule reads: changing one can change what the
+// role's holders see in any room.
+const roleViewBits = permissions.PermViewRoom | permissions.PermAdministrator | permissions.PermManageThreads
+
+// roleViewChanged reports whether a role's permissions changed in a way that touches them.
+func roleViewChanged(before, after int64) bool {
+	return (before^after)&roleViewBits != 0
 }

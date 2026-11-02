@@ -96,6 +96,11 @@ type Hub struct {
 	activityRefill    time.Duration
 	activityRetry     time.Duration
 	activityKeepalive time.Duration
+
+	// reauthing holds the users with a reauthorizeUser pass running; true means another
+	// event arrived during it, so one more pass follows. Guarded by reauthMu.
+	reauthMu  sync.Mutex
+	reauthing map[int64]bool
 }
 
 // authorizeSubscribe reports whether userID may subscribe to (and send into) typ:id.
@@ -104,24 +109,30 @@ type Hub struct {
 // "space" channels carry room/PM events, gated on room participation or space
 // membership via the injected ChannelAuthorizer.
 func (h *Hub) authorizeSubscribe(ctx context.Context, userID int64, typ, id string) bool {
+	ok, err := h.checkSubscribe(ctx, userID, typ, id)
+	if err != nil {
+		logger.Err("stargate", err, map[string]any{"user_id": userID, "room_id": id})
+		return false
+	}
+	return ok
+}
+
+// checkSubscribe is authorizeSubscribe with a failed check told apart from a refusal: a new
+// subscription fails closed on either, but one already held is dropped only on a refusal.
+func (h *Hub) checkSubscribe(ctx context.Context, userID int64, typ, id string) (bool, error) {
 	switch typ {
 	case "user":
-		return id == strconv.FormatInt(userID, 10)
+		return id == strconv.FormatInt(userID, 10), nil
 	case "space":
 		if h.authorizer == nil {
 			logger.Warn("stargate", "no ChannelAuthorizer configured; denying space subscription for user_id=%d", userID)
-			return false
+			return false, nil
 		}
 		ctx, cancel := context.WithTimeout(ctx, authzTimeout)
 		defer cancel()
-		ok, err := h.authorizer.CanAccessRoom(ctx, userID, id)
-		if err != nil {
-			logger.Err("stargate", err, map[string]any{"user_id": userID, "room_id": id})
-			return false
-		}
-		return ok
+		return h.authorizer.CanAccessRoom(ctx, userID, id)
 	default:
-		return false
+		return false, nil
 	}
 }
 
@@ -217,13 +228,45 @@ func (h *Hub) handleRedisMessage(msg *redis.Message) {
 	// group PM) and SPACE_ROOM_DELETE (an override or sync change took their View away).
 	if env.UserID != "" && (env.Type == "SPACE_LEAVE" || env.Type == "ROOM_LEAVE" || env.Type == "SPACE_ROOM_DELETE") {
 		if uid, err := strconv.ParseInt(env.UserID, 10, 64); err == nil {
-			go h.reauthorizeUser(uid)
+			h.queueReauthorize(uid)
 		}
 	}
 }
 
+// queueReauthorize runs reauthorizeUser for a user, at most one pass at a time: a role change
+// can send a member a SPACE_ROOM_DELETE for several rooms at once, and each pass re-checks
+// every subscription they hold, so events that arrive during a pass share one more pass.
+func (h *Hub) queueReauthorize(userID int64) {
+	h.reauthMu.Lock()
+	if _, running := h.reauthing[userID]; running {
+		h.reauthing[userID] = true
+		h.reauthMu.Unlock()
+		return
+	}
+	if h.reauthing == nil {
+		h.reauthing = map[int64]bool{}
+	}
+	h.reauthing[userID] = false
+	h.reauthMu.Unlock()
+	go func() {
+		for {
+			h.reauthorizeUser(userID)
+			h.reauthMu.Lock()
+			if h.reauthing[userID] {
+				h.reauthing[userID] = false
+				h.reauthMu.Unlock()
+				continue
+			}
+			delete(h.reauthing, userID)
+			h.reauthMu.Unlock()
+			return
+		}
+	}()
+}
+
 // reauthorizeUser re-runs the authorizer over every "space:" subscription the user's local
-// sockets hold and drops the ones it now refuses. Each distinct id is checked once.
+// sockets hold and drops the ones it now refuses. Each distinct id is checked once, and one
+// whose check fails rather than refuses is kept: a timeout is not a lost permission.
 func (h *Hub) reauthorizeUser(userID int64) {
 	h.regMu.RLock()
 	var targets []*Client
@@ -247,7 +290,11 @@ func (h *Hub) reauthorizeUser(userID int64) {
 			}
 			allowed, seen := verdict[id]
 			if !seen {
-				allowed = h.authorizeSubscribe(ctx, userID, "space", id)
+				ok, err := h.checkSubscribe(ctx, userID, "space", id)
+				if err != nil {
+					logger.Warn("stargate", "kept subscription %s for user_id=%d: check failed: %v", id, userID, err)
+				}
+				allowed = ok || err != nil
 				verdict[id] = allowed
 			}
 			if allowed {

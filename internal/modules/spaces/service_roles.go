@@ -272,10 +272,21 @@ func (s *Service) UpdateSpaceRole(ctx context.Context, actorID, spaceID, roleID 
 	if err != nil {
 		return nil, err
 	}
+	// Runs after the deferred unlock below, and off the request: working out what changed for
+	// every member in every room can take a while in a big space.
+	viewChanged := false
+	var snapBefore *Snapshot
+	defer func() {
+		if viewChanged {
+			bg := context.WithoutCancel(ctx)
+			s.later(func() { s.republishViewChanges(bg, spaceID, snapBefore) })
+		}
+	}()
 	// Held for the whole read-modify-write, not only for a move: the role's row is written
 	// whole, and a position read before another write moved it would be written back over it.
 	unlock := lockRoles(spaceID)
 	defer unlock()
+	snapBefore, _ = s.Snapshot(ctx, spaceID)
 	roles, err := s.repo.ListSpaceRoles(ctx, spaceID)
 	if err != nil {
 		return nil, err
@@ -346,6 +357,7 @@ func (s *Service) UpdateSpaceRole(ctx context.Context, actorID, spaceID, roleID 
 	}
 	updated := findRole(all, roleID)
 	s.publishSpaceEvent(ctx, spaceID, "SPACE_ROLE_UPDATE", spaceRoleEventData(updated))
+	viewChanged = roleViewChanged(before.Permissions, updated.Permissions)
 	changes := map[string]change{}
 	diff(changes, "name", before.Name, updated.Name)
 	diff(changes, "permissions", before.Permissions, updated.Permissions)
@@ -380,10 +392,20 @@ func (s *Service) DeleteSpaceRole(ctx context.Context, actorID, spaceID, roleID 
 	if roleID == everyoneID {
 		return ErrCannotEditEveryone
 	}
+	// Runs after the deferred unlock below, and off the request, as in UpdateSpaceRole.
+	deleted := false
+	var before *Snapshot
+	defer func() {
+		if deleted {
+			bg := context.WithoutCancel(ctx)
+			s.later(func() { s.republishViewChanges(bg, spaceID, before) })
+		}
+	}()
 	// Under the role lock: a reorder that read this role before the delete would otherwise
 	// write its position back afterwards, recreating part of the row.
 	unlock := lockRoles(spaceID)
 	defer unlock()
+	before, _ = s.Snapshot(ctx, spaceID)
 	role, err := s.repo.GetSpaceRole(ctx, spaceID, roleID)
 	if err != nil {
 		return err
@@ -407,6 +429,7 @@ func (s *Service) DeleteSpaceRole(ctx context.Context, actorID, spaceID, roleID 
 		return err
 	}
 	s.invalidateSnapshot(ctx, spaceID)
+	deleted = true
 	s.publishSpaceEvent(ctx, spaceID, "SPACE_ROLE_DELETE", map[string]interface{}{
 		"role_id": id.Format(roleID),
 	})
@@ -460,6 +483,7 @@ func (s *Service) SetMemberRoles(ctx context.Context, actorID, spaceID, targetUs
 	if err := s.repo.SetMemberRoleIDs(ctx, spaceID, targetUserID, out); err != nil {
 		return err
 	}
+	before := mem.RoleIDs
 	// The event is the member's full state (roles and space profile), read back after the
 	// write so it reflects anything else that changed meanwhile.
 	if fresh, err := s.repo.GetMember(ctx, spaceID, targetUserID); err == nil && fresh != nil {
@@ -468,6 +492,7 @@ func (s *Service) SetMemberRoles(ctx context.Context, actorID, spaceID, targetUs
 		mem.RoleIDs = out
 	}
 	s.publishMemberUpdate(ctx, spaceID, mem)
+	s.republishMemberVisibility(ctx, spaceID, targetUserID, before, mem.RoleIDs)
 	s.fedMemberUpdated(ctx, spaceID, targetUserID)
 	s.audit(ctx, spaceID, actorID, AuditMemberRolesUpdate, id.Format(targetUserID), map[string]change{
 		"roles": {New: formatRoleIDStrings(out)},
@@ -527,6 +552,7 @@ func (s *Service) changeMemberRole(ctx context.Context, actorID, spaceID, target
 	if err != nil {
 		return err
 	}
+	before := mem.RoleIDs
 	// The event is the member's full state, read back after the write (see SetMemberRoles).
 	fresh, rerr := s.repo.GetMember(ctx, spaceID, targetID)
 	if rerr != nil {
@@ -537,6 +563,7 @@ func (s *Service) changeMemberRole(ctx context.Context, actorID, spaceID, target
 		return nil
 	}
 	s.publishMemberUpdate(ctx, spaceID, fresh)
+	s.republishMemberVisibility(ctx, spaceID, targetID, before, fresh.RoleIDs)
 	s.fedMemberUpdated(ctx, spaceID, targetID)
 	s.audit(ctx, spaceID, actorID, AuditMemberRolesUpdate, id.Format(targetID), map[string]change{
 		"roles": {New: formatRoleIDStrings(fresh.RoleIDs)},
@@ -1112,7 +1139,7 @@ func (s *Service) UpdateRoom(ctx context.Context, actorID, spaceID, roomID int64
 
 	updated, _ := s.roomRepo.GetByID(ctx, roomID)
 	if updated != nil {
-		s.publishSpaceEvent(ctx, spaceID, "SPACE_ROOM_UPDATE", map[string]interface{}{
+		s.publishRoomEvent(ctx, spaceID, updated.ID, "SPACE_ROOM_UPDATE", map[string]interface{}{
 			"room_id":            id.Format(updated.ID),
 			"name":               updated.Name,
 			"topic":              updated.Topic,
@@ -1207,13 +1234,18 @@ func (s *Service) DeleteRoom(ctx context.Context, actorID, spaceID, roomID int64
 			if err := s.roomRepo.UpdateSpaceRoomParentAndPosition(ctx, spaceID, child.ID, nil, child.Position); err != nil {
 				return err
 			}
-			s.publishSpaceEvent(ctx, spaceID, "SPACE_ROOM_UPDATE", map[string]interface{}{
+			s.invalidateSnapshot(ctx, spaceID)
+			s.publishRoomEvent(ctx, spaceID, child.ID, "SPACE_ROOM_UPDATE", map[string]interface{}{
 				"room_id":            id.Format(child.ID),
 				"space_id":           id.Format(spaceID),
 				"parent_id":          nil,
 				"position":           child.Position,
 				"permissions_synced": false,
 			})
+			// Before the section's own delete relay, which the outbox keeps behind this one: a
+			// mirror must have the copied overrides by the time the section goes, or the channel
+			// stands there open to everyone until the next resync.
+			s.fedRoomChanged(ctx, spaceID, child.ID, false)
 		}
 	}
 	// A channel's threads go with it: they live inside it and nothing else can hold them.
@@ -1232,8 +1264,10 @@ func (s *Service) DeleteRoom(ctx context.Context, actorID, spaceID, roomID int64
 			s.publishSpaceEvent(ctx, spaceID, "THREAD_DELETE", map[string]interface{}{
 				"room_id": id.Format(child.ID), "parent_id": id.Format(roomID),
 			})
+			s.fedRoomChanged(ctx, spaceID, child.ID, true)
 		}
 	}
+	s.roomGoing(ctx, spaceID, roomID)
 	if err := s.roomRepo.DeleteSpaceRoom(ctx, spaceID, roomID); err != nil {
 		return err
 	}
@@ -1512,7 +1546,7 @@ func (s *Service) ReorderRooms(ctx context.Context, actorID, spaceID int64, in *
 		} else {
 			payload["parent_id"] = nil
 		}
-		s.publishSpaceEvent(ctx, spaceID, "SPACE_ROOM_UPDATE", payload)
+		s.publishRoomEvent(ctx, spaceID, rid, "SPACE_ROOM_UPDATE", payload)
 	}
 	s.fedRoomsReordered(ctx, spaceID)
 	return nil
@@ -1658,6 +1692,8 @@ func (s *Service) MoveSpaceChannel(ctx context.Context, actorID, spaceID, channe
 			return err
 		}
 	}
+	// The snapshot holds the channel's parent, synced flag and overrides.
+	s.invalidateSnapshot(ctx, spaceID)
 
 	published := make(map[int64]struct{})
 	publishOne := func(rid int64) {
@@ -1681,7 +1717,7 @@ func (s *Service) MoveSpaceChannel(ctx context.Context, actorID, spaceID, channe
 		} else {
 			payload["parent_id"] = nil
 		}
-		s.publishSpaceEvent(ctx, spaceID, "SPACE_ROOM_UPDATE", payload)
+		s.publishRoomEvent(ctx, spaceID, rid, "SPACE_ROOM_UPDATE", payload)
 	}
 	for _, rid := range oldSans {
 		publishOne(rid)
@@ -1689,6 +1725,10 @@ func (s *Service) MoveSpaceChannel(ctx context.Context, actorID, spaceID, channe
 	for _, rid := range newOrder {
 		publishOne(rid)
 	}
+	// The reorder names only parents and positions: the copied overrides and the cleared
+	// synced flag reach mirrors through the room itself, relayed first so the outbox delivers
+	// them in that order.
+	s.fedRoomChanged(ctx, spaceID, channelRoomID, false)
 	s.fedRoomsReordered(ctx, spaceID)
 	return nil
 }

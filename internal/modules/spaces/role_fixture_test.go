@@ -536,6 +536,8 @@ type eventLog struct {
 type sentEvent struct {
 	Type string
 	Data map[string]any
+	// UserID is set for an event on one user's own channel, SpaceID for one on a whole space's.
+	UserID, SpaceID string
 }
 
 func (l *eventLog) DialHook(next redis.DialHook) redis.DialHook { return next }
@@ -555,15 +557,17 @@ func (l *eventLog) ProcessHook(redis.ProcessHook) redis.ProcessHook {
 			raw = []byte(v)
 		}
 		var env struct {
-			Type string         `json:"t"`
-			Data map[string]any `json:"d"`
+			Type    string         `json:"t"`
+			Data    map[string]any `json:"d"`
+			UserID  string         `json:"user_id"`
+			SpaceID string         `json:"space_id"`
 		}
 		if err := json.Unmarshal(raw, &env); err != nil {
 			cmd.SetErr(err)
 			return err
 		}
 		l.mu.Lock()
-		l.events = append(l.events, sentEvent{Type: env.Type, Data: env.Data})
+		l.events = append(l.events, sentEvent{Type: env.Type, Data: env.Data, UserID: env.UserID, SpaceID: env.SpaceID})
 		l.mu.Unlock()
 		return nil
 	}

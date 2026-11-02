@@ -1155,7 +1155,9 @@ func (s *Service) canAccessLoaded(ctx context.Context, userID int64, room *Room,
 
 // CanAccess reports whether userID may access roomID. Used by callers (e.g. the
 // Stargate channel authorizer) that don't already have the room/participants
-// loaded; the REST handlers use canAccessLoaded directly to avoid refetching.
+// loaded; the REST handlers use canAccessLoaded directly to avoid refetching. Unlike
+// canAccessLoaded, a space room's permission error comes back as the error (a member who
+// is not one is spaces.ErrNotMember), so a caller can tell a refusal from a failed read.
 func (s *Service) CanAccess(ctx context.Context, userID, roomID int64) (bool, error) {
 	room, err := s.repo.GetByID(ctx, roomID)
 	if err != nil {
@@ -1163,6 +1165,15 @@ func (s *Service) CanAccess(ctx context.Context, userID, roomID int64) (bool, er
 	}
 	if room == nil {
 		return false, ErrRoomNotFound
+	}
+	if room.SpaceID != nil && s.spaceChecker != nil {
+		// Here a failed read is an error, not a "no": the gateway re-checks every subscription
+		// a member holds after a permission change, and must not drop one over a timeout.
+		perms, err := s.spaceChecker.EffectiveChannelPermissions(ctx, userID, *room.SpaceID, room.ID)
+		if err != nil {
+			return false, err
+		}
+		return permissions.Has(perms, permissions.PermViewRoom), nil
 	}
 	ids, err := s.repo.GetParticipants(ctx, roomID)
 	if err != nil {

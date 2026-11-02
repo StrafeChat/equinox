@@ -74,7 +74,9 @@ type State struct {
 	Connected  bool      `json:"connected"`
 	JoinedAt   time.Time `json:"joined_at"`
 	// IssuedAt is when the current token was issued; the reconciler gives a state this
-	// long to show up in LiveKit before treating it as abandoned.
+	// long to show up in LiveKit before treating it as abandoned. On an instance mirroring
+	// the call it is when the origin was last heard on this state, which is how an answer
+	// from the origin is told from something newer that landed while it was on its way.
 	IssuedAt time.Time    `json:"token_issued_at"`
 	User     *UserSummary `json:"user,omitempty"`
 }

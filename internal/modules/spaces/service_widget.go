@@ -59,11 +59,15 @@ func (s *Service) Widget(ctx context.Context, spaceID int64) (*WidgetInfo, error
 		if room, err := s.roomRepo.GetByID(ctx, *sp.WidgetRoomID); err == nil && room != nil {
 			info.RoomName = room.Name
 		}
-		code, err := s.ensureWidgetInvite(ctx, sp)
-		if err != nil {
-			return nil, err
+		// Only the origin admits anyone. An invite minted here would add a member the origin
+		// knows nothing about, past its bans.
+		if s.mirrorOrigin(ctx, sp.ID) == "" {
+			code, err := s.ensureWidgetInvite(ctx, sp)
+			if err != nil {
+				return nil, err
+			}
+			info.InviteCode = code
 		}
-		info.InviteCode = code
 	}
 	return info, nil
 }

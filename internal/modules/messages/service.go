@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"mime"
+	"net/http"
 	"path"
 	"regexp"
 	"strconv"
@@ -244,16 +245,36 @@ type Federator interface {
 }
 
 // OriginError is the hosting instance's refusal of a forwarded write, passed through to
-// the user with the origin's status and message.
+// the user with the origin's status and message. Body holds what else the refusal said
+// that a client phrases it from (the fields HTTPError adds), when it said any.
 type OriginError struct {
 	Status  int
 	Message string
+	Body    map[string]any
 }
 
 func (e *OriginError) Error() string { return e.Message }
 
 // ErrOriginUnavailable: the instance hosting the channel's space did not answer.
 var ErrOriginUnavailable = errors.New("the instance hosting this space could not be reached")
+
+// originDown reports whether a read may fall back to the local copy: the origin did not
+// answer, or answered for itself rather than about the request - a rate limit, a timeout, or
+// a signature it could not check (a clock out of step). Any other refusal is its decision.
+func originDown(err error) bool {
+	if errors.Is(err, ErrOriginUnavailable) {
+		return true
+	}
+	var oe *OriginError
+	if !errors.As(err, &oe) {
+		return false
+	}
+	switch oe.Status {
+	case http.StatusUnauthorized, http.StatusRequestTimeout, http.StatusTooEarly, http.StatusTooManyRequests:
+		return true
+	}
+	return false
+}
 
 type Service struct {
 	repo      Repository
@@ -297,7 +318,7 @@ func (s *Service) CreateFederated(ctx context.Context, roomID int64, participant
 		m.Mentions = m.Mentions[:MaxMentionsPerMessage]
 	}
 	m.RoomID = roomID
-	m.SetAttachments(s.dropOwnCDN(m.Attachments()))
+	m.SetAttachments(s.dropOwnCDN(m.Attachments(), func(a Attachment) bool { return s.senderUpload(ctx, roomID, m, a) }))
 	// A relayed PM crosses a block exactly where a local send would be refused. The
 	// sending instance never learns of the block (FEDERATION.md), so it is dropped here.
 	if m.SenderID != 0 && len(participants) == 2 {
@@ -322,13 +343,30 @@ func (s *Service) CreateFederated(ctx context.Context, roomID int64, participant
 		// shadow ever gets a rooms_by_user row read back (harmless otherwise).
 		_ = s.rooms.UpdateReadState(ctx, m.SenderID, roomID, m.ID)
 	}
-	if notify := resolveMentionNotifySet(m.SenderID, participants, m.Mentions, m.MentionEveryone); len(notify) > 0 {
-		_ = s.rooms.IncrementMentionCounts(ctx, roomID, notify)
+	// Role mentions count here as they do in create: the relay carries the role ids, and the
+	// members holding them are this instance's to work out.
+	notifyUserIDs := m.Mentions
+	var room *rooms.Room
+	var fromRoles []int64
+	if len(m.MentionRoles) > 0 {
+		if r, err := s.rooms.GetByID(ctx, roomID); err == nil && r != nil {
+			room = r
+			fromRoles = s.roleMentionHolders(ctx, room, m.SenderID, m.MentionRoles)
+			notifyUserIDs = append(append([]int64{}, m.Mentions...), fromRoles...)
+		}
 	}
-	s.pushFederated(ctx, roomID, participants, m)
+	var roleMentioned []int64
+	if notify := resolveMentionNotifySet(m.SenderID, participants, notifyUserIDs, m.MentionEveryone); len(notify) > 0 {
+		if err := s.rooms.IncrementMentionCounts(ctx, roomID, notify); err == nil {
+			roleMentioned = roleMentionRecipients(notify, fromRoles)
+			s.markMentionsCounted(ctx, m.ID)
+		}
+	}
+	s.pushFederated(ctx, roomID, participants, m, notifyUserIDs)
 	if s.redis != nil && s.cfg != nil {
 		stargate.PublishToSpace(ctx, s.redis, roomID, "MESSAGE_CREATE", s.messageEventPayloadEnriched(ctx, m), s.region())
 	}
+	s.publishRoleMentionCounts(room, m.ID, roleMentioned)
 	return nil
 }
 
@@ -353,8 +391,40 @@ func (s *Service) EditFederated(ctx context.Context, roomID, msgID int64, cipher
 	return updated, nil
 }
 
-// DeleteFederated applies a delete relayed by another instance. Blobs live on the origin
-// instance's CDN, so no attachment cleanup here.
+// mentionsCountedFor is how long a mirror remembers that a relayed message's mentions were
+// counted. Past it, deleting the message leaves the badges alone, as for a copy it only read.
+const mentionsCountedFor = 30 * 24 * time.Hour
+
+func (s *Service) mentionsCountedKey(msgID int64) string {
+	prefix := ""
+	if s.cfg != nil {
+		prefix = s.cfg.Database.Redis.CachePrefix
+	}
+	return prefix + "msg:mentions_counted:" + id.Format(msgID)
+}
+
+// markMentionsCounted records that a relayed message's mentions went into the badges here, so
+// its delete takes back exactly that. A copy stored from history was never counted, and
+// rolling one back would eat someone's real mention in the room.
+func (s *Service) markMentionsCounted(ctx context.Context, msgID int64) {
+	if s.redis != nil {
+		_ = s.redis.Set(ctx, s.mentionsCountedKey(msgID), "1", mentionsCountedFor).Err()
+	}
+}
+
+// takeMentionsCounted reports, once, whether a message's mentions were counted here. Without
+// Redis nothing was recorded, and the rollback runs as it always has.
+func (s *Service) takeMentionsCounted(ctx context.Context, msgID int64) bool {
+	if s.redis == nil {
+		return true
+	}
+	n, err := s.redis.Del(ctx, s.mentionsCountedKey(msgID)).Result()
+	return err == nil && n > 0
+}
+
+// DeleteFederated applies a delete relayed by another instance. A message's files live on
+// its sender's instance, so the only ones to clean up here are those a member of this
+// instance uploaded for a message they wrote into a space hosted elsewhere.
 func (s *Service) DeleteFederated(ctx context.Context, roomID, msgID int64) error {
 	// Load the room and the message before scrubbing it so the same ghost-unread bookkeeping the
 	// local Delete does (mention rollback + last_message_id heal, fanned out to the space's
@@ -362,20 +432,25 @@ func (s *Service) DeleteFederated(ctx context.Context, roomID, msgID int64) erro
 	// unread / mention badge that the local path was just fixed to avoid.
 	room, rerr := s.rooms.GetByID(ctx, roomID)
 	msg, merr := s.repo.GetByID(ctx, roomID, msgID)
+	if merr == nil && msg == nil {
+		// Never stored here: a channel's delete goes to every mirror, viewers or not. There is
+		// nothing to scrub, and SoftDelete is an UPDATE, which would write a row out of nothing.
+		return nil
+	}
 	if err := s.repo.SoftDelete(ctx, roomID, msgID); err != nil {
 		return err
 	}
 	if merr == nil {
 		s.dropPinOnDelete(ctx, roomID, msg, 0)
+		s.cleanupSenderUploads(ctx, roomID, msg)
 	}
-	if rerr == nil && room != nil && room.Type == rooms.TypeThread && s.threads != nil {
-		s.threads.OnThreadMessageDeleted(ctx, room)
-	}
+	// No thread hook here: a thread's count lives on its origin, which runs Delete. This is a
+	// mirror's copy, and a mirror never counted the message in (CreateFederated runs no hook).
 	var newLast *int64
 	lastChanged := false
 	if rerr == nil && room != nil {
 		fanout := s.spaceParticipants(ctx, room, nil)
-		if merr == nil && msg != nil {
+		if merr == nil && msg != nil && s.takeMentionsCounted(ctx, msgID) {
 			s.rollbackDeletedMentions(ctx, room, fanout, msg)
 		}
 		if room.LastMessageID != nil && *room.LastMessageID == msgID {
@@ -608,7 +683,7 @@ func (s *Service) CreateSystemDM(ctx context.Context, systemID, roomID int64, te
 // attachments already resolved (they were uploaded to the sender's own instance, so
 // there is nothing here to claim).
 func (s *Service) CreateFromRemote(ctx context.Context, userID, roomID int64, in *CreateMessageInput, attachments []Attachment) (*Message, error) {
-	attachments = s.dropOwnCDN(attachments)
+	attachments = s.dropOwnCDN(attachments, nil)
 	if attachments == nil {
 		attachments = []Attachment{}
 	}
@@ -618,20 +693,65 @@ func (s *Service) CreateFromRemote(ctx context.Context, userID, roomID int64, in
 // dropOwnCDN removes, from attachments another instance relayed, any URL that points into
 // this instance's own object store. A remote sender's files live on their instance, so such
 // a URL can only be a copy of some local object's address - and must not become a reference
-// this instance later treats as that message's own (see cleanupAttachments).
-func (s *Service) dropOwnCDN(list []Attachment) []Attachment {
+// this instance later treats as that message's own (see cleanupAttachments). keep, when
+// given, names the exceptions.
+func (s *Service) dropOwnCDN(list []Attachment, keep func(Attachment) bool) []Attachment {
 	if len(list) == 0 {
 		return list
 	}
 	out := list[:0:0]
 	for _, a := range list {
-		if s.ownsAttachment(a.URL) {
+		if s.ownsAttachment(a.URL) && (keep == nil || !keep(a)) {
 			logger.Warn("messages", "dropping relayed attachment %q: it points into this instance's own store", a.URL)
 			continue
 		}
 		out = append(out, a)
 	}
 	return out
+}
+
+// senderUpload reports whether an attachment on a relayed message is its sender's own upload
+// to this instance. One of our members writing into a space hosted elsewhere keeps their file
+// on our CDN, and the origin's copy of the message comes back naming it; the registry row
+// tells that apart from a URL merely copied: same room, same URL, same uploader, and not
+// claimed by another message.
+func (s *Service) senderUpload(ctx context.Context, roomID int64, m *Message, a Attachment) bool {
+	aid, err := id.Parse(a.ID)
+	if err != nil {
+		return false
+	}
+	row, err := s.repo.GetAttachment(ctx, roomID, aid)
+	if err != nil || row == nil {
+		return false
+	}
+	return row.URL == a.URL && row.UploaderID == m.SenderID && (row.MessageID == nil || *row.MessageID == m.ID)
+}
+
+// claimUploads links uploads to the message that uses them, which is what keeps the orphan
+// sweep off them.
+func (s *Service) claimUploads(ctx context.Context, roomID, msgID int64, list []Attachment) {
+	for _, a := range list {
+		if aid, perr := id.Parse(a.ID); perr == nil {
+			_ = s.repo.SetAttachmentMessage(ctx, roomID, aid, msgID)
+			s.untrackPendingUpload(ctx, roomID, aid)
+		}
+	}
+}
+
+// cleanupSenderUploads is cleanupAttachments for a relayed delete, limited to files this
+// instance holds for that message's sender. A relayed message names whatever it likes, so
+// nothing else on it may touch the registry.
+func (s *Service) cleanupSenderUploads(ctx context.Context, roomID int64, m *Message) {
+	if m == nil {
+		return
+	}
+	var own []Attachment
+	for _, a := range m.Attachments() {
+		if s.senderUpload(ctx, roomID, m, a) {
+			own = append(own, a)
+		}
+	}
+	s.cleanupAttachments(ctx, roomID, own)
 }
 
 // create is Create with the attachments either still to be claimed (nil) or given.
@@ -687,7 +807,17 @@ func (s *Service) create(ctx context.Context, userID, roomID int64, in *CreateMe
 	if origin := s.remoteOrigin(ctx, room); origin != "" {
 		// A channel of a space hosted elsewhere: the origin applies the write with its own
 		// checks (slowmode, @everyone, bans) and tells every instance, this one included.
-		return s.federator.CreateRemote(ctx, origin, room, userID, in, attachments)
+		m, err := s.federator.CreateRemote(ctx, origin, room, userID, in, attachments)
+		if err != nil {
+			return nil, err
+		}
+		// What the origin cannot do for us: the files are on this instance's CDN, and so is
+		// the sender's read state. Refused, the uploads stay unclaimed for another try.
+		s.claimUploads(ctx, roomID, m.ID, attachments)
+		if s.markOwnMessageRead(ctx, userID, roomID, m.ID) {
+			s.pushRead(ctx, userID, room, m.ID)
+		}
+		return m, nil
 	}
 	if err := s.enforceSlowmode(ctx, userID, roomID, room); err != nil {
 		return nil, err
@@ -769,39 +899,11 @@ func (s *Service) create(ctx context.Context, userID, roomID int64, in *CreateMe
 		s.threads.OnThreadMessage(ctx, room, userID, mentionUserIDs)
 		participants = s.spaceParticipants(ctx, room, nil)
 	}
-	for _, a := range attachments {
-		if aid, perr := id.Parse(a.ID); perr == nil {
-			_ = s.repo.SetAttachmentMessage(ctx, roomID, aid, msgID)
-			s.untrackPendingUpload(ctx, roomID, aid)
-		}
-	}
+	s.claimUploads(ctx, roomID, msgID, attachments)
 	if err := s.rooms.UpdateLastMessageID(ctx, roomID, participants, msgID); err != nil {
 		// non-fatal: message is stored
 	}
-	// Sending also marks the room read for the sender up to their own new message -
-	// otherwise the last_message_id bump above makes the room look unread to the
-	// sender's own client(s) (and any other device they're signed into) until they
-	// re-open it, since nothing else ever advances *their* read cursor past a message
-	// they wrote themselves. MESSAGE_ACK is the same event multi-device read-sync
-	// already uses, so no separate client-side handling is needed for this.
-	if err := s.rooms.UpdateReadState(ctx, userID, roomID, msgID); err == nil {
-		// Mirrors rooms.Service.Ack's baseline snapshot - without this, a user who was
-		// ever @mentioned (or @everyone'd) in a space channel keeps showing that channel
-		// as unread indefinitely, surviving even a reload, because the mention badge is
-		// computed server-side as (room_mention_counts total - this baseline) and nothing
-		// else ever advances the baseline. UpdateReadState above only clears the
-		// (unused) legacy mention_count column, not the real baseline. Harmless no-op
-		// for PMs/rooms with zero mention history, since 0 - 0 stays 0.
-		if total, mcErr := s.rooms.GetMentionCount(ctx, userID, roomID); mcErr == nil {
-			_ = s.rooms.SetMentionCountBaseline(ctx, userID, roomID, int64(total))
-		}
-		if s.redis != nil && s.cfg != nil {
-			stargate.PublishToUser(ctx, s.redis, userID, "MESSAGE_ACK", map[string]interface{}{
-				"room_id":              id.Format(roomID),
-				"message_id":           id.Format(msgID),
-				"last_read_message_id": id.Format(msgID),
-			}, s.cfg.Stargate.Region)
-		}
+	if s.markOwnMessageRead(ctx, userID, roomID, msgID) {
 		s.pushRead(ctx, userID, room, msgID)
 	}
 	// Role mentions (<@&roleId>) were parsed into mentionRoleIDs above but, until this
@@ -839,20 +941,65 @@ func (s *Service) create(ctx context.Context, userID, roomID int64, in *CreateMe
 	return m, nil
 }
 
+// markOwnMessageRead advances the sender's read cursor to the message they just wrote and
+// says whether it moved.
+//
+// Sending also marks the room read for the sender up to their own new message - otherwise
+// the last_message_id bump makes the room look unread to the sender's own client(s) (and any
+// other device they're signed into) until they re-open it, since nothing else ever advances
+// *their* read cursor past a message they wrote themselves. MESSAGE_ACK is the same event
+// multi-device read-sync already uses, so no separate client-side handling is needed for this.
+func (s *Service) markOwnMessageRead(ctx context.Context, userID, roomID, msgID int64) bool {
+	if err := s.rooms.UpdateReadState(ctx, userID, roomID, msgID); err != nil {
+		return false
+	}
+	// Mirrors rooms.Service.Ack's baseline snapshot - without this, a user who was
+	// ever @mentioned (or @everyone'd) in a space channel keeps showing that channel
+	// as unread indefinitely, surviving even a reload, because the mention badge is
+	// computed server-side as (room_mention_counts total - this baseline) and nothing
+	// else ever advances the baseline. UpdateReadState above only clears the
+	// (unused) legacy mention_count column, not the real baseline. Harmless no-op
+	// for PMs/rooms with zero mention history, since 0 - 0 stays 0.
+	if total, mcErr := s.rooms.GetMentionCount(ctx, userID, roomID); mcErr == nil {
+		_ = s.rooms.SetMentionCountBaseline(ctx, userID, roomID, int64(total))
+	}
+	if s.redis != nil && s.cfg != nil {
+		stargate.PublishToUser(ctx, s.redis, userID, "MESSAGE_ACK", map[string]interface{}{
+			"room_id":              id.Format(roomID),
+			"message_id":           id.Format(msgID),
+			"last_read_message_id": id.Format(msgID),
+		}, s.cfg.Stargate.Region)
+	}
+	return true
+}
+
 // Get returns one message with its reactions as userID sees them. In a channel hosted
-// elsewhere a message this instance never stored is fetched from the origin.
+// elsewhere the origin answers, as it does for history: what it refuses is refused, whatever
+// was relayed here. Only when it cannot be reached is the local copy read.
 func (s *Service) Get(ctx context.Context, userID, roomID, msgID int64) (*Message, []ReactionSummary, error) {
 	room, _, err := s.authorize(ctx, userID, roomID, permissions.PermViewRoom, permissions.PermReadMessageHistory)
 	if err != nil {
 		return nil, nil, err
+	}
+	var unreachable error
+	if origin := s.remoteOrigin(ctx, room); origin != "" {
+		msg, reactions, rerr := s.federator.GetRemote(ctx, origin, room, userID, msgID)
+		if rerr == nil {
+			return msg, reactions, nil
+		}
+		if !originDown(rerr) {
+			return nil, nil, rerr
+		}
+		logger.Warn("messages", "message %d in room %d from %s: %v (serving the local copy)", msgID, roomID, origin, rerr)
+		unreachable = rerr
 	}
 	msg, err := s.repo.GetByID(ctx, roomID, msgID)
 	if err != nil {
 		return nil, nil, err
 	}
 	if msg == nil || (msg.DeletedAt != nil && !msg.DeletedAt.IsZero()) {
-		if origin := s.remoteOrigin(ctx, room); origin != "" {
-			return s.federator.GetRemote(ctx, origin, room, userID, msgID)
+		if unreachable != nil {
+			return nil, nil, unreachable
 		}
 		return nil, nil, ErrMessageNotFound
 	}
@@ -871,7 +1018,8 @@ func (s *Service) List(ctx context.Context, userID, roomID int64, beforeID *int6
 // ListWithReactions is a page of history with each message's reaction summary as
 // userID sees it. A channel of a space hosted elsewhere is read from the origin, which
 // has all of it (this instance only holds what was relayed since a local member
-// joined); if the origin cannot be reached, that local copy is served instead.
+// joined); if the origin cannot be reached, that local copy is served instead. A refusal
+// is not that: it stands, or the copy would show what the origin just said no to.
 func (s *Service) ListWithReactions(ctx context.Context, userID, roomID int64, beforeID *int64, limit int) ([]Message, map[int64][]ReactionSummary, error) {
 	room, _, err := s.authorize(ctx, userID, roomID, permissions.PermViewRoom, permissions.PermReadMessageHistory)
 	if err != nil {
@@ -881,6 +1029,9 @@ func (s *Service) ListWithReactions(ctx context.Context, userID, roomID int64, b
 		msgs, reactions, rerr := s.federator.ListRemote(ctx, origin, room, userID, beforeID, limit)
 		if rerr == nil {
 			return msgs, reactions, nil
+		}
+		if !originDown(rerr) {
+			return nil, nil, rerr
 		}
 		logger.Warn("messages", "history for room %d from %s: %v (serving the local copy)", roomID, origin, rerr)
 	}
@@ -917,8 +1068,7 @@ func (s *Service) reactionsFor(ctx context.Context, roomID int64, msgs []Message
 }
 
 // ListAfterWithReactions is a page of history immediately AFTER afterID, oldest-first - for
-// resuming downward infinite scroll out of a jumped-to window. Served from the local store (a
-// mirrored room's relayed copy), so there's no origin round-trip on every scroll step.
+// resuming downward infinite scroll out of a jumped-to window.
 func (s *Service) ListAfterWithReactions(ctx context.Context, userID, roomID, afterID int64, limit int) ([]Message, map[int64][]ReactionSummary, error) {
 	room, _, err := s.authorize(ctx, userID, roomID, permissions.PermViewRoom, permissions.PermReadMessageHistory)
 	if err != nil {
@@ -931,6 +1081,9 @@ func (s *Service) ListAfterWithReactions(ctx context.Context, userID, roomID, af
 		if rerr == nil {
 			return msgs, reactions, nil
 		}
+		if !originDown(rerr) {
+			return nil, nil, rerr
+		}
 		logger.Warn("messages", "history after %d for room %d from %s: %v (serving the local copy)", afterID, roomID, origin, rerr)
 	}
 	msgs, err := s.repo.ListAfter(ctx, roomID, afterID, limit)
@@ -942,9 +1095,8 @@ func (s *Service) ListAfterWithReactions(ctx context.Context, userID, roomID, af
 
 // ListAroundWithReactions returns a window of history centred on aroundID - about half the limit
 // older, the message itself, then half newer, oldest-first - so the client can jump to a message
-// that isn't loaded (a reply target, a search hit) and read outward in both directions. Served
-// from the local store like ListAfterWithReactions. A deleted/absent target just yields the
-// messages that surround where it was.
+// that isn't loaded (a reply target, a search hit) and read outward in both directions. A
+// deleted/absent target just yields the messages that surround where it was.
 func (s *Service) ListAroundWithReactions(ctx context.Context, userID, roomID, aroundID int64, limit int) ([]Message, map[int64][]ReactionSummary, error) {
 	room, _, err := s.authorize(ctx, userID, roomID, permissions.PermViewRoom, permissions.PermReadMessageHistory)
 	if err != nil {
@@ -957,6 +1109,9 @@ func (s *Service) ListAroundWithReactions(ctx context.Context, userID, roomID, a
 		msgs, reactions, rerr := s.federator.ListAroundRemote(ctx, origin, room, userID, aroundID, limit)
 		if rerr == nil {
 			return msgs, reactions, nil
+		}
+		if !originDown(rerr) {
+			return nil, nil, rerr
 		}
 		logger.Warn("messages", "history around %d for room %d from %s: %v (serving the local copy)", aroundID, roomID, origin, rerr)
 	}
@@ -1132,16 +1287,8 @@ func (s *Service) rollbackDeletedMentions(ctx context.Context, room *rooms.Room,
 		return
 	}
 	notifyUserIDs := msg.Mentions
-	if len(msg.MentionRoles) > 0 && room.SpaceID != nil && s.spaceAuth != nil {
-		// Whether the sender could ping non-mentionable roles is not stored with the message;
-		// their current permission in the room is the closest stand-in.
-		canMassMention := false
-		if perms, err := s.spaceAuth.EffectiveChannelPermissions(ctx, msg.SenderID, *room.SpaceID, room.ID); err == nil {
-			canMassMention = permissions.Has(perms, permissions.PermMentionEveryone)
-		}
-		if fromRoles, err := s.spaceAuth.ListSpaceMemberUserIDsByRoles(ctx, *room.SpaceID, msg.MentionRoles, canMassMention); err == nil {
-			notifyUserIDs = append(append([]int64{}, msg.Mentions...), fromRoles...)
-		}
+	if fromRoles := s.roleMentionHolders(ctx, room, msg.SenderID, msg.MentionRoles); len(fromRoles) > 0 {
+		notifyUserIDs = append(append([]int64{}, msg.Mentions...), fromRoles...)
 	}
 	notify := resolveMentionNotifySet(msg.SenderID, fanout, notifyUserIDs, msg.MentionEveryone)
 	if len(notify) == 0 {

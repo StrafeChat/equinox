@@ -32,6 +32,7 @@ func SetupMessagesRoutes(d Deps) {
 	if d.Federation != nil {
 		spaceSvc.SetFederator(d.Federation)
 		threadSvc.SetFederation(d.Federation)
+		d.Federation.SetThreadHooks(threadSvc)
 	}
 	msgSvc.SetThreadHooks(threadSvc)
 	registerThreadRoutes(d, requireAuth, threadSvc)

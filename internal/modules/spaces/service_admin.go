@@ -140,12 +140,20 @@ func (s *Service) deleteSpaceCascade(ctx context.Context, actorID int64, sp *Spa
 	if err != nil {
 		return err
 	}
+	roomRows, err := s.roomRepo.ListBySpace(ctx, spaceID)
+	if err != nil {
+		return err
+	}
 	// Announce before the rows go, so a client that is listening drops the space in one
 	// step instead of noticing at the next reload.
 	if s.redis != nil {
 		stargate.PublishToSpace(ctx, s.redis, spaceID, "SPACE_DELETE", map[string]interface{}{
 			"space_id": id.Format(spaceID),
 		}, s.stargateRegion())
+	}
+	// Calls end ahead of the member rows: who hears the last voice states is read from them.
+	for _, row := range roomRows {
+		s.roomGoing(ctx, spaceID, row.RoomID)
 	}
 	for i := range members {
 		m := &members[i]
@@ -162,10 +170,6 @@ func (s *Service) deleteSpaceCascade(ctx context.Context, actorID int64, sp *Spa
 	}
 
 	// Rooms belong to the rooms module; deleting each one also clears its overrides.
-	roomRows, err := s.roomRepo.ListBySpace(ctx, spaceID)
-	if err != nil {
-		return err
-	}
 	for _, row := range roomRows {
 		if err := s.roomRepo.DeleteSpaceRoom(ctx, spaceID, row.RoomID); err != nil {
 			return err

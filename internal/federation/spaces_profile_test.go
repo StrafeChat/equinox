@@ -457,10 +457,10 @@ type joinMirrorRepo struct {
 	roleWrites int
 }
 
-func (r *joinMirrorRepo) AddMember(_ context.Context, spaceID, userID int64, roleIDs []int64, p spaces.MemberProfile) error {
-	r.adds = append(r.adds, spaces.MirrorMember{UserID: userID, RoleIDs: roleIDs, Nickname: p.Nick, Avatar: p.Avatar, Banner: p.Banner})
+func (r *joinMirrorRepo) AddMemberAt(_ context.Context, spaceID, userID int64, roleIDs []int64, p spaces.MemberProfile, joinedAt time.Time) error {
+	r.adds = append(r.adds, spaces.MirrorMember{UserID: userID, RoleIDs: roleIDs, Nickname: p.Nick, Avatar: p.Avatar, Banner: p.Banner, JoinedAt: joinedAt})
 	r.members[userID] = &spaces.SpaceMember{
-		SpaceID: spaceID, UserID: userID, RoleIDs: append([]int64(nil), roleIDs...), JoinedAt: time.Now().UTC(),
+		SpaceID: spaceID, UserID: userID, RoleIDs: append([]int64(nil), roleIDs...), JoinedAt: joinedAt,
 		Nickname: p.Nick, Avatar: p.Avatar, Banner: p.Banner, AboutMe: p.AboutMe, Bio: p.Bio, Pronouns: p.Pronouns,
 	}
 	return nil

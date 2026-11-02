@@ -15,6 +15,26 @@ import (
 // mention badge; a role can be held by most of a large space.
 const roleMentionUpdateTimeout = 30 * time.Second
 
+// roleMentionHolders expands a stored or relayed message's role mentions into the members
+// holding those roles. Whether the sender could ping roles that are not mentionable is not
+// kept with the message; their current permission in the room is the closest stand-in, and
+// on a mirror it reads the origin's roles and overrides, so the badge a relayed message adds
+// and the one its delete takes back agree.
+func (s *Service) roleMentionHolders(ctx context.Context, room *rooms.Room, senderID int64, roleIDs []int64) []int64 {
+	if len(roleIDs) == 0 || room == nil || room.SpaceID == nil || s.spaceAuth == nil {
+		return nil
+	}
+	canMassMention := false
+	if perms, err := s.spaceAuth.EffectiveChannelPermissions(ctx, senderID, *room.SpaceID, room.ID); err == nil {
+		canMassMention = permissions.Has(perms, permissions.PermMentionEveryone)
+	}
+	held, err := s.spaceAuth.ListSpaceMemberUserIDsByRoles(ctx, *room.SpaceID, roleIDs, canMassMention)
+	if err != nil {
+		return nil
+	}
+	return held
+}
+
 // roleMentionRecipients is who should get a live badge update for a new message's role
 // mentions: everyone in the notify set (sender already excluded, deduped) who holds a
 // mentioned role. A direct mention or @everyone the client sees for itself in

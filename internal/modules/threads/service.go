@@ -340,13 +340,15 @@ func (s *Service) create(ctx context.Context, actorID int64, parent *rooms.Room,
 	// else is in the thread yet - clients key their own "joined" off this flag.
 	payload["newly_created"] = true
 	s.publish(ctx, room, "THREAD_CREATE", payload)
+	// Tell the other instances first: a mirror must know the thread before the notice
+	// (relayed as a message in the same per-peer order) names it.
+	s.spaces.FedRoomChanged(ctx, spaceID, threadID, false)
 	if !private {
 		// Discord's THREAD_CREATED notice in the channel: "X started a thread: name".
 		s.postNotice(ctx, parent, SystemThreadCreated, map[string]interface{}{
 			"actor_id": id.Format(actorID), "thread_id": id.Format(threadID), "name": name,
 		})
 	}
-	s.spaces.FedRoomChanged(ctx, spaceID, threadID, false)
 	return thread, nil
 }
 
@@ -828,6 +830,7 @@ func (s *Service) OnThreadMessage(ctx context.Context, room *rooms.Room, senderI
 				s.publish(ctx, updated, "THREAD_UPDATE", s.threadJSON(th))
 			}
 		}
+		s.spaces.FedRoomChanged(ctx, *room.SpaceID, room.ID, false)
 	}
 }
 

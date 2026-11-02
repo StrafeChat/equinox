@@ -27,7 +27,8 @@ var (
 	ErrInvalidMentionLimit    = errors.New("mention limit must be 1-50, or 0 for the default of 5")
 )
 
-const maxBirthdayMessage = 500
+// MaxBirthdayMessageRunes caps a space's birthday message, here and on a mirror's copy.
+const MaxBirthdayMessageRunes = 500
 
 // roomInSpaceOfType resolves a string room id and checks it belongs to the space and has
 // the wanted type. An empty id clears the setting (nil, nil).
@@ -190,7 +191,7 @@ func (s *Service) PatchSpace(ctx context.Context, actorID, spaceID int64, in *Pa
 	}
 	if in.BirthdayMessage != nil {
 		msg := strings.TrimSpace(*in.BirthdayMessage)
-		if utf8.RuneCountInString(msg) > maxBirthdayMessage {
+		if utf8.RuneCountInString(msg) > MaxBirthdayMessageRunes {
 			return nil, ErrInvalidBirthdayMessage
 		}
 		if msg != sp.BirthdayMessage {

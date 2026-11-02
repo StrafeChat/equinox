@@ -135,6 +135,9 @@ type Repository interface {
 	// membership survives) and the spaces_by_user row. A local join passes MemberProfile{};
 	// a mirror copying the origin's member passes their space profile.
 	AddMember(ctx context.Context, spaceID, userID int64, roleIDs []int64, p MemberProfile) error
+	// AddMemberAt is AddMember with a join date of the caller's, for a mirror's copy of a
+	// membership that began on the origin.
+	AddMemberAt(ctx context.Context, spaceID, userID int64, roleIDs []int64, p MemberProfile, joinedAt time.Time) error
 	ListSpacesByUser(ctx context.Context, userID int64) ([]SpaceMemberRow, error)
 	AddSpaceToUserSet(ctx context.Context, userID int64, spaceID int64) error
 	// IsMember, MemberRoleIDs, GetMember, ListMembers and ListMembersPage all treat a row
@@ -279,11 +282,14 @@ func (r *repo) GetByIDs(ctx context.Context, ids []int64) ([]*Space, error) {
 }
 
 func (r *repo) AddMember(ctx context.Context, spaceID, userID int64, roleIDs []int64, p MemberProfile) error {
-	now := time.Now().UTC()
+	return r.AddMemberAt(ctx, spaceID, userID, roleIDs, p, time.Now().UTC())
+}
+
+func (r *repo) AddMemberAt(ctx context.Context, spaceID, userID int64, roleIDs []int64, p MemberProfile, joinedAt time.Time) error {
 	b := r.session.Batch(gocql.LoggedBatch).WithContext(ctx)
-	b.Query(insertMemberStmt, memberRowValues(spaceID, userID, roleIDs, p, now)...)
+	b.Query(insertMemberStmt, memberRowValues(spaceID, userID, roleIDs, p, joinedAt)...)
 	stmt, _ := spacesByUserTable.Insert()
-	b.Query(stmt, userID, spaceID, now)
+	b.Query(stmt, userID, spaceID, joinedAt)
 	return r.session.ExecuteBatch(b)
 }
 

@@ -44,60 +44,8 @@ func (h *Handler) Create(c fiber.Ctx) error {
 		if res, ok := originError(c, err); ok {
 			return res
 		}
-		if err == ErrBlocked {
-			return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": err.Error()})
-		}
-		if err == ErrSystemReadOnly {
-			return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": err.Error()})
-		}
-		if err == ErrNotParticipant {
-			return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": "not a participant"})
-		}
-		if err == ErrAttachForbidden {
-			return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": err.Error()})
-		}
-		if err == ErrThreadLocked || err == ErrThreadArchived {
-			return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": err.Error()})
-		}
-		if err == ErrForbidden {
-			return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": "missing permission to send messages in this channel"})
-		}
-		if err == ErrInvalidInput {
-			return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "plaintext required when E2EE is off; ciphertext required when E2EE is on"})
-		}
-		if err == ErrTooManyAttachments || err == ErrAttachmentNotFound || err == ErrContentTooLong || err == ErrTooManyMentions {
-			return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
-		}
-		var slow *SlowmodeError
-		if errors.As(err, &slow) {
-			secs := int(slow.RetryAfter.Round(time.Second) / time.Second)
-			if secs < 1 {
-				secs = 1
-			}
-			c.Set("Retry-After", strconv.Itoa(secs))
-			return c.Status(http.StatusTooManyRequests).JSON(fiber.Map{
-				"error":       "slowmode is on in this channel",
-				"retry_after": secs,
-			})
-		}
-		// The space's raid protection / automod said no: the code and detail let the
-		// client phrase it in the user's language.
-		var verr *VerificationError
-		if errors.As(err, &verr) {
-			return c.Status(http.StatusForbidden).JSON(fiber.Map{
-				"error":       verificationMessage(verr),
-				"code":        "verification_level",
-				"requirement": verr.Requirement,
-				"level":       verr.Level,
-			})
-		}
-		var aerr *AutomodError
-		if errors.As(err, &aerr) {
-			return c.Status(http.StatusBadRequest).JSON(fiber.Map{
-				"error": automodMessage(aerr),
-				"code":  "automod_blocked",
-				"rule":  aerr.Rule,
-			})
+		if status, body, ok := HTTPError(err); ok {
+			return WriteRefusal(c, status, body)
 		}
 		logger.Err("messages", err, map[string]any{"room_id": roomID})
 		return c.Status(http.StatusInternalServerError).JSON(fiber.Map{"error": "internal error"})
@@ -225,12 +173,70 @@ func (h *Handler) Get(c fiber.Ctx) error {
 	return c.JSON(h.svc.MessageJSON(c.Context(), msg, reactions))
 }
 
+// HTTPError maps a refused send to the status and body a client gets; ok is false for errors
+// that are not the sender's (internal). Shared with the federation engine, which answers
+// another instance's members the same way, so a refusal reads the same wherever the sender
+// lives. The body's fields beyond "error" are what a client phrases the refusal from, in the
+// user's language.
+func HTTPError(err error) (status int, body fiber.Map, ok bool) {
+	var slow *SlowmodeError
+	var verr *VerificationError
+	var aerr *AutomodError
+	switch {
+	case errors.Is(err, ErrBlocked), errors.Is(err, ErrSystemReadOnly), errors.Is(err, ErrAttachForbidden),
+		errors.Is(err, ErrThreadLocked), errors.Is(err, ErrThreadArchived):
+		return http.StatusForbidden, fiber.Map{"error": err.Error()}, true
+	case errors.Is(err, ErrNotParticipant):
+		return http.StatusForbidden, fiber.Map{"error": "not a participant"}, true
+	case errors.Is(err, ErrForbidden):
+		return http.StatusForbidden, fiber.Map{"error": "missing permission to send messages in this channel"}, true
+	case errors.Is(err, ErrInvalidInput):
+		return http.StatusBadRequest, fiber.Map{"error": "plaintext required when E2EE is off; ciphertext required when E2EE is on"}, true
+	case errors.Is(err, ErrTooManyAttachments), errors.Is(err, ErrAttachmentNotFound), errors.Is(err, ErrContentTooLong), errors.Is(err, ErrTooManyMentions):
+		return http.StatusBadRequest, fiber.Map{"error": err.Error()}, true
+	case errors.As(err, &slow):
+		secs := int(slow.RetryAfter.Round(time.Second) / time.Second)
+		if secs < 1 {
+			secs = 1
+		}
+		return http.StatusTooManyRequests, fiber.Map{"error": "slowmode is on in this channel", "retry_after": secs}, true
+	case errors.As(err, &verr):
+		// The space's raid protection / automod said no: the code and detail let the client
+		// phrase it in the user's language.
+		return http.StatusForbidden, fiber.Map{
+			"error":       verificationMessage(verr),
+			"code":        "verification_level",
+			"requirement": verr.Requirement,
+			"level":       verr.Level,
+		}, true
+	case errors.As(err, &aerr):
+		return http.StatusBadRequest, fiber.Map{
+			"error": automodMessage(aerr),
+			"code":  "automod_blocked",
+			"rule":  aerr.Rule,
+		}, true
+	}
+	return 0, nil, false
+}
+
+// WriteRefusal sends a refusal; a retry_after in the body goes out as the header too.
+func WriteRefusal(c fiber.Ctx, status int, body fiber.Map) error {
+	if secs, ok := body["retry_after"].(int); ok {
+		c.Set("Retry-After", strconv.Itoa(secs))
+	}
+	return c.Status(status).JSON(body)
+}
+
 // originError answers a write or read that a space's hosting instance refused or could
 // not be asked (channels of spaces hosted elsewhere).
 func originError(c fiber.Ctx, err error) (error, bool) {
 	var oe *OriginError
 	if errors.As(err, &oe) {
-		return c.Status(oe.Status).JSON(fiber.Map{"error": oe.Message}), true
+		body := fiber.Map{"error": oe.Message}
+		for k, v := range oe.Body {
+			body[k] = v
+		}
+		return WriteRefusal(c, oe.Status, body), true
 	}
 	if errors.Is(err, ErrOriginUnavailable) {
 		return c.Status(http.StatusBadGateway).JSON(fiber.Map{"error": err.Error()}), true

@@ -2,6 +2,7 @@ package federation
 
 import (
 	"context"
+	"encoding/json"
 	"regexp"
 	"strconv"
 	"strings"
@@ -80,6 +81,101 @@ func (s *Service) textFromWire(ctx context.Context, text string) string {
 			return tok
 		}
 		return "<@" + id.Format(u.ID) + ">"
+	})
+}
+
+// A system message's payload is JSON naming people and rooms by instance-local ids, so it is
+// translated at the boundary as text is: every user goes out as an FID and every room as a room
+// FID, and both come in as this instance's ids. message_id stays, because a channel keeps the
+// origin's message ids, and so does everything else in the payload. An older origin sends plain
+// numbers, which have no meaning here and stay as they came: its notices read "Someone", as
+// they always have, and an older mirror keeps these FIDs the same way.
+var systemPayloadIDKeys = []string{"actor_id", "user_id", "thread_id"}
+
+// rewriteSystemPayload applies rewrite to the id fields of a payload and leaves the rest of it
+// exactly as it was. A payload that is not a JSON object, or holds no ids, comes back unchanged.
+func rewriteSystemPayload(raw string, rewrite func(key, value string) string) string {
+	if raw == "" {
+		return raw
+	}
+	var fields map[string]json.RawMessage
+	if json.Unmarshal([]byte(raw), &fields) != nil {
+		return raw
+	}
+	changed := false
+	for _, key := range systemPayloadIDKeys {
+		rawValue, ok := fields[key]
+		if !ok {
+			continue
+		}
+		var value string
+		if json.Unmarshal(rawValue, &value) != nil {
+			continue
+		}
+		next := rewrite(key, value)
+		if next == value {
+			continue
+		}
+		encoded, err := json.Marshal(next)
+		if err != nil {
+			continue
+		}
+		fields[key] = encoded
+		changed = true
+	}
+	if !changed {
+		return raw
+	}
+	out, err := json.Marshal(fields)
+	if err != nil {
+		return raw
+	}
+	return string(out)
+}
+
+// systemPayloadToWire rewrites a stored payload's local ids as FIDs.
+func (s *Service) systemPayloadToWire(ctx context.Context, raw string) string {
+	return rewriteSystemPayload(raw, func(key, value string) string {
+		local, err := id.Parse(value)
+		if err != nil {
+			return value
+		}
+		if key == "thread_id" {
+			// A thread lives on its space's origin, and only an origin relays one.
+			return RoomFID(local, s.fcfg.Domain)
+		}
+		u, err := s.users.GetByID(ctx, local)
+		if err != nil || u == nil {
+			return value
+		}
+		return s.FIDOf(u)
+	})
+}
+
+// systemPayloadFromWire rewrites a relayed payload's FIDs as this instance's ids, fetching a
+// shadow for anyone unknown. What cannot be resolved stays as it came, which a client shows
+// as "Someone" - no worse than before.
+func (s *Service) systemPayloadFromWire(ctx context.Context, raw string) string {
+	return rewriteSystemPayload(raw, func(key, value string) string {
+		if key == "thread_id" {
+			originRoomID, domain, err := ParseRoomFID(value)
+			if err != nil {
+				return value
+			}
+			local, err := s.localRoomID(ctx, domain, originRoomID, false)
+			if err != nil {
+				return value
+			}
+			return id.Format(local)
+		}
+		if !strings.HasPrefix(value, "@") {
+			return value
+		}
+		u, err := s.shadowByFID(ctx, value)
+		if err != nil || u == nil {
+			return value
+		}
+		return id.Format(u.ID)
 	})
 }
 

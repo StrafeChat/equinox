@@ -25,20 +25,11 @@ func (s *Service) EffectiveChannelPermissions(ctx context.Context, userID, space
 	if err != nil || !ok {
 		return 0, ErrNotMember
 	}
-	base := snap.basePermissions(roleIDs)
-	if permissions.Has(base, permissions.PermAdministrator) {
-		return permissions.AllRoom, nil
+	inThread := func(uid int64) bool {
+		member, err := s.roomRepo.IsThreadMember(ctx, roomID, uid)
+		return err == nil && member
 	}
-	ov := snap.EffectiveRoomOverrides(roomID)
-	perms := resolveEffectiveRoomPermissions(base, snap.EveryoneRoleID, roleIDs, userID, ov.Roles, ov.Users)
-	// A private thread exists only for its members and Manage Threads holders (Discord's rule);
-	// everyone else gets nothing there, not even View.
-	if m, ok := snap.Meta[roomID]; ok && m.Thread && m.Private && !permissions.Has(perms, permissions.PermManageThreads) {
-		if member, err := s.roomRepo.IsThreadMember(ctx, roomID, userID); err != nil || !member {
-			return 0, nil
-		}
-	}
-	return perms, nil
+	return snap.roomPermissions(roomID, userID, snap.basePermissions(roleIDs), roleIDs, inThread), nil
 }
 
 func resolveEffectiveRoomPermissions(
@@ -145,6 +136,11 @@ func (s *Service) bootstrapEveryoneRole(ctx context.Context, spaceID int64) (int
 	}
 	if sp.EveryoneRoleID != 0 {
 		return sp.EveryoneRoleID, nil
+	}
+	// The origin is the only authority for a mirror's roles. An @everyone minted here would
+	// match none of the origin's overrides, and every room they deny would open up.
+	if err := s.assertLocal(ctx, spaceID); err != nil {
+		return 0, err
 	}
 	rid := id.Next()
 	now := time.Now().UTC()

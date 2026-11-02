@@ -25,11 +25,11 @@ type mirrorRepo struct {
 	userSetAdds int
 }
 
-func (r *mirrorRepo) AddMember(_ context.Context, spaceID, userID int64, roleIDs []int64, p MemberProfile) error {
-	m := &SpaceMember{SpaceID: spaceID, UserID: userID, RoleIDs: append([]int64(nil), roleIDs...), JoinedAt: time.Now().UTC()}
+func (r *mirrorRepo) AddMemberAt(_ context.Context, spaceID, userID int64, roleIDs []int64, p MemberProfile, joinedAt time.Time) error {
+	m := &SpaceMember{SpaceID: spaceID, UserID: userID, RoleIDs: append([]int64(nil), roleIDs...), JoinedAt: joinedAt}
 	setProfileOn(m, p)
 	r.members[userID] = m
-	r.adds = append(r.adds, MirrorMember{UserID: userID, RoleIDs: roleIDs, Nickname: p.Nick, Avatar: p.Avatar, Banner: p.Banner, AboutMe: p.AboutMe, Bio: p.Bio, Pronouns: p.Pronouns})
+	r.adds = append(r.adds, MirrorMember{UserID: userID, RoleIDs: roleIDs, Nickname: p.Nick, Avatar: p.Avatar, Banner: p.Banner, AboutMe: p.AboutMe, Bio: p.Bio, Pronouns: p.Pronouns, JoinedAt: joinedAt})
 	return nil
 }
 

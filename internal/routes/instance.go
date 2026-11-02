@@ -31,9 +31,21 @@ func newInstanceService(d Deps, userRepo auth.UserRepository, sessionRepo auth.S
 	roomRepo := rooms.NewRepository(d.Scylla)
 	spaceRepo := spaces.NewRepository(d.Scylla)
 	spaceSvc := spaces.NewService(spaceRepo, roomRepo, userRepo, d.Redis, d.Config)
+	if d.Federation != nil {
+		// A takedown is relayed like an owner's delete, and refused on a mirror.
+		spaceSvc.SetFederator(d.Federation)
+	}
 	msgRepo := messages.NewRepository(d.Scylla)
 	roomsSvc := rooms.NewService(roomRepo, userRepo, d.Redis, d.Config, nil, spaceSvc)
 	msgsSvc := messages.NewService(msgRepo, roomRepo, userRepo, d.Redis, d.Config, spaceSvc)
+	// A takedown ends the space's calls, as an owner's delete does.
+	evictRooms := rooms.NewService(roomRepo, userRepo, d.Redis, d.Config, nil, spaceSvc)
+	if d.Federation != nil {
+		evictRooms.SetFederationInfo(d.Federation)
+	}
+	if ev := newVoiceEvictor(d, evictRooms, spaceSvc, userRepo, nil); ev != nil {
+		spaceSvc.SetRoomRemovedHook(ev.OnSpaceRoomRemoved)
+	}
 	svc.SetModeration(instance.ModerationDeps{
 		Repo:      instance.NewModerationRepository(d.Scylla),
 		Users:     userRepo,

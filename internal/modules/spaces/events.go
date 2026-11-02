@@ -18,6 +18,25 @@ func (s *Service) publishSpaceEvent(ctx context.Context, spaceID int64, eventTyp
 	stargate.PublishToSpace(ctx, s.redis, spaceID, eventType, data, s.stargateRegion())
 }
 
+// publishRoomEvent is publishSpaceEvent for an event that describes a room: it goes to the
+// whole space only when nobody is kept out of the room, otherwise to the members who can view
+// it, so a private room's name and topic reach no one else.
+func (s *Service) publishRoomEvent(ctx context.Context, spaceID, roomID int64, eventType string, data map[string]interface{}) {
+	if s.redis == nil {
+		return
+	}
+	viewers, everyone := s.ViewersOf(ctx, spaceID, roomID)
+	if everyone {
+		s.publishSpaceEvent(ctx, spaceID, eventType, data)
+		return
+	}
+	if data == nil {
+		data = make(map[string]interface{})
+	}
+	data["space_id"] = id.Format(spaceID)
+	stargate.PublishToUsers(ctx, s.redis, viewers, eventType, data, s.stargateRegion())
+}
+
 func spaceRoleEventData(r *SpaceRole) map[string]interface{} {
 	return RoleMap(r)
 }

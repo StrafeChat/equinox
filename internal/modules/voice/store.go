@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"strconv"
+	"time"
 
 	"github.com/redis/go-redis/v9"
 )
@@ -18,9 +19,13 @@ import (
 //
 //	voice:room:<room>   hash  user id -> State JSON
 //	voice:user:<user>   the room the user is in
-//	voice:rooms         set of rooms that have any state
+//	voice:rooms         set of rooms that have any state, or a call
 //	voice:call:<room>   Call JSON for a PM / group PM call
 //	voice:modflags:<space>  hash  user id -> server mute/deafen bits a space keeps on a member
+//	voice:sync:lock:<origin>    one API replica is asking that origin (see mirror.go)
+//	voice:sync:retry:<origin>   it failed less than a minute ago
+//	voice:sync:down:<origin>    when it stopped answering
+//	voice:sync:legacy:<origin>  it predates the states endpoint
 type Store struct {
 	rdb    *redis.Client
 	prefix string
@@ -40,6 +45,9 @@ func (s *Store) callKey(roomID int64) string {
 	return s.prefix + "voice:call:" + strconv.FormatInt(roomID, 10)
 }
 func (s *Store) roomsKey() string { return s.prefix + "voice:rooms" }
+func (s *Store) syncKey(what, origin string) string {
+	return s.prefix + "voice:sync:" + what + ":" + origin
+}
 func (s *Store) modFlagsKey(spaceID int64) string {
 	return s.prefix + "voice:modflags:" + strconv.FormatInt(spaceID, 10)
 }
@@ -93,13 +101,25 @@ func (s *Store) GetState(ctx context.Context, roomID, userID int64) (*State, err
 
 // PutState writes the state and points the user at its room.
 func (s *Store) PutState(ctx context.Context, st *State) error {
+	return s.putState(ctx, st, true)
+}
+
+// PutCopy writes a mirrored state without moving the user's pointer, for a user whose pointer
+// names a room another instance's relays may not end (see mirrorState).
+func (s *Store) PutCopy(ctx context.Context, st *State) error {
+	return s.putState(ctx, st, false)
+}
+
+func (s *Store) putState(ctx context.Context, st *State, point bool) error {
 	raw, err := json.Marshal(st)
 	if err != nil {
 		return err
 	}
 	pipe := s.rdb.TxPipeline()
 	pipe.HSet(ctx, s.roomKey(st.RoomID), strconv.FormatInt(st.UserID, 10), raw)
-	pipe.Set(ctx, s.userKey(st.UserID), strconv.FormatInt(st.RoomID, 10), 0)
+	if point {
+		pipe.Set(ctx, s.userKey(st.UserID), strconv.FormatInt(st.RoomID, 10), 0)
+	}
 	pipe.SAdd(ctx, s.roomsKey(), strconv.FormatInt(st.RoomID, 10))
 	_, err = pipe.Exec(ctx)
 	return err
@@ -119,9 +139,23 @@ func (s *Store) DeleteState(ctx context.Context, roomID, userID int64) error {
 	}
 	n, err := s.rdb.HLen(ctx, s.roomKey(roomID)).Result()
 	if err == nil && n == 0 {
-		_ = s.rdb.SRem(ctx, s.roomsKey(), strconv.FormatInt(roomID, 10)).Err()
+		// A call with nobody in it stays listed: it ends a moment later here, and on a mirror
+		// this is how a call whose CALL_DELETE was lost keeps being asked about.
+		if calls, err := s.rdb.Exists(ctx, s.callKey(roomID)).Result(); err == nil && calls == 0 {
+			_ = s.UntrackRoom(ctx, roomID)
+		}
 	}
 	return nil
+}
+
+// TrackRoom lists the room as active whether or not it holds a state.
+func (s *Store) TrackRoom(ctx context.Context, roomID int64) error {
+	return s.rdb.SAdd(ctx, s.roomsKey(), strconv.FormatInt(roomID, 10)).Err()
+}
+
+// UntrackRoom stops listing the room as active.
+func (s *Store) UntrackRoom(ctx context.Context, roomID int64) error {
+	return s.rdb.SRem(ctx, s.roomsKey(), strconv.FormatInt(roomID, 10)).Err()
 }
 
 // UserRoom returns the room the user is connected to, if any.
@@ -238,6 +272,52 @@ func (s *Store) StatesForRooms(ctx context.Context, roomIDs []int64) ([]State, [
 		}
 	}
 	return states, calls, nil
+}
+
+// claimSync takes a short lock: every API replica sweeps, and one of them asks each origin.
+func (s *Store) claimSync(ctx context.Context, origin string, ttl time.Duration) bool {
+	ok, err := s.rdb.SetNX(ctx, s.syncKey("lock", origin), "1", ttl).Result()
+	return err == nil && ok
+}
+
+// syncHeldOff reports whether an origin is not to be asked for now: it failed moments ago,
+// or it is too old to answer.
+func (s *Store) syncHeldOff(ctx context.Context, origin string) bool {
+	n, err := s.rdb.Exists(ctx, s.syncKey("retry", origin), s.syncKey("legacy", origin)).Result()
+	return err != nil || n > 0
+}
+
+// markOriginLegacy remembers an origin with no states endpoint for ttl.
+func (s *Store) markOriginLegacy(ctx context.Context, origin string, ttl time.Duration) error {
+	return s.rdb.Set(ctx, s.syncKey("legacy", origin), "1", ttl).Err()
+}
+
+// markOriginDown records one more failure and returns when the origin first stopped
+// answering. The key outlives a failure by downFor, so it is gone once nothing asks any more
+// and an old outage is never taken for the start of the next one.
+func (s *Store) markOriginDown(ctx context.Context, origin string, now time.Time, retryAfter, downFor time.Duration) (time.Time, error) {
+	if err := s.rdb.Set(ctx, s.syncKey("retry", origin), "1", retryAfter).Err(); err != nil {
+		return now, err
+	}
+	key := s.syncKey("down", origin)
+	if err := s.rdb.SetNX(ctx, key, now.UTC().Format(time.RFC3339Nano), downFor).Err(); err != nil {
+		return now, err
+	}
+	_ = s.rdb.Expire(ctx, key, downFor).Err()
+	raw, err := s.rdb.Get(ctx, key).Result()
+	if err != nil {
+		return now, err
+	}
+	since, err := time.Parse(time.RFC3339Nano, raw)
+	if err != nil {
+		return now, nil
+	}
+	return since, nil
+}
+
+// markOriginUp forgets an outage.
+func (s *Store) markOriginUp(ctx context.Context, origin string) {
+	_ = s.rdb.Del(ctx, s.syncKey("down", origin)).Err()
 }
 
 func (s *Store) GetCall(ctx context.Context, roomID int64) (*Call, error) {

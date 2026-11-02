@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"maps"
 	"strings"
 	"time"
 
@@ -280,11 +281,83 @@ func (s *Service) OnSpaceMemberRemoved(ctx context.Context, spaceID, userID int6
 		return
 	}
 	st, err := s.store.GetState(ctx, cur, userID)
-	if err != nil || st == nil || st.SpaceID != spaceID {
+	if err != nil || st == nil {
+		return
+	}
+	// The room decides, not the state: a mirror's older rows say nothing about their space.
+	room, err := s.rooms.LoadRoom(ctx, cur)
+	switch {
+	case err != nil:
+		if st.SpaceID != spaceID {
+			return
+		}
+	case room.SpaceID == nil || *room.SpaceID != spaceID:
+		return
+	case s.remoteOrigin(room) != "":
+		// The origin already ended the connection; leave() would ask it to, in the name of a
+		// user who may not be this instance's to speak for.
+		if err := s.ApplyRemoteVoiceState(ctx, room, st, true, 0); err != nil {
+			logger.Err("voice", err, map[string]any{"user_id": userID, "room_id": cur, "stage": "mirror member removed"})
+		}
 		return
 	}
 	if err := s.leave(ctx, userID, cur, true); err != nil {
 		logger.Err("voice", err, map[string]any{"user_id": userID, "room_id": cur, "stage": "member removed"})
+	}
+}
+
+// OnSpaceRoomRemoved is what the spaces module calls as a room goes, on the origin and on
+// mirrors alike: nobody may stay connected to a room that no longer exists, so the states
+// are dropped, everyone is told, and on the instance hosting the call LiveKit lets them go.
+func (s *Service) OnSpaceRoomRemoved(ctx context.Context, spaceID, roomID int64) {
+	states, err := s.store.ClearRoom(ctx, roomID)
+	if err != nil {
+		logger.Err("voice", err, map[string]any{"room_id": roomID, "stage": "room removed"})
+		return
+	}
+	if len(states) == 0 {
+		return
+	}
+	room, roomErr := s.rooms.LoadRoom(ctx, roomID)
+	hostedHere := roomErr != nil || s.remoteOrigin(room) == ""
+	for i := range states {
+		st := &states[i]
+		if hostedHere {
+			if err := s.lk.RemoveParticipant(ctx, RoomName(roomID), st.Identity()); err != nil {
+				logger.Warn("voice", "remove participant %s from %d: %v", st.Identity(), roomID, err)
+			}
+		}
+		if roomErr == nil {
+			s.publishState(ctx, room, st, true)
+		}
+	}
+}
+
+// OnRoomAccessLost is what the spaces module calls with members who can no longer view a room
+// after a permission change: any of them connected there is disconnected, as on Discord. A
+// room's media and its rotated keys are for the people who may be in it, and a client left
+// connected would keep receiving them. Only the instance hosting the call acts; a mirror hears
+// the leave from it.
+func (s *Service) OnRoomAccessLost(ctx context.Context, spaceID, roomID int64, userIDs []int64) {
+	states, err := s.store.RoomStates(ctx, roomID)
+	if err != nil || len(states) == 0 {
+		return
+	}
+	room, err := s.rooms.LoadRoom(ctx, roomID)
+	if err != nil || s.remoteOrigin(room) != "" {
+		return
+	}
+	lost := make(map[int64]bool, len(userIDs))
+	for _, uid := range userIDs {
+		lost[uid] = true
+	}
+	for i := range states {
+		if !lost[states[i].UserID] {
+			continue
+		}
+		if err := s.leave(ctx, states[i].UserID, roomID, true); err != nil {
+			logger.Err("voice", err, map[string]any{"user_id": states[i].UserID, "room_id": roomID, "stage": "access lost"})
+		}
 	}
 }
 
@@ -360,7 +433,7 @@ func (s *Service) leave(ctx context.Context, userID, roomID int64, removeFromLiv
 	if origin != "" {
 		if removeFromLiveKit {
 			if user, err := s.users.GetByID(ctx, userID); err == nil && user != nil {
-				s.fed.LeaveRemoteVoice(ctx, origin, room, user)
+				s.fed.LeaveRemoteVoiceSession(ctx, origin, room, user, st.SessionID)
 			}
 		}
 		return nil
@@ -450,6 +523,11 @@ func (s *Service) RoomStates(ctx context.Context, userID, roomID int64) ([]State
 func (s *Service) Moderate(ctx context.Context, actor *auth.User, spaceID, targetID int64, in ModerateInput) error {
 	if in.Mute == nil && in.Deaf == nil && in.RoomID == nil {
 		return spaces.ErrNothingToPatch
+	}
+	// Ahead of anything read here: a mirror's copy may be stale, and only the origin's
+	// LiveKit can act. Its relay is what updates this instance.
+	if origin := s.spaceOrigin(ctx, spaceID); origin != "" {
+		return s.fed.ModerateRemoteVoice(ctx, origin, spaceID, actor, targetID, in)
 	}
 	st, room, err := s.targetInSpace(ctx, spaceID, targetID)
 	if err != nil {
@@ -557,7 +635,7 @@ func (s *Service) move(ctx context.Context, st *State, from, dest *rooms.RoomWit
 	if err := s.store.DeleteState(ctx, from.ID, st.UserID); err != nil {
 		return err
 	}
-	s.publishStateExtra(ctx, from, &old, true, map[string]interface{}{"moved_to": id.Format(dest.ID)})
+	s.publishMove(ctx, from, &old, dest)
 	_ = s.lk.RemoveParticipant(ctx, RoomName(from.ID), old.Identity())
 	s.publishState(ctx, dest, st, false)
 	return nil
@@ -565,6 +643,9 @@ func (s *Service) move(ctx context.Context, st *State, from, dest *rooms.RoomWit
 
 // Disconnect kicks a member out of voice. Needs Move Members in their room.
 func (s *Service) Disconnect(ctx context.Context, actor *auth.User, spaceID, targetID int64) error {
+	if origin := s.spaceOrigin(ctx, spaceID); origin != "" {
+		return s.fed.DisconnectRemoteVoice(ctx, origin, spaceID, actor, targetID)
+	}
 	st, room, err := s.targetInSpace(ctx, spaceID, targetID)
 	if err != nil {
 		return err
@@ -832,14 +913,34 @@ func (s *Service) systemMessage(ctx context.Context, room *rooms.RoomWithPartici
 
 // ---- events ---------------------------------------------------------------------------
 
-// publishState fans a state out: to the space channel for space rooms (every member
-// sees who is in which voice room), to each participant for PMs and group PMs. A leave
-// carries left=true with the room it left, so clients can drop it.
+// publishState tells this instance's clients and, when this instance hosts the call, the
+// other instances in the room. A leave carries left=true with the room it left, so clients
+// can drop it.
 func (s *Service) publishState(ctx context.Context, room *rooms.RoomWithParticipants, st *State, left bool) {
-	s.publishStateExtra(ctx, room, st, left, nil)
+	s.publishLocal(ctx, room, st, left, 0)
+	if s.hosting(room) {
+		s.fed.AfterVoiceStateChanged(ctx, room, st, left)
+	}
 }
 
-func (s *Service) publishStateExtra(ctx context.Context, room *rooms.RoomWithParticipants, st *State, left bool, extra map[string]interface{}) {
+// publishMove is publishState's left for a moderator's move: it also names the room the user
+// was moved to, in each instance's own ids.
+func (s *Service) publishMove(ctx context.Context, room *rooms.RoomWithParticipants, st *State, dest *rooms.RoomWithParticipants) {
+	s.publishLocal(ctx, room, st, true, dest.ID)
+	if s.hosting(room) {
+		s.fed.AfterVoiceStateMoved(ctx, room, st, dest)
+	}
+}
+
+// publishLocal fans a state out to this instance's clients: to each participant for PMs and
+// group PMs; for a space room to the space channel when everyone may view it, and otherwise
+// to the room's own channel, which the gateway lets only its viewers subscribe to - so who is
+// in a private room reaches nobody else, with no member list to read. The state's own user
+// also hears it on theirs: one who just lost View still needs their left. Where a moved user
+// went is the destination's occupancy, so it goes in the room's event only when everyone may
+// see the destination; otherwise the user alone hears it, first, so their client rejoins
+// there before the plain left reaches it.
+func (s *Service) publishLocal(ctx context.Context, room *rooms.RoomWithParticipants, st *State, left bool, movedTo int64) {
 	if s.redis == nil {
 		return
 	}
@@ -847,16 +948,32 @@ func (s *Service) publishStateExtra(ctx context.Context, room *rooms.RoomWithPar
 	if left {
 		data["left"] = true
 	}
-	for k, v := range extra {
-		data[k] = v
-	}
-	if room.SpaceID != nil {
-		stargate.PublishToSpace(ctx, s.redis, *room.SpaceID, EventVoiceStateUpdate, data, s.region())
+	if room.SpaceID == nil {
+		if movedTo != 0 {
+			data["moved_to"] = id.Format(movedTo)
+		}
+		stargate.PublishToUsers(ctx, s.redis, room.ParticipantIDs, EventVoiceStateUpdate, data, s.region())
 		return
 	}
-	stargate.PublishToUsers(ctx, s.redis, room.ParticipantIDs, EventVoiceStateUpdate, data, s.region())
-	if s.hosting(room) {
-		s.fed.AfterVoiceStateChanged(ctx, room, st, left)
+	spaceID := *room.SpaceID
+	userTold := false
+	if movedTo != 0 {
+		moved := maps.Clone(data)
+		moved["moved_to"] = id.Format(movedTo)
+		if s.spaces.OpenToEveryone(ctx, spaceID, movedTo) {
+			data = moved
+		} else {
+			stargate.PublishToUser(ctx, s.redis, st.UserID, EventVoiceStateUpdate, moved, s.region())
+			userTold = true
+		}
+	}
+	if s.spaces.OpenToEveryone(ctx, spaceID, room.ID) {
+		stargate.PublishToSpace(ctx, s.redis, spaceID, EventVoiceStateUpdate, data, s.region())
+		return
+	}
+	stargate.PublishToSpace(ctx, s.redis, room.ID, EventVoiceStateUpdate, data, s.region())
+	if !userTold {
+		stargate.PublishToUser(ctx, s.redis, st.UserID, EventVoiceStateUpdate, data, s.region())
 	}
 }
 
@@ -984,8 +1101,9 @@ func (s *Service) HandleWebhook(ctx context.Context, ev *livekit.WebhookEvent) {
 // ---- reconciliation -------------------------------------------------------------------
 
 // RunReconciler sweeps states LiveKit no longer backs: a token that was issued but
-// never used, a participant whose leave webhook was lost, a LiveKit restart. Runs
-// until ctx ends; safe to run in every API replica.
+// never used, a participant whose leave webhook was lost, a LiveKit restart. Rooms another
+// instance hosts have no LiveKit here to ask, so their origins are asked instead (mirror.go).
+// Runs until ctx ends; safe to run in every API replica.
 func (s *Service) RunReconciler(ctx context.Context) {
 	safego.Go("voice-reconcile", func() {
 		t := time.NewTicker(reconcileEvery)
@@ -1006,51 +1124,79 @@ func (s *Service) reconcile(ctx context.Context) {
 	if err != nil {
 		return
 	}
+	remote := map[string][]*rooms.RoomWithParticipants{}
 	for _, roomID := range roomIDs {
-		states, err := s.store.RoomStates(ctx, roomID)
-		if err != nil {
+		room, err := s.rooms.LoadRoom(ctx, roomID)
+		if err != nil && !errors.Is(err, rooms.ErrRoomNotFound) {
+			continue // a read that failed says nothing about who is there
+		}
+		if origin := s.remoteOrigin(room); origin != "" {
+			remote[origin] = append(remote[origin], room) // another instance's LiveKit backs these
 			continue
 		}
-		if room, err := s.rooms.LoadRoom(ctx, roomID); err == nil && s.remoteOrigin(room) != "" {
-			continue // another instance's LiveKit backs these; it tells us when they end
-		}
-		present, err := s.lk.ListIdentities(ctx, RoomName(roomID))
-		if err != nil {
-			logger.Warn("voice", "reconcile: list participants for %d: %v", roomID, err)
+		s.sweepRoom(ctx, roomID, room)
+	}
+	// After the sweep, so an origin that does not answer cannot hold it up.
+	s.pullOrigins(ctx, remote)
+}
+
+// sweepRoom checks a room this instance hosts against LiveKit. room is nil once the room is
+// deleted, when the states only have to go.
+func (s *Service) sweepRoom(ctx context.Context, roomID int64, room *rooms.RoomWithParticipants) {
+	states, err := s.store.RoomStates(ctx, roomID)
+	if err != nil {
+		return
+	}
+	if s.fed != nil && room != nil && room.Federation == nil && hasFederatedIdentity(states) {
+		// A federated identity in a room with no mapping: the mapping could not be read, and
+		// if this is a mirror the local LiveKit would report everyone gone.
+		return
+	}
+	present, err := s.lk.ListIdentities(ctx, RoomName(roomID))
+	if err != nil {
+		logger.Warn("voice", "reconcile: list participants for %d: %v", roomID, err)
+		return
+	}
+	// The other direction: a LiveKit participant no state accounts for is someone who
+	// was disconnected or replaced and reconnected on a token that is still valid. The
+	// state is the authority, so a ghost lasts at most one sweep.
+	known := make(map[string]struct{}, len(states))
+	for i := range states {
+		known[states[i].Identity()] = struct{}{}
+	}
+	for ident := range present {
+		if _, ok := known[ident]; ok {
 			continue
 		}
-		// The other direction: a LiveKit participant no state accounts for is someone who
-		// was disconnected or replaced and reconnected on a token that is still valid. The
-		// state is the authority, so a ghost lasts at most one sweep.
-		known := make(map[string]struct{}, len(states))
-		for i := range states {
-			known[states[i].Identity()] = struct{}{}
-		}
-		for ident := range present {
-			if _, ok := known[ident]; ok {
-				continue
-			}
-			logger.Info("voice", "reconcile: removing ghost participant %s room=%d", ident, roomID)
-			if err := s.lk.RemoveParticipant(ctx, RoomName(roomID), ident); err != nil {
-				logger.Warn("voice", "reconcile: remove ghost %s: %v", ident, err)
-			}
-		}
-		if len(states) == 0 {
-			_ = s.redis.SRem(ctx, s.store.roomsKey(), id.Format(roomID)).Err()
-			continue
-		}
-		for i := range states {
-			st := &states[i]
-			if _, ok := present[st.Identity()]; ok {
-				continue
-			}
-			if time.Since(st.IssuedAt) < reconcileGrace {
-				continue
-			}
-			logger.Info("voice", "reconcile: dropping stale state user=%d room=%d", st.UserID, roomID)
-			if err := s.leave(ctx, st.UserID, roomID, false); err != nil {
-				logger.Err("voice", err, map[string]any{"room_id": roomID, "user_id": st.UserID})
-			}
+		logger.Info("voice", "reconcile: removing ghost participant %s room=%d", ident, roomID)
+		if err := s.lk.RemoveParticipant(ctx, RoomName(roomID), ident); err != nil {
+			logger.Warn("voice", "reconcile: remove ghost %s: %v", ident, err)
 		}
 	}
+	if len(states) == 0 {
+		_ = s.store.UntrackRoom(ctx, roomID)
+		return
+	}
+	for i := range states {
+		st := &states[i]
+		if _, ok := present[st.Identity()]; ok {
+			continue
+		}
+		if time.Since(st.IssuedAt) < reconcileGrace {
+			continue
+		}
+		logger.Info("voice", "reconcile: dropping stale state user=%d room=%d", st.UserID, roomID)
+		if err := s.leave(ctx, st.UserID, roomID, false); err != nil {
+			logger.Err("voice", err, map[string]any{"room_id": roomID, "user_id": st.UserID})
+		}
+	}
+}
+
+func hasFederatedIdentity(states []State) bool {
+	for i := range states {
+		if strings.HasPrefix(states[i].Ident, "@") {
+			return true
+		}
+	}
+	return false
 }

@@ -175,7 +175,7 @@ func (s *Service) hasForeignInvite(ctx context.Context, spaceID int64, text stri
 	}
 	for _, m := range strafeInviteRe.FindAllStringSubmatch(text, -1) {
 		code := m[1]
-		if m[2] != "" {
+		if m[2] != "" && !s.isOwnInviteDomain(m[2]) {
 			// code@origin names a space on another instance: never this one's own invite.
 			return true
 		}
@@ -189,6 +189,18 @@ func (s *Service) hasForeignInvite(ctx context.Context, spaceID int64, text stri
 		}
 	}
 	return false
+}
+
+// isOwnInviteDomain: the @domain of an invite link names this instance, which is how a member
+// on another instance is handed an invite of a space hosted here. suffix is strafeInviteRe's
+// capture, so the @ and a port's colon may be percent-encoded.
+func (s *Service) isOwnInviteDomain(suffix string) bool {
+	if s.cfg == nil || s.cfg.Federation.Domain == "" {
+		return false
+	}
+	domain := strings.ToLower(suffix)
+	domain = strings.TrimPrefix(strings.TrimPrefix(domain, "%40"), "@")
+	return strings.ReplaceAll(domain, "%3a", ":") == strings.ToLower(s.cfg.Federation.Domain)
 }
 
 // repeatedMessage counts identical texts per sender per space in a Redis key that expires

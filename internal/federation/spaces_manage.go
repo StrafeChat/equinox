@@ -17,6 +17,7 @@ import (
 	"github.com/StrafeChat/equinox/internal/modules/auth"
 	"github.com/StrafeChat/equinox/internal/modules/rooms"
 	"github.com/StrafeChat/equinox/internal/modules/spaces"
+	"github.com/StrafeChat/equinox/internal/modules/voice"
 	"github.com/StrafeChat/equinox/internal/safego"
 )
 
@@ -348,7 +349,7 @@ func (s *Service) applyRelay(ctx context.Context, origin string, ev RelayEvent) 
 		if err != nil {
 			return err
 		}
-		if msgID := s.localMessageID(ctx, sc.room.ID, b.Message); msgID != 0 {
+		if msgID := s.localMessageID(ctx, sc, b.Message); msgID != 0 {
 			return s.msgSvc.DeleteFederated(ctx, sc.room.ID, msgID)
 		}
 		return nil
@@ -408,6 +409,11 @@ type manageSpacePatch struct {
 	AFKTimeout          *int    `json:"afk_timeout,omitempty"`
 	WidgetEnabled       *bool   `json:"widget_enabled,omitempty"`
 	WidgetRoom          *string `json:"widget_room,omitempty"`
+	VerificationLevel   *int    `json:"verification_level,omitempty"`
+	AutomodFlags        *int    `json:"automod_flags,omitempty"`
+	AutomodMentionLimit *int    `json:"automod_mention_limit,omitempty"`
+	BirthdayRoom        *string `json:"birthday_room,omitempty"`
+	BirthdayMessage     *string `json:"birthday_message,omitempty"`
 }
 
 type manageImage struct {
@@ -491,6 +497,16 @@ func (p manageMemberProfile) patch() (*spaces.MemberProfilePatch, error) {
 type manageMember struct {
 	User   string `json:"user"`
 	Reason string `json:"reason,omitempty"`
+}
+
+// voice.moderate and voice.disconnect: a mirror's moderator acting on a voice room. Mute,
+// Deaf and Room are as in voice.ModerateInput, with Room the origin's id; disconnect uses
+// User alone.
+type manageVoice struct {
+	User string  `json:"user"`
+	Mute *bool   `json:"mute,omitempty"`
+	Deaf *bool   `json:"deaf,omitempty"`
+	Room *string `json:"room,omitempty"`
 }
 
 type manageInvite struct {
@@ -672,6 +688,9 @@ func (h *Handler) SpaceManage(c fiber.Ctx) error {
 		if errors.Is(err, errBadParams) || errors.Is(err, errUnknownAction) {
 			return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 		}
+		if strings.HasPrefix(body.Op, "voice.") {
+			return voiceFail(c, err, map[string]any{"space_id": sp.ID, "op": body.Op})
+		}
 		return spaceFail(c, err, map[string]any{"space_id": sp.ID, "op": body.Op})
 	}
 	reply := SpaceManageReply{Events: capture.take()}
@@ -697,6 +716,8 @@ func (s *Service) manageAt(ctx context.Context, sp *spaces.Space, actor *auth.Us
 			Name: p.Name, Description: p.Description, SystemRoomID: p.SystemRoom, SystemRoomFlags: p.SystemRoomFlags,
 			DefaultMessageNotif: p.DefaultMessageNotif, AFKRoomID: p.AFKRoom, AFKTimeout: p.AFKTimeout,
 			WidgetEnabled: p.WidgetEnabled, WidgetRoomID: p.WidgetRoom,
+			BirthdayChannelID: p.BirthdayRoom, BirthdayMessage: p.BirthdayMessage,
+			VerificationLevel: p.VerificationLevel, AutomodFlags: p.AutomodFlags, AutomodMentionLimit: p.AutomodMentionLimit,
 		}
 		updated, err := svc.PatchSpace(ctx, actor.ID, spaceID, in)
 		if err != nil {
@@ -846,6 +867,8 @@ func (s *Service) manageAt(ctx context.Context, sp *spaces.Space, actor *auth.Us
 		}
 		_, err = svc.UpdateMemberProfile(ctx, actor.ID, spaceID, target, in)
 		return nil, err
+	case "member.birthday":
+		return nil, svc.GreetBirthday(ctx, spaceID, actor.ID)
 	case "member.kick", "member.ban", "member.unban":
 		var p manageMember
 		if err := decodeParams(params, &p); err != nil {
@@ -863,6 +886,22 @@ func (s *Service) manageAt(ctx context.Context, sp *spaces.Space, actor *auth.Us
 		default:
 			return nil, svc.UnbanMember(ctx, actor.ID, spaceID, target)
 		}
+	case "voice.moderate", "voice.disconnect":
+		var p manageVoice
+		if err := decodeParams(params, &p); err != nil {
+			return nil, err
+		}
+		if s.voice == nil {
+			return nil, voice.ErrDisabled
+		}
+		target, err := s.ResolveLocalID(ctx, p.User)
+		if err != nil {
+			return nil, err
+		}
+		if op == "voice.disconnect" {
+			return nil, s.voice.Disconnect(ctx, actor, spaceID, target)
+		}
+		return nil, s.voice.Moderate(ctx, actor, spaceID, target, voice.ModerateInput{Mute: p.Mute, Deaf: p.Deaf, RoomID: p.Room})
 	case "bot.install", "member.add":
 		// The subject must be the asking instance's own user, like the actor: no instance
 		// installs another's bot or speaks for another's users.
@@ -1262,7 +1301,8 @@ func (s *Service) fidOfLocal(ctx context.Context, uid int64) (string, error) {
 func (s *Service) RemotePatchSpace(ctx context.Context, origin string, spaceID int64, user *auth.User, in *spaces.PatchSpaceInput) (*spaces.Space, error) {
 	p := manageSpacePatch{
 		Name: in.Name, Description: in.Description, SystemRoomFlags: in.SystemRoomFlags, DefaultMessageNotif: in.DefaultMessageNotif,
-		AFKTimeout: in.AFKTimeout, WidgetEnabled: in.WidgetEnabled,
+		AFKTimeout: in.AFKTimeout, WidgetEnabled: in.WidgetEnabled, BirthdayMessage: in.BirthdayMessage,
+		VerificationLevel: in.VerificationLevel, AutomodFlags: in.AutomodFlags, AutomodMentionLimit: in.AutomodMentionLimit,
 	}
 	var err error
 	if p.SystemRoom, err = s.optOriginRoomID(ctx, origin, in.SystemRoomID); err != nil {
@@ -1273,6 +1313,9 @@ func (s *Service) RemotePatchSpace(ctx context.Context, origin string, spaceID i
 	}
 	if p.WidgetRoom, err = s.optOriginRoomID(ctx, origin, in.WidgetRoomID); err != nil {
 		return nil, spaces.ErrInvalidWidgetRoom
+	}
+	if p.BirthdayRoom, err = s.optOriginRoomID(ctx, origin, in.BirthdayChannelID); err != nil {
+		return nil, spaces.ErrInvalidBirthdayRoom
 	}
 	if err := s.manage(ctx, origin, spaceID, user, "space.patch", p, nil); err != nil {
 		return nil, err
@@ -1779,6 +1822,12 @@ func (s *Service) RemoteAddMember(ctx context.Context, origin string, spaceID in
 	return out.Added, nil
 }
 
+// RemoteBirthdayGreeting is the member.birthday op. An origin that predates it refuses it,
+// and the member goes ungreeted there, as they always did.
+func (s *Service) RemoteBirthdayGreeting(ctx context.Context, origin string, spaceID int64, user *auth.User) error {
+	return s.manage(ctx, origin, spaceID, user, "member.birthday", nil, nil)
+}
+
 // SpaceSyncRequest: POST /spaces/sync - a mirror asks for a fresh snapshot.
 type SpaceSyncRequest struct {
 	Space SpaceRef `json:"space"`
@@ -1794,7 +1843,7 @@ func (h *Handler) SpaceSync(c fiber.Ctx) error {
 	if err != nil {
 		return spaceFail(c, err, nil)
 	}
-	snap, err := h.svc.snapshot(c.Context(), sp)
+	snap, err := h.svc.snapshot(c.Context(), sp, RequesterDomain(c))
 	if err != nil {
 		return fail(c, err, map[string]any{"space_id": sp.ID})
 	}
@@ -1802,14 +1851,16 @@ func (h *Handler) SpaceSync(c fiber.Ctx) error {
 }
 
 // ResyncMirror reconciles one mirror against its origin's current snapshot. A space the
-// origin no longer has is dropped here too.
+// origin no longer has is dropped here too. So is a mapping whose space row is gone, left by
+// an administrator's takedown from when mirrors were not refused: every resync and rejoin
+// would otherwise keep failing on it.
 func (s *Service) ResyncMirror(ctx context.Context, m *SpaceMapping) error {
 	origin := m.OriginDomain
 	ref := SpaceRef{OriginDomain: origin, OriginSpaceID: id.Format(m.OriginSpaceID)}
 	var snap SpaceSnapshot
+	asked := time.Now()
 	if _, err := s.client.Do(ctx, origin, http.MethodPost, "/spaces/sync", SpaceSyncRequest{Space: ref}, &snap); err != nil {
-		var se *StatusError
-		if errors.As(err, &se) && se.Status == http.StatusNotFound {
+		if originForgot(err) {
 			s.dropMirror(ctx, m)
 			return nil
 		}
@@ -1824,6 +1875,10 @@ func (s *Service) ResyncMirror(ctx context.Context, m *SpaceMapping) error {
 		return err
 	}
 	removed, err := s.spaceSvc.ReconcileMirror(ctx, spec)
+	if errors.Is(err, spaces.ErrSpaceNotFound) {
+		s.dropMirror(ctx, m)
+		return nil
+	}
 	if err != nil {
 		return err
 	}
@@ -1836,6 +1891,7 @@ func (s *Service) ResyncMirror(ctx context.Context, m *SpaceMapping) error {
 		}
 	}
 	s.dropMirrorIfEmpty(ctx, m)
+	s.applyVoiceRooms(ctx, origin, snap.VoiceRooms, asked) // nothing to apply to if it just went
 	return nil
 }
 

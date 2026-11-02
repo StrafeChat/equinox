@@ -23,13 +23,16 @@ func SetupSpacesRoutes(d Deps) {
 	// Join/leave notices in a space's system room go through the same path as group
 	// "X added Y" messages.
 	spaceSvc.SetSystemMessenger(spaces.SystemMessenger(newSystemMessenger(d, roomRepo, messages.NewRepository(d.Scylla))))
-	// A kick, ban or leave also ends the member's voice connection in the space.
+	// A kick, ban or leave also ends the member's voice connection in the space, a room being
+	// deleted ends its call, and losing View of a room ends a call in it.
 	evictRooms := rooms.NewService(roomRepo, userRepo, d.Redis, d.Config, nil, spaceSvc)
 	if d.Federation != nil {
 		evictRooms.SetFederationInfo(d.Federation)
 	}
 	if ev := newVoiceEvictor(d, evictRooms, spaceSvc, userRepo, nil); ev != nil {
 		spaceSvc.SetMemberRemovedHook(ev.OnSpaceMemberRemoved)
+		spaceSvc.SetRoomRemovedHook(ev.OnSpaceRoomRemoved)
+		spaceSvc.SetRoomAccessLostHook(ev.OnRoomAccessLost)
 	}
 	// Daily birthday greetings for opted-in members in spaces that set a birthday channel.
 	spaceSvc.StartBirthdayWorker(context.Background())

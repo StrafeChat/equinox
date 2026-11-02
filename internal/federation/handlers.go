@@ -18,6 +18,7 @@ import (
 	"github.com/StrafeChat/equinox/internal/modules/messages"
 	"github.com/StrafeChat/equinox/internal/modules/relationships"
 	"github.com/StrafeChat/equinox/internal/modules/rooms"
+	"github.com/StrafeChat/equinox/internal/modules/spaces"
 	"github.com/StrafeChat/equinox/internal/stargate"
 )
 
@@ -343,8 +344,10 @@ func (h *Handler) senderAllowed(c fiber.Ctx, sc *roomScope, fid string) bool {
 	return domain == RequesterDomain(c)
 }
 
-// messageFromEvent turns a relayed message into this instance's ids without storing it.
-// from is the instance vouching for the profiles in it.
+// messageFromEvent turns a message on the wire into this instance's ids without storing it,
+// whether it is news or history. from is the instance vouching for the profiles in it. Who
+// may be its sender is applyMessageEvent's question: a history page, a pin list or a search
+// hit keeps the messages of people who have since left.
 func (s *Service) messageFromEvent(ctx context.Context, from string, sc *roomScope, ev MessageEvent) (*messages.Message, error) {
 	originMsgID, err := id.Parse(ev.Message.OriginMessageID)
 	if err != nil {
@@ -364,7 +367,7 @@ func (s *Service) messageFromEvent(ctx context.Context, from string, sc *roomSco
 		Plaintext:       s.textFromWire(ctx, ev.Plaintext),
 		MentionEveryone: ev.MentionEveryone,
 		SystemType:      ev.SystemType,
-		SystemPayload:   ev.SystemPayload,
+		SystemPayload:   s.systemPayloadFromWire(ctx, ev.SystemPayload),
 		CreatedAt:       ev.CreatedAt.UTC(),
 		UpdatedAt:       ev.UpdatedAt.UTC(),
 	}
@@ -396,9 +399,6 @@ func (s *Service) messageFromEvent(ctx context.Context, from string, sc *roomSco
 		if err != nil {
 			return nil, err
 		}
-		if !s.inRoom(ctx, sc, sender.ID) {
-			return nil, errNotInRoom
-		}
 		msg.SenderID = sender.ID
 	} else if ev.SystemType == "" {
 		return nil, messages.ErrInvalidInput
@@ -409,7 +409,7 @@ func (s *Service) messageFromEvent(ctx context.Context, from string, sc *roomSco
 		}
 	}
 	if ev.ReplyTo != nil {
-		if rid := s.localMessageID(ctx, sc.room.ID, *ev.ReplyTo); rid != 0 {
+		if rid := s.localMessageID(ctx, sc, *ev.ReplyTo); rid != 0 {
 			msg.ReplyToID = &rid
 		}
 	}
@@ -449,6 +449,10 @@ func (s *Service) applyMessageEvent(ctx context.Context, from string, sc *roomSc
 	if err != nil {
 		return nil, err
 	}
+	// News has to come from someone in the room, unlike history: a peer may not invent a sender.
+	if msg.SenderID != 0 && !s.inRoom(ctx, sc, msg.SenderID) {
+		return nil, errNotInRoom
+	}
 	if err := s.msgSvc.CreateFederated(ctx, sc.room.ID, s.roomParticipants(ctx, sc), msg); err != nil {
 		return nil, err
 	}
@@ -458,16 +462,19 @@ func (s *Service) applyMessageEvent(ctx context.Context, from string, sc *roomSc
 	return msg, nil
 }
 
-// localMessageID maps a message reference to this instance's id for it (0 if unknown).
-func (s *Service) localMessageID(ctx context.Context, roomID int64, ref MessageRef) int64 {
+// localMessageID maps a message reference to this instance's id for it (0 if unknown). A
+// channel keeps the origin's message ids on every instance (see messageFromEvent), so there
+// the reference is the answer, whether or not the message is stored here yet: the reply that
+// reaches a mirror before its parent, a pin on something older than the mirror.
+func (s *Service) localMessageID(ctx context.Context, sc *roomScope, ref MessageRef) int64 {
 	originID, err := id.Parse(ref.OriginMessageID)
 	if err != nil {
 		return 0
 	}
-	if s.IsLocalServer(ref.OriginDomain) {
+	if sc.spaceID != 0 || s.IsLocalServer(ref.OriginDomain) {
 		return originID
 	}
-	if m, err := s.repo.GetMessageByOrigin(ctx, ref.OriginDomain, originID); err == nil && m != nil && m.RoomID == roomID {
+	if m, err := s.repo.GetMessageByOrigin(ctx, ref.OriginDomain, originID); err == nil && m != nil && m.RoomID == sc.room.ID {
 		return m.MessageID
 	}
 	return 0
@@ -687,13 +694,24 @@ func (h *Handler) RoomTyping(c fiber.Ctx) error {
 	if err != nil {
 		return fail(c, err, nil)
 	}
-	if !h.svc.inRoom(ctx, sc, uid) {
+	hosted := sc.spaceID != 0 && sc.hostedHere
+	var allowed bool
+	if hosted {
+		// A channel hosted here judges the typer as it judges a local one, by View: being in
+		// the space does not put someone in a private room.
+		if allowed, err = h.svc.roomSvc.CanAccess(ctx, uid, sc.room.ID); err != nil && !errors.Is(err, spaces.ErrNotMember) {
+			return fail(c, err, map[string]any{"room_id": sc.room.ID})
+		}
+	} else {
+		allowed = h.svc.inRoom(ctx, sc, uid)
+	}
+	if !allowed {
 		return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": errNotInRoom.Error()})
 	}
 	h.svc.roomSvc.PublishTypingFrom(ctx, sc.room.ID, uid)
-	if sc.spaceID != 0 && sc.hostedHere {
+	if hosted {
 		// The origin tells the other mirrors (the sender's own instance already knows).
-		h.svc.fanOut(WithExcludedPeer(ctx, requester), h.svc.spacePeers(ctx, sc.spaceID), http.MethodPost, "/rooms/typing", body)
+		h.svc.fanOut(WithExcludedPeer(ctx, requester), h.svc.channelPeers(ctx, sc.spaceID, sc.room.ID), http.MethodPost, "/rooms/typing", body)
 	}
 	return c.SendStatus(http.StatusNoContent)
 }
@@ -734,8 +752,8 @@ func (h *Handler) MessageCreate(c fiber.Ctx) error {
 }
 
 // localMessageID maps a message reference to this instance's id for it (0 if unknown).
-func (h *Handler) localMessageID(c fiber.Ctx, roomID int64, ref MessageRef) int64 {
-	return h.svc.localMessageID(c.Context(), roomID, ref)
+func (h *Handler) localMessageID(c fiber.Ctx, sc *roomScope, ref MessageRef) int64 {
+	return h.svc.localMessageID(c.Context(), sc, ref)
 }
 
 // MessageEdit PATCH /rooms/messages.
@@ -751,7 +769,10 @@ func (h *Handler) MessageEdit(c fiber.Ctx) error {
 	if err != nil {
 		return fail(c, err, nil)
 	}
-	msgID := h.localMessageID(c, sc.room.ID, body.Message)
+	if sc.spaceID != 0 && !sc.fromOrigin {
+		return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": "a channel's messages come from its origin"})
+	}
+	msgID := h.localMessageID(c, sc, body.Message)
 	if msgID == 0 {
 		return c.Status(http.StatusNotFound).JSON(fiber.Map{"error": "message not found"})
 	}
@@ -775,7 +796,10 @@ func (h *Handler) MessageDelete(c fiber.Ctx) error {
 	if err != nil {
 		return fail(c, err, nil)
 	}
-	msgID := h.localMessageID(c, sc.room.ID, body.Message)
+	if sc.spaceID != 0 && !sc.fromOrigin {
+		return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": "a channel's messages come from its origin"})
+	}
+	msgID := h.localMessageID(c, sc, body.Message)
 	if msgID == 0 {
 		return c.Status(http.StatusNotFound).JSON(fiber.Map{"error": "message not found"})
 	}
@@ -959,7 +983,7 @@ func (h *Handler) applyReaction(c fiber.Ctx, remove bool) error {
 	if !h.svc.inRoom(ctx, sc, uid) {
 		return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": "user is not in this room"})
 	}
-	msgID := h.localMessageID(c, sc.room.ID, body.Message)
+	msgID := h.localMessageID(c, sc, body.Message)
 	if msgID == 0 {
 		return c.Status(http.StatusNotFound).JSON(fiber.Map{"error": "message not found"})
 	}
@@ -1005,7 +1029,7 @@ func (h *Handler) PinUpdate(c fiber.Ctx) error {
 	if !h.svc.inRoom(ctx, sc, uid) {
 		return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": "user is not in this room"})
 	}
-	msgID := h.localMessageID(c, sc.room.ID, body.Message)
+	msgID := h.localMessageID(c, sc, body.Message)
 	if msgID == 0 {
 		return c.Status(http.StatusNotFound).JSON(fiber.Map{"error": "message not found"})
 	}

@@ -100,6 +100,89 @@ func (snap *Snapshot) basePermissions(memberRoleIDs []int64) int64 {
 	return base
 }
 
+// roomPermissions is the one rule for what a member holds in a room; base is
+// basePermissions(roleIDs), passed in so a walk over many rooms resolves it once. The owner
+// and Administrators hold every room bit. Anyone else gets the overwrite stack on the room's
+// effective overrides, so a synced channel is judged by its section and a thread by its
+// channel. A private thread exists only for its members and Manage Threads holders (Discord's
+// rule); everyone else holds nothing there, not even View. threadMember is asked only for a
+// private thread, and nil means nobody is in it.
+func (snap *Snapshot) roomPermissions(roomID, userID, base int64, roleIDs []int64, threadMember func(userID int64) bool) int64 {
+	if snap.OwnerID == userID || permissions.Has(base, permissions.PermAdministrator) {
+		return permissions.AllRoom
+	}
+	ov := snap.EffectiveRoomOverrides(roomID)
+	perms := resolveEffectiveRoomPermissions(base, snap.EveryoneRoleID, roleIDs, userID, ov.Roles, ov.Users)
+	if m := snap.Meta[roomID]; m.Thread && m.Private && !permissions.Has(perms, permissions.PermManageThreads) {
+		if threadMember == nil || !threadMember(userID) {
+			return 0
+		}
+	}
+	return perms
+}
+
+// CanViewRoom answers "can this member view this room"; roomPermissions has the rule.
+func (snap *Snapshot) CanViewRoom(roomID, userID int64, roleIDs []int64, threadMember func(userID int64) bool) bool {
+	if snap == nil {
+		return false
+	}
+	return permissions.Has(snap.roomPermissions(roomID, userID, snap.basePermissions(roleIDs), roleIDs, threadMember), permissions.PermViewRoom)
+}
+
+// openToEveryone reports whether a room may be announced to the whole space: @everyone can
+// view it, and no override keeps any role or user out. A deny on one role is enough to say
+// no: whoever holds it must not hear about the room. A private thread is never open.
+func (snap *Snapshot) openToEveryone(roomID int64) bool {
+	m, known := snap.Meta[roomID]
+	if !known || (m.Thread && m.Private) {
+		// Unknown is a snapshot built before the room existed: until the next rebuild nothing
+		// says the room is open, so it is not.
+		return false
+	}
+	base := snap.basePermissions(nil)
+	if permissions.Has(base, permissions.PermAdministrator) {
+		return true
+	}
+	ov := snap.EffectiveRoomOverrides(roomID)
+	if !permissions.Has(resolveEffectiveRoomPermissions(base, snap.EveryoneRoleID, nil, 0, ov.Roles, ov.Users), permissions.PermViewRoom) {
+		return false
+	}
+	for i := range ov.Roles {
+		if ov.Roles[i].RoleID != snap.EveryoneRoleID && permissions.Has(ov.Roles[i].Deny, permissions.PermViewRoom) {
+			return false
+		}
+	}
+	for i := range ov.Users {
+		if permissions.Has(ov.Users[i].Deny, permissions.PermViewRoom) {
+			return false
+		}
+	}
+	return true
+}
+
+// memberBases is basePermissions for each member, in order.
+func (snap *Snapshot) memberBases(members []SpaceMember) []int64 {
+	out := make([]int64, len(members))
+	for i := range members {
+		out[i] = snap.basePermissions(members[i].RoleIDs)
+	}
+	return out
+}
+
+// splitViewers sorts members into those who can view a room and those who cannot; bases is
+// memberBases(members).
+func (snap *Snapshot) splitViewers(roomID int64, members []SpaceMember, bases []int64, threadMember func(userID int64) bool) (canView, cannotView []int64) {
+	for i := range members {
+		m := &members[i]
+		if permissions.Has(snap.roomPermissions(roomID, m.UserID, bases[i], m.RoleIDs, threadMember), permissions.PermViewRoom) {
+			canView = append(canView, m.UserID)
+		} else {
+			cannotView = append(cannotView, m.UserID)
+		}
+	}
+	return canView, cannotView
+}
+
 func (s *Service) snapshotCacheEnabled() bool {
 	return s.redis != nil && s.cfg != nil && s.cfg.Database.Redis.CacheEnabled
 }

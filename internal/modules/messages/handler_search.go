@@ -47,6 +47,9 @@ func parseSearchQuery(c fiber.Ctx) (*SearchOptions, error) {
 
 // searchError maps the shared authorization failures onto responses.
 func searchError(c fiber.Ctx, err error, fields map[string]any) error {
+	if res, ok := originError(c, err); ok {
+		return res
+	}
 	if err == ErrNotParticipant {
 		return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": "not a participant"})
 	}

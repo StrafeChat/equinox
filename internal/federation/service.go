@@ -153,6 +153,23 @@ func (s *Service) SetSpaces(svc *spaces.Service) {
 	}
 }
 
+// SetThreadHooks hands in the threads module, so a member of another instance writing in a
+// thread hosted here keeps it alive as a local member does: this engine has its own messages
+// service, and a thread hears about a message through whichever service stored it.
+func (s *Service) SetThreadHooks(h messages.ThreadHooks) {
+	s.msgSvc.SetThreadHooks(peerThreadHooks{h})
+}
+
+// peerThreadHooks is the threads module as a peer's write reaches it.
+type peerThreadHooks struct{ messages.ThreadHooks }
+
+// OnThreadMessage: a write from a mirror runs with that mirror excluded from what it causes,
+// because the reply carries the message. The reply says nothing about the thread waking up,
+// so the mirror that woke it hears of that as every other mirror does.
+func (h peerThreadHooks) OnThreadMessage(ctx context.Context, room *rooms.Room, senderID int64, mentioned []int64) {
+	h.ThreadHooks.OnThreadMessage(withoutExcludedPeer(ctx), room, senderID, mentioned)
+}
+
 // infoProvider is the read-only slice of the engine (room / space → global identity)
 // for processes that never relay anything, like the gateway's READY builder.
 type infoProvider struct {
@@ -234,6 +251,23 @@ func excludedPeer(ctx context.Context) string {
 	return v
 }
 
+// withoutExcludedPeer lifts WithExcludedPeer for a relay the reply to that instance does not
+// carry. A kick asked for by a mirror reaches voice through the member-removed hook, on the
+// same context, and nothing in the answer says the member left their call.
+func withoutExcludedPeer(ctx context.Context) context.Context {
+	return context.WithValue(ctx, ctxKeyExcludedPeer, "")
+}
+
+// sideEffectRelay is the context for a relay no reply carries, a system message for one. A
+// request that collects its relays hands this one back with the rest; any other reply is the
+// primary effect alone, so the excluded instance gets the relay like everyone else.
+func sideEffectRelay(ctx context.Context) context.Context {
+	if c, _ := ctx.Value(ctxKeyRelayCapture).(*relayCapture); c != nil {
+		return ctx
+	}
+	return withoutExcludedPeer(ctx)
+}
+
 // RelayEvent is one relay as it would have gone out: the request a peer would have
 // received. The origin hands these back in the reply to a request that caused them, so
 // the asking instance applies exactly what every other mirror gets.
@@ -312,6 +346,40 @@ func (s *Service) spacePeers(ctx context.Context, spaceID int64) map[string]stru
 	return out
 }
 
+// channelPeers is spacePeers narrowed to the instances that have a member who can view the
+// room: what is said in a private room goes nowhere it cannot be read. A peer that gains a
+// viewer later loses nothing, since history is read from the origin. It fails closed: when
+// the viewers cannot be read, a relay goes to nobody rather than to everybody.
+func (s *Service) channelPeers(ctx context.Context, spaceID, roomID int64) map[string]struct{} {
+	peers := s.spacePeers(ctx, spaceID)
+	if len(peers) == 0 {
+		return peers
+	}
+	viewers, everyone := s.spaceSvc.ViewersOf(ctx, spaceID, roomID)
+	if everyone {
+		return peers
+	}
+	if len(viewers) == 0 {
+		logger.Warn("federation", "no viewers read for room %d of space %d: not relaying it", roomID, spaceID)
+		return nil
+	}
+	users, err := s.users.GetByIDs(ctx, viewers)
+	if err != nil {
+		logger.Err("federation", err, map[string]any{"space_id": spaceID, "room_id": roomID})
+		return nil
+	}
+	out := make(map[string]struct{}, len(peers))
+	for _, u := range users {
+		if u == nil || !u.IsRemote() {
+			continue
+		}
+		if _, ok := peers[u.HomeDomain]; ok {
+			out[u.HomeDomain] = struct{}{}
+		}
+	}
+	return out
+}
+
 // spaceDomains is every other instance in a space: its origin (when that is not this
 // instance) and its mirrors.
 func (s *Service) spaceDomains(ctx context.Context, spaceID int64) map[string]struct{} {
@@ -331,10 +399,24 @@ func (s *Service) spaceDomains(ctx context.Context, spaceID int64) map[string]st
 
 // relayTargets resolves who must hear about something that happened in a room: for a PM
 // or group, the home instances of its remote participants; for a channel of a space
-// hosted here, the instances mirroring the space; for a channel of a space hosted
-// elsewhere, nobody - writes there go to the origin, which tells everyone - except that
-// origin is returned for the few things a mirror sends on its own (typing).
+// hosted here, the instances that have someone who can view it; for a channel of a space
+// hosted elsewhere, nobody - writes there go to the origin, which tells everyone - except
+// that origin is returned for the few things a mirror sends on its own (typing).
 func (s *Service) relayTargets(ctx context.Context, roomID int64, participants []int64) (targets map[string]struct{}, origin string) {
+	return s.roomTargets(ctx, roomID, participants, s.channelPeers)
+}
+
+// holderTargets is relayTargets for what must reach every instance that may hold a copy,
+// whether or not it can still view the room: a mirror that stored a message while it had a
+// viewer has to drop it, and a delete carries no content.
+func (s *Service) holderTargets(ctx context.Context, roomID int64, participants []int64) map[string]struct{} {
+	targets, _ := s.roomTargets(ctx, roomID, participants, func(ctx context.Context, spaceID, _ int64) map[string]struct{} {
+		return s.spacePeers(ctx, spaceID)
+	})
+	return targets
+}
+
+func (s *Service) roomTargets(ctx context.Context, roomID int64, participants []int64, hosted func(ctx context.Context, spaceID, roomID int64) map[string]struct{}) (targets map[string]struct{}, origin string) {
 	room, err := s.roomRepo.GetByID(ctx, roomID)
 	if err != nil || room == nil || room.SpaceID == nil {
 		byDomain, _, err := s.remotePeers(ctx, participants)
@@ -354,7 +436,7 @@ func (s *Service) relayTargets(ctx context.Context, roomID int64, participants [
 	if !s.IsLocalServer(m.OriginDomain) {
 		return nil, m.OriginDomain
 	}
-	return s.spacePeers(ctx, *room.SpaceID), ""
+	return hosted(ctx, *room.SpaceID, roomID), ""
 }
 
 // spaceDomainsForUser is every instance that shares a space with the user: the mirrors
@@ -849,7 +931,7 @@ func (s *Service) messageEvent(ctx context.Context, ref RoomRef, m *messages.Mes
 		MentionEveryone: m.MentionEveryone,
 		Attachments:     m.Attachments(),
 		SystemType:      m.SystemType,
-		SystemPayload:   m.SystemPayload,
+		SystemPayload:   s.systemPayloadToWire(ctx, m.SystemPayload),
 		CreatedAt:       m.CreatedAt,
 		UpdatedAt:       m.UpdatedAt,
 		Reactions:       reactions,
@@ -900,6 +982,11 @@ func (s *Service) AfterMessageCreated(ctx context.Context, roomID int64, partici
 	if m.RoomID == 0 {
 		m.RoomID = roomID
 	}
+	if m.SystemType != "" {
+		// A notice is never part of the answer to the request that caused it: without this,
+		// the instance whose member pinned or joined is the one that misses "X pinned a message".
+		ctx = sideEffectRelay(ctx)
+	}
 	s.fanOut(ctx, targets, http.MethodPost, "/rooms/messages", s.messageEvent(ctx, ref, m, nil))
 }
 
@@ -917,7 +1004,7 @@ func (s *Service) AfterMessageEdited(ctx context.Context, roomID int64, particip
 }
 
 func (s *Service) AfterMessageDeleted(ctx context.Context, roomID int64, participants []int64, msgID int64) {
-	targets, _ := s.relayTargets(ctx, roomID, participants)
+	targets := s.holderTargets(ctx, roomID, participants)
 	if len(targets) == 0 {
 		return
 	}

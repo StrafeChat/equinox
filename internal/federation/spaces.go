@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"net/url"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -69,6 +68,12 @@ type SpaceInfo struct {
 	EveryoneRole          string    `json:"everyone_role"`
 	CreatedAt             time.Time `json:"created_at"`
 	UpdatedAt             time.Time `json:"updated_at"`
+	// Pointers so "not said" stays apart from zero: an origin that predates these fields says
+	// nothing about them, which leaves a mirror's values alone. BirthdayRoom "" clears it.
+	AutomodFlags        *int    `json:"automod_flags,omitempty"`
+	AutomodMentionLimit *int    `json:"automod_mention_limit,omitempty"`
+	BirthdayRoom        *string `json:"birthday_room,omitempty"`
+	BirthdayMessage     *string `json:"birthday_message,omitempty"`
 }
 
 type SpaceRoleWire struct {
@@ -108,8 +113,13 @@ type SpaceRoomWire struct {
 	Overrides       []SpaceOverrideWire `json:"overrides,omitempty"`
 	CreatedAt       time.Time           `json:"created_at"`
 	UpdatedAt       time.Time           `json:"updated_at"`
+	// PermissionsSynced: the room follows its parent section's overrides rather than its own.
+	// A pointer because false has to travel (an unsync must reach mirrors), and an origin that
+	// predates the field says nothing, which leaves a mirror's value alone.
+	PermissionsSynced *bool `json:"permissions_synced,omitempty"`
 	// Thread is set for a thread room (type 6): its state as the origin holds it. Thread
-	// membership is not mirrored, so a private thread is not visible on a mirror.
+	// membership is not mirrored, so on a mirror a private thread reaches only those who see
+	// every private thread: the owner, Administrators and Manage Threads holders.
 	Thread *ThreadWire `json:"thread,omitempty"`
 }
 
@@ -149,6 +159,9 @@ type SpaceMemberWire struct {
 // Members is the first page; MembersNext, when set, is the cursor to fetch the rest with
 // /spaces/members/list. Peers are the other instances in the space (the origin itself
 // excluded), so a mirror's users reach them directly with presence and profile changes.
+// VoiceRooms is who is in a voice room right now, as far as the asker may hear: relays only
+// carry changes, so this is how a mirror finds a call already running. Absent from an older
+// origin, and when nobody is in voice.
 type SpaceSnapshot struct {
 	Space       SpaceRef          `json:"space"`
 	Info        SpaceInfo         `json:"info"`
@@ -159,6 +172,7 @@ type SpaceSnapshot struct {
 	Emoji       []SpaceEmojiWire  `json:"emoji,omitempty"`
 	MemberCount int               `json:"member_count"`
 	Peers       []string          `json:"peers,omitempty"`
+	VoiceRooms  []VoiceRoomStates `json:"voice_rooms,omitempty"`
 }
 
 // SpaceJoinRequest: POST /spaces/join - a user on the requesting instance redeems an
@@ -346,6 +360,11 @@ const (
 	maxSnapshotRoles = 250
 	maxSpacePeers    = 1000
 	maxHistoryPage   = 100
+
+	// What a client is shown of a refusal: the longest slowmode is six hours, so a day is
+	// already not one of ours.
+	maxRefusalField      = 64
+	maxRefusalRetryAfter = 86400
 )
 
 var (
@@ -370,6 +389,8 @@ func fmtOptID(p *int64) string {
 }
 
 func (s *Service) spaceInfo(ctx context.Context, sp *spaces.Space) SpaceInfo {
+	automodFlags, mentionLimit := sp.AutomodFlags, sp.AutomodMentionLimit
+	birthdayRoom, birthdayMessage := fmtOptID(sp.BirthdayChannelID), sp.BirthdayMessage
 	info := SpaceInfo{
 		Name:                  sp.Name,
 		NameAcronym:           sp.NameAcronym,
@@ -397,6 +418,10 @@ func (s *Service) spaceInfo(ctx context.Context, sp *spaces.Space) SpaceInfo {
 		EveryoneRole:          id.Format(sp.EveryoneRoleID),
 		CreatedAt:             sp.CreatedAt,
 		UpdatedAt:             sp.UpdatedAt,
+		AutomodFlags:          &automodFlags,
+		AutomodMentionLimit:   &mentionLimit,
+		BirthdayRoom:          &birthdayRoom,
+		BirthdayMessage:       &birthdayMessage,
 	}
 	if owner, _ := s.users.GetByID(ctx, sp.OwnerID); owner != nil {
 		info.Owner = s.FIDOf(owner)
@@ -418,11 +443,12 @@ func (s *Service) roleWire(ctx context.Context, r *spaces.SpaceRole) SpaceRoleWi
 }
 
 func (s *Service) roomWire(ctx context.Context, room *rooms.Room, ov spaces.RoomOverrides) SpaceRoomWire {
+	synced := room.PermissionsSynced != nil && *room.PermissionsSynced
 	w := SpaceRoomWire{
 		ID: id.Format(room.ID), Type: room.Type, Parent: fmtOptID(room.ParentID), Name: room.Name, Topic: room.Topic,
 		SlowmodeSeconds: room.SlowmodeSeconds, Position: room.Position,
-		E2EEEnabled: room.E2EEOn(),
-		UserLimit:   room.UserLimit, Bitrate: room.Bitrate, CreatedAt: room.CreatedAt, UpdatedAt: room.UpdatedAt,
+		E2EEEnabled: room.E2EEOn(), PermissionsSynced: &synced,
+		UserLimit: room.UserLimit, Bitrate: room.Bitrate, CreatedAt: room.CreatedAt, UpdatedAt: room.UpdatedAt,
 	}
 	if room.Type == rooms.TypeThread {
 		tw := &ThreadWire{
@@ -473,7 +499,7 @@ func (s *Service) memberWire(m *spaces.SpaceMember, u *auth.User) SpaceMemberWir
 }
 
 // snapshot describes a space hosted here to a peer.
-func (s *Service) snapshot(ctx context.Context, sp *spaces.Space) (*SpaceSnapshot, error) {
+func (s *Service) snapshot(ctx context.Context, sp *spaces.Space, peer string) (*SpaceSnapshot, error) {
 	roomList, snap, err := s.spaceSvc.SpaceRoomsWithOverrides(ctx, sp.ID)
 	if err != nil {
 		return nil, err
@@ -514,6 +540,7 @@ func (s *Service) snapshot(ctx context.Context, sp *spaces.Space) (*SpaceSnapsho
 	for i := range emoji {
 		out.Emoji = append(out.Emoji, s.emojiWire(ctx, &emoji[i]))
 	}
+	out.VoiceRooms = s.voiceRoomsFor(ctx, sp.ID, peer, roomList)
 	return out, nil
 }
 
@@ -629,8 +656,22 @@ func (s *Service) applySpaceInfo(ctx context.Context, sp *spaces.Space, origin s
 	sp.MaxVideoRoomUsers = info.MaxVideoRoomUsers
 	sp.VanityURLCode = clampText(info.VanityURLCode, 64)
 	sp.PreferredLocale = clampText(info.PreferredLocale, 16)
-	if rid, err := id.Parse(info.EveryoneRole); err == nil {
+	// Never 0: that would leave the mirror without the origin's @everyone, and every room the
+	// origin denies it would stop matching.
+	if rid, err := id.Parse(info.EveryoneRole); err == nil && rid != 0 {
 		sp.EveryoneRoleID = rid
+	}
+	if info.AutomodFlags != nil {
+		sp.AutomodFlags = *info.AutomodFlags
+	}
+	if info.AutomodMentionLimit != nil {
+		sp.AutomodMentionLimit = *info.AutomodMentionLimit
+	}
+	if info.BirthdayRoom != nil {
+		sp.BirthdayChannelID = roomID(*info.BirthdayRoom)
+	}
+	if info.BirthdayMessage != nil {
+		sp.BirthdayMessage = clampText(*info.BirthdayMessage, spaces.MaxBirthdayMessageRunes)
 	}
 	if !info.CreatedAt.IsZero() {
 		sp.CreatedAt = info.CreatedAt
@@ -673,7 +714,7 @@ func (s *Service) mirrorRoom(ctx context.Context, origin string, w SpaceRoomWire
 	room := &rooms.Room{
 		ID: local, Type: w.Type, Name: clampText(w.Name, spaces.MaxRoomNameRunes), Topic: clampText(w.Topic, spaces.MaxTopicRunes),
 		SlowmodeSeconds: w.SlowmodeSeconds, Position: w.Position, UserLimit: w.UserLimit, Bitrate: w.Bitrate,
-		CreatedAt: w.CreatedAt, UpdatedAt: w.UpdatedAt,
+		PermissionsSynced: w.PermissionsSynced, CreatedAt: w.CreatedAt, UpdatedAt: w.UpdatedAt,
 	}
 	if w.Type == rooms.TypeSpaceText || w.Type == rooms.TypeSpaceVoice || w.Type == rooms.TypeThread {
 		e2ee := w.E2EEEnabled
@@ -787,10 +828,14 @@ func (s *Service) mirrorSpec(ctx context.Context, origin string, snap *SpaceSnap
 	if len(snap.Rooms) > maxSnapshotRooms || len(snap.Roles) > maxSnapshotRoles || len(snap.Members) > maxMirrorMembers {
 		return nil, ErrPayloadTooLarge
 	}
-	if spaceID == 0 {
-		spaceID = id.Next()
-	}
 	spec := &spaces.MirrorSpec{Space: &spaces.Space{ID: spaceID}}
+	if spaceID == 0 {
+		spec.Space.ID = id.Next()
+	} else if existing, err := s.spaceSvc.GetSpace(ctx, spaceID); err == nil && existing != nil {
+		// Start from the stored row, as applySpaceUpdate does: what this origin's snapshot says
+		// nothing about stays as it is.
+		spec.Space = existing
+	}
 	for _, w := range snap.Emoji {
 		e, err := s.emojiFromWire(ctx, w)
 		if err != nil {
@@ -983,6 +1028,19 @@ func (s *Service) AfterSpaceRoomsReordered(ctx context.Context, spaceID int64, l
 
 // ---- outbound (mirror → origin) --------------------------------------------------------
 
+// originForgot reports that a space's origin no longer has the space, the member, or this
+// instance as a peer of the space, so whatever is held here has nothing left behind it. The
+// peer refusal is told apart from RequireInstance's "instance not allowed", which is a policy
+// on this whole instance and may be lifted, by its message: a mirror survives that one.
+func originForgot(err error) bool {
+	var se *StatusError
+	if !errors.As(err, &se) {
+		return false
+	}
+	return se.Status == http.StatusNotFound ||
+		(se.Status == http.StatusForbidden && peerErrorMessage(se.Body) == ErrPeerNotAllowed.Error())
+}
+
 // spaceOriginError turns a failed call to a space's origin into what the member sees.
 func spaceOriginError(err error, origin, path string) error {
 	var se *StatusError
@@ -1027,10 +1085,16 @@ func (s *Service) JoinRemoteSpace(ctx context.Context, domain, code string, user
 	var snap SpaceSnapshot
 	presence := auth.ToPublicPresence(user.Presence, true) // status only, as memberWire
 	req := SpaceJoinRequest{Code: code, User: s.ProfileOf(user), Presence: &presence}
+	asked := time.Now()
 	if _, err := s.client.Do(ctx, domain, http.MethodPost, "/spaces/join", req, &snap); err != nil {
 		return nil, spaceOriginError(err, domain, "/spaces/join")
 	}
-	return s.applyJoinSnapshot(ctx, domain, user, &snap)
+	sp, err := s.applyJoinSnapshot(ctx, domain, user, &snap)
+	if err != nil {
+		return nil, err
+	}
+	s.applyVoiceRooms(ctx, domain, snap.VoiceRooms, asked)
+	return sp, nil
 }
 
 // applyJoinSnapshot turns an origin's answer to a join into this instance's membership:
@@ -1113,9 +1177,8 @@ func (s *Service) LeaveRemoteSpace(ctx context.Context, origin string, spaceID i
 	}
 	ref := SpaceRef{OriginDomain: m.OriginDomain, OriginSpaceID: id.Format(m.OriginSpaceID)}
 	if _, err := s.client.Do(ctx, origin, http.MethodPost, "/spaces/leave", SpaceUserRequest{Space: ref, User: s.FIDOf(user)}, nil); err != nil {
-		var se *StatusError
 		// Gone there already (not a member any more): fall through and drop it here too.
-		if !errors.As(err, &se) || se.Status != http.StatusNotFound {
+		if !originForgot(err) {
 			return spaceOriginError(err, origin, "/spaces/leave")
 		}
 	}
@@ -1178,13 +1241,38 @@ func (s *Service) RemoteOrigin(ctx context.Context, room *rooms.Room) string {
 	return m.OriginDomain
 }
 
+// messageOriginError turns a failed call to a channel's origin into what the messages service
+// goes on. A 4xx is the origin's decision, and a refusal stands; a 5xx decided nothing, and is
+// what a reverse proxy answers for an API that is down, so it reads as no answer at all.
 func messageOriginError(err error, origin, path string) error {
 	var se *StatusError
-	if errors.As(err, &se) {
-		return &messages.OriginError{Status: se.Status, Message: peerErrorMessage(se.Body)}
+	if errors.As(err, &se) && se.Status < http.StatusInternalServerError {
+		return &messages.OriginError{Status: se.Status, Message: peerErrorMessage(se.Body), Body: refusalFields(se.Body)}
 	}
 	logger.Err("federation", err, map[string]any{"peer": origin, "path": path})
 	return messages.ErrOriginUnavailable
+}
+
+// refusalFields picks out of a peer's refusal what a client phrases it from (the fields
+// messages.HTTPError adds), by name and type: nothing else a peer says reaches a client.
+func refusalFields(body string) map[string]any {
+	var in map[string]any
+	if json.Unmarshal([]byte(body), &in) != nil {
+		return nil
+	}
+	out := map[string]any{}
+	for _, key := range []string{"code", "rule", "requirement"} {
+		if v, ok := in[key].(string); ok && v != "" && len(v) <= maxRefusalField {
+			out[key] = v
+		}
+	}
+	if v, ok := in["level"].(float64); ok {
+		out["level"] = int(v)
+	}
+	if v, ok := in["retry_after"].(float64); ok && v >= 1 && v <= maxRefusalRetryAfter {
+		out["retry_after"] = int(v)
+	}
+	return out
 }
 
 // mirrorScope is the roomScope of a mirrored channel for applying the origin's answers.
@@ -1478,19 +1566,21 @@ func (h *Handler) hostedSpace(c fiber.Ctx, ref SpaceRef) (*spaces.Space, error) 
 	if err != nil {
 		return nil, ErrInvalidFID
 	}
-	ok, err := h.svc.repo.IsSpacePeer(c.Context(), spaceID, RequesterDomain(c))
-	if err != nil {
-		return nil, err
-	}
-	if !ok {
-		return nil, ErrPeerNotAllowed
-	}
+	// The space before the peer check: deleting a space drops its peers, so the other order
+	// answers 403 for a space that is gone, and a mirror that missed the delete keeps it.
 	sp, err := h.svc.spaceSvc.GetSpace(c.Context(), spaceID)
 	if err != nil {
 		return nil, err
 	}
 	if sp == nil {
 		return nil, spaces.ErrSpaceNotFound
+	}
+	ok, err := h.svc.repo.IsSpacePeer(c.Context(), spaceID, RequesterDomain(c))
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, ErrPeerNotAllowed
 	}
 	return sp, nil
 }
@@ -1532,18 +1622,13 @@ func spaceFail(c fiber.Ctx, err error, fields map[string]any) error {
 		return c.Status(http.StatusNotFound).JSON(fiber.Map{"error": "message not found"})
 	case errors.Is(err, messages.ErrInvalidInput):
 		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "plaintext required when E2EE is off; ciphertext required when E2EE is on"})
-	case errors.Is(err, messages.ErrContentTooLong), errors.Is(err, messages.ErrTooManyMentions), errors.Is(err, messages.ErrTooManyAttachments),
-		errors.Is(err, messages.ErrInvalidReaction), errors.Is(err, messages.ErrTooManyReactions), errors.Is(err, messages.ErrTooManyPins):
+	case errors.Is(err, messages.ErrInvalidReaction), errors.Is(err, messages.ErrTooManyReactions), errors.Is(err, messages.ErrTooManyPins):
 		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
-	var slow *messages.SlowmodeError
-	if errors.As(err, &slow) {
-		secs := int(slow.RetryAfter.Round(time.Second) / time.Second)
-		if secs < 1 {
-			secs = 1
-		}
-		c.Set("Retry-After", strconv.Itoa(secs))
-		return c.Status(http.StatusTooManyRequests).JSON(fiber.Map{"error": "slowmode is on in this channel", "retry_after": secs})
+	// Slowmode, automod, verification, a locked thread, attach: what a local sender gets,
+	// fields included, because a client phrases those refusals from them.
+	if status, body, ok := messages.HTTPError(err); ok {
+		return messages.WriteRefusal(c, status, body)
 	}
 	return fail(c, err, fields)
 }
@@ -1596,7 +1681,7 @@ func (h *Handler) SpaceJoin(c fiber.Ctx) error {
 	// normally records it ran (an already-member rejoin skips it).
 	h.svc.ensureHosted(ctx, sp.ID)
 	h.svc.addSpacePeer(ctx, sp.ID, requester)
-	snap, err := h.svc.snapshot(ctx, sp)
+	snap, err := h.svc.snapshot(ctx, sp, requester)
 	if err != nil {
 		return fail(c, err, map[string]any{"space_id": sp.ID})
 	}
@@ -1686,7 +1771,7 @@ func (h *Handler) SpaceMessageCreate(c fiber.Ctx) error {
 		}
 	}
 	if body.ReplyTo != nil {
-		if rid := h.localMessageID(c, sc.room.ID, *body.ReplyTo); rid != 0 {
+		if rid := h.localMessageID(c, sc, *body.ReplyTo); rid != 0 {
 			r := messages.SnowflakeID(rid)
 			in.ReplyToID = &r
 		}
@@ -1724,7 +1809,7 @@ func (h *Handler) SpaceMessageEdit(c fiber.Ctx) error {
 	if err != nil {
 		return spaceFail(c, err, nil)
 	}
-	msgID := h.localMessageID(c, sc.room.ID, body.Message)
+	msgID := h.localMessageID(c, sc, body.Message)
 	if msgID == 0 {
 		return c.Status(http.StatusNotFound).JSON(fiber.Map{"error": "message not found"})
 	}
@@ -1750,7 +1835,7 @@ func (h *Handler) SpaceMessageDelete(c fiber.Ctx) error {
 	if err != nil {
 		return spaceFail(c, err, nil)
 	}
-	msgID := h.localMessageID(c, sc.room.ID, body.Message)
+	msgID := h.localMessageID(c, sc, body.Message)
 	if msgID == 0 {
 		return c.Status(http.StatusNotFound).JSON(fiber.Map{"error": "message not found"})
 	}
@@ -1774,7 +1859,7 @@ func (h *Handler) spaceReaction(c fiber.Ctx, remove bool) error {
 	if err != nil {
 		return spaceFail(c, err, nil)
 	}
-	msgID := h.localMessageID(c, sc.room.ID, body.Message)
+	msgID := h.localMessageID(c, sc, body.Message)
 	if msgID == 0 {
 		return c.Status(http.StatusNotFound).JSON(fiber.Map{"error": "message not found"})
 	}
@@ -1812,7 +1897,7 @@ func (h *Handler) SpacePin(c fiber.Ctx) error {
 	if err != nil {
 		return spaceFail(c, err, nil)
 	}
-	msgID := h.localMessageID(c, sc.room.ID, body.Message)
+	msgID := h.localMessageID(c, sc, body.Message)
 	if msgID == 0 {
 		return c.Status(http.StatusNotFound).JSON(fiber.Map{"error": "message not found"})
 	}
@@ -1926,7 +2011,7 @@ func (h *Handler) SpaceMessageGet(c fiber.Ctx) error {
 	if err != nil {
 		return spaceFail(c, err, nil)
 	}
-	msgID := h.localMessageID(c, sc.room.ID, body.Message)
+	msgID := h.localMessageID(c, sc, body.Message)
 	if msgID == 0 {
 		return c.Status(http.StatusNotFound).JSON(fiber.Map{"error": "message not found"})
 	}

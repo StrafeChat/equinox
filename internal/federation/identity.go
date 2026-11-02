@@ -95,3 +95,20 @@ func ParseFID(s string) (originID int64, domain string, err error) {
 func RoomFID(originRoomID int64, originDomain string) string {
 	return "!" + id.Format(originRoomID) + ":" + originDomain
 }
+
+// ParseRoomFID splits "!id:domain" into its parts.
+func ParseRoomFID(s string) (originRoomID int64, domain string, err error) {
+	body, ok := strings.CutPrefix(strings.TrimSpace(s), "!")
+	if !ok {
+		return 0, "", ErrInvalidFID
+	}
+	rawID, rawDomain, ok := strings.Cut(body, ":")
+	if !ok || rawDomain == "" {
+		return 0, "", ErrInvalidFID
+	}
+	v, perr := id.Parse(rawID)
+	if perr != nil {
+		return 0, "", ErrInvalidFID
+	}
+	return v, strings.ToLower(rawDomain), nil
+}

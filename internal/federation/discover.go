@@ -141,7 +141,7 @@ func (h *Handler) SpaceJoinListed(c fiber.Ctx) error {
 	// From now on this peer mirrors the space, exactly as an invite join would record.
 	h.svc.ensureHosted(ctx, sp.ID)
 	h.svc.addSpacePeer(ctx, sp.ID, requester)
-	snap, err := h.svc.snapshot(ctx, sp)
+	snap, err := h.svc.snapshot(ctx, sp, requester)
 	if err != nil {
 		return fail(c, err, map[string]any{"space_id": sp.ID})
 	}
@@ -229,8 +229,14 @@ func (s *Service) JoinListedSpace(ctx context.Context, domain string, originSpac
 		Presence: &presence,
 	}
 	var snap SpaceSnapshot
+	asked := time.Now()
 	if _, err := s.client.Do(ctx, domain, http.MethodPost, "/spaces/join_listed", req, &snap); err != nil {
 		return nil, spaceOriginError(err, domain, "/spaces/join_listed")
 	}
-	return s.applyJoinSnapshot(ctx, domain, user, &snap)
+	sp, err := s.applyJoinSnapshot(ctx, domain, user, &snap)
+	if err != nil {
+		return nil, err
+	}
+	s.applyVoiceRooms(ctx, domain, snap.VoiceRooms, asked)
+	return sp, nil
 }

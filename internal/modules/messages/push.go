@@ -31,10 +31,11 @@ func (s *Service) pushMessage(ctx context.Context, room *rooms.Room, m *Message,
 }
 
 // pushFederated is pushMessage for a message relayed from another instance: the room is
-// only loaded once it is known that someone here has a device to notify, a thread narrows
-// the space's member list to its members (as a local send does), and role mentions are
-// expanded here, since the relay carries the role ids, not their holders.
-func (s *Service) pushFederated(ctx context.Context, roomID int64, participants []int64, m *Message) {
+// only loaded once it is known that someone here has a device to notify, and a thread
+// narrows the space's member list to its members (as a local send does). mentioned is the
+// message's mentions with its role mentions expanded here, since the relay carries the
+// role ids, not their holders.
+func (s *Service) pushFederated(ctx context.Context, roomID int64, participants []int64, m *Message, mentioned []int64) {
 	if s.redis == nil || m.SenderID == 0 || m.SystemType != "" {
 		return
 	}
@@ -58,14 +59,6 @@ func (s *Service) pushFederated(ctx context.Context, roomID int64, participants 
 			return
 		}
 		participants = members
-	}
-	mentioned := m.Mentions
-	if len(m.MentionRoles) > 0 && room.SpaceID != nil && s.spaceAuth != nil {
-		// Only mentionable roles: whether the sender could also ping the others was the
-		// origin's call, and the relay does not say.
-		if holders, err := s.spaceAuth.ListSpaceMemberUserIDsByRoles(ctx, *room.SpaceID, m.MentionRoles, false); err == nil {
-			mentioned = append(append([]int64{}, mentioned...), holders...)
-		}
 	}
 	s.pushMessage(ctx, room, m, participants, mentioned, m.MentionEveryone, len(m.Attachments()))
 }

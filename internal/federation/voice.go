@@ -5,14 +5,17 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/gofiber/fiber/v3"
 
+	"github.com/StrafeChat/equinox/internal/id"
 	"github.com/StrafeChat/equinox/internal/logger"
 	"github.com/StrafeChat/equinox/internal/modules/auth"
 	"github.com/StrafeChat/equinox/internal/modules/rooms"
+	"github.com/StrafeChat/equinox/internal/modules/spaces"
 	"github.com/StrafeChat/equinox/internal/modules/voice"
 )
 
@@ -21,7 +24,9 @@ import (
 // (POST /rooms/voice/join, synchronous) and afterwards relays leave / self-flag /
 // ring / decline requests to it. The origin pushes every voice state and call change to
 // the other instances in the room (POST /rooms/voice/state, /rooms/voice/call), which
-// mirror them for their own clients. See voice/federation.go for the service side.
+// mirror them for their own clients, and those instances ask it who is really there on a
+// timer (POST /rooms/voice/states), because a relay is one attempt. See voice/federation.go
+// and voice/mirror.go for the service side.
 
 // ---- wire types -------------------------------------------------------------------------
 
@@ -73,12 +78,44 @@ type VoiceJoinReply struct {
 }
 
 // VoiceStateEvent: POST /rooms/voice/state - the origin reports one state (changed, or
-// gone when Left).
+// gone when Left). MovedTo, on a Left, is where a moderator moved the user: the client's cue
+// to rejoin there. Room ids differ per instance, hence a ref and not an id.
 type VoiceStateEvent struct {
-	Room  RoomRef    `json:"room"`
-	State VoiceState `json:"state"`
-	Left  bool       `json:"left,omitempty"`
+	Room    RoomRef    `json:"room"`
+	State   VoiceState `json:"state"`
+	Left    bool       `json:"left,omitempty"`
+	MovedTo *RoomRef   `json:"moved_to,omitempty"`
 }
+
+// VoiceStatesRequest: POST /rooms/voice/states - who is in these rooms hosted here. A mirror
+// asks about the rooms it holds states or a call for, at most voice.MaxSyncRooms at a time.
+type VoiceStatesRequest struct {
+	Rooms []RoomRef `json:"rooms"`
+}
+
+// VoiceRoomStates is one room's running call: an entry of the answer to that request, and of
+// a space snapshot's voice_rooms. Gone says the room is not there for the asker any more, which
+// is how a live empty room is told from one to stop asking about.
+type VoiceRoomStates struct {
+	Room   RoomRef      `json:"room"`
+	Gone   bool         `json:"gone,omitempty"`
+	States []VoiceState `json:"states"`
+	Call   *VoiceCall   `json:"call,omitempty"`
+}
+
+// VoiceStatesReply lists the rooms asked about, as many as fit; one left out is asked about
+// again. The route always answers 200 when it exists, so a whole-request 404 can only mean
+// an older origin.
+type VoiceStatesReply struct {
+	Rooms []VoiceRoomStates `json:"rooms"`
+}
+
+// The client reads 4 MiB of a reply, and a truncated answer would count as the origin not
+// answering. A snapshot carries everything else about the space as well.
+const (
+	maxVoiceSyncBytes     = 3 << 20
+	maxSnapshotVoiceBytes = 1 << 20
+)
 
 // VoiceCallEvent: POST /rooms/voice/call - the origin reports the call starting,
 // changing (ringing set, re-ring) or ending.
@@ -94,6 +131,9 @@ type VoiceCallEvent struct {
 type VoiceUserRequest struct {
 	Room RoomRef `json:"room"`
 	User string  `json:"user"` // FID, must belong to the requesting instance
+	// SessionID, on a leave, is the session that left. A join goes straight to the origin
+	// while this request waits in a queue, and a newer session must survive it.
+	SessionID string `json:"session_id,omitempty"`
 }
 
 // VoiceSelfUpdate: POST /rooms/voice/self - the user's own flags changed.
@@ -144,15 +184,23 @@ func (s *Service) voiceStateToWire(ctx context.Context, st *voice.State) (VoiceS
 }
 
 // voiceStateFromWire turns a relayed state into this instance's ids. from is the
-// instance that vouches for the profile (the origin, or the instance that sent it).
-func (s *Service) voiceStateFromWire(ctx context.Context, from string, roomID int64, w VoiceState) (*voice.State, error) {
+// instance that vouches for the profile (the origin, or the instance that sent it). Space
+// ids are local to each instance, so the space comes from the room. On a mirror IssuedAt
+// means "last heard from the origin": no token is issued here, and reconciling needs to know
+// which of two writes is newer.
+func (s *Service) voiceStateFromWire(ctx context.Context, from string, room *rooms.RoomWithParticipants, w VoiceState) (*voice.State, error) {
 	u, err := s.resolveProfile(ctx, w.User, from)
 	if err != nil {
 		return nil, err
 	}
+	var spaceID int64
+	if room.SpaceID != nil {
+		spaceID = *room.SpaceID
+	}
 	return &voice.State{
 		UserID:     u.ID,
-		RoomID:     roomID,
+		RoomID:     room.ID,
+		SpaceID:    spaceID,
 		SessionID:  w.SessionID,
 		Ident:      w.Identity,
 		SelfMute:   w.SelfMute,
@@ -165,9 +213,26 @@ func (s *Service) voiceStateFromWire(ctx context.Context, from string, roomID in
 		Priority:   w.Priority,
 		Connected:  w.Connected,
 		JoinedAt:   w.JoinedAt,
-		IssuedAt:   w.JoinedAt,
+		IssuedAt:   time.Now().UTC(),
 		User:       voice.SummaryOf(u),
 	}, nil
+}
+
+// voiceStatesFromWire converts a list of states. complete is false when one could not be
+// read, so the list cannot be taken to name everyone.
+func (s *Service) voiceStatesFromWire(ctx context.Context, from string, room *rooms.RoomWithParticipants, list []VoiceState) (out []voice.State, complete bool) {
+	out = make([]voice.State, 0, len(list))
+	complete = true
+	for _, w := range list {
+		st, err := s.voiceStateFromWire(ctx, from, room, w)
+		if err != nil {
+			logger.Err("federation", err, map[string]any{"peer": from, "fid": w.User.FID, "room_id": room.ID})
+			complete = false
+			continue
+		}
+		out = append(out, *st)
+	}
+	return out, complete
 }
 
 func (s *Service) callToWire(ctx context.Context, c *voice.Call) *VoiceCall {
@@ -235,7 +300,7 @@ func (s *Service) JoinRemoteVoice(ctx context.Context, origin string, room *room
 		logger.Err("federation", err, map[string]any{"peer": origin, "path": "/rooms/voice/join"})
 		return nil, voice.ErrOriginUnavailable
 	}
-	st, err := s.voiceStateFromWire(ctx, origin, room.ID, reply.State)
+	st, err := s.voiceStateFromWire(ctx, origin, room, reply.State)
 	if err != nil {
 		return nil, err
 	}
@@ -247,7 +312,7 @@ func (s *Service) JoinRemoteVoice(ctx context.Context, origin string, room *room
 		if w.Identity == st.Ident {
 			continue
 		}
-		other, err := s.voiceStateFromWire(ctx, origin, room.ID, w)
+		other, err := s.voiceStateFromWire(ctx, origin, room, w)
 		if err != nil {
 			logger.Err("federation", err, map[string]any{"peer": origin, "fid": w.User.FID})
 			continue
@@ -278,8 +343,9 @@ func (s *Service) voiceUserRequest(ctx context.Context, room *rooms.RoomWithPart
 	return VoiceUserRequest{Room: ref, User: s.FIDOf(user)}, true
 }
 
-func (s *Service) LeaveRemoteVoice(ctx context.Context, origin string, room *rooms.RoomWithParticipants, user *auth.User) {
+func (s *Service) LeaveRemoteVoiceSession(ctx context.Context, origin string, room *rooms.RoomWithParticipants, user *auth.User, sessionID string) {
 	if body, ok := s.voiceUserRequest(ctx, room, user); ok {
+		body.SessionID = sessionID
 		s.send(origin, http.MethodPost, "/rooms/voice/leave", body)
 	}
 }
@@ -319,8 +385,223 @@ func (s *Service) RingRemoteCall(ctx context.Context, origin string, room *rooms
 	s.send(origin, http.MethodPost, "/rooms/voice/ring", body)
 }
 
+// ModerateRemoteVoice mutes, deafens or moves a member in a space hosted elsewhere, through
+// the voice.moderate op. The relay the origin then sends is what updates this instance.
+func (s *Service) ModerateRemoteVoice(ctx context.Context, origin string, spaceID int64, actor *auth.User, targetID int64, in voice.ModerateInput) error {
+	fid, err := s.fidOfLocal(ctx, targetID)
+	if err != nil {
+		return err
+	}
+	room, err := s.optOriginRoomID(ctx, origin, in.RoomID)
+	if err != nil {
+		return voice.ErrInvalidTarget
+	}
+	return voiceOriginError(s.manage(ctx, origin, spaceID, actor, "voice.moderate", manageVoice{User: fid, Mute: in.Mute, Deaf: in.Deaf, Room: room}, nil))
+}
+
+// DisconnectRemoteVoice kicks a member out of voice in a space hosted elsewhere.
+func (s *Service) DisconnectRemoteVoice(ctx context.Context, origin string, spaceID int64, actor *auth.User, targetID int64) error {
+	fid, err := s.fidOfLocal(ctx, targetID)
+	if err != nil {
+		return err
+	}
+	return voiceOriginError(s.manage(ctx, origin, spaceID, actor, "voice.disconnect", manageVoice{User: fid}, nil))
+}
+
+// voiceOriginError puts a failed /spaces/manage in voice's terms: its error switch knows
+// nothing of the spaces forms, and would answer 500 for a refusal.
+func voiceOriginError(err error) error {
+	var oe *spaces.OriginError
+	switch {
+	case errors.As(err, &oe):
+		return &voice.OriginError{Status: oe.Status, Message: oe.Message}
+	case errors.Is(err, spaces.ErrOriginUnavailable):
+		return voice.ErrOriginUnavailable
+	}
+	return err
+}
+
+// RemoteVoiceStates asks a room's origin who is in it (voice/mirror.go has the rest).
+func (s *Service) RemoteVoiceStates(ctx context.Context, origin string, list []*rooms.RoomWithParticipants) ([]voice.RoomSync, error) {
+	req := VoiceStatesRequest{Rooms: make([]RoomRef, 0, len(list))}
+	byRef := make(map[string]*rooms.RoomWithParticipants, len(list))
+	for _, room := range list {
+		// From the room as it was read, not roomRef: a mirror going away under this question
+		// must not have its rooms registered as hosted here.
+		req.Rooms = append(req.Rooms, RoomRef{OriginDomain: origin, OriginRoomID: room.Federation.OriginID})
+		byRef[room.Federation.OriginID] = room
+	}
+	var reply VoiceStatesReply
+	if _, err := s.client.Do(ctx, origin, http.MethodPost, "/rooms/voice/states", req, &reply); err != nil {
+		var se *StatusError
+		if errors.As(err, &se) && se.Status == http.StatusNotFound {
+			return nil, voice.ErrOriginPredatesSync
+		}
+		return nil, err
+	}
+	if reply.Rooms == nil {
+		return nil, ErrRemoteUnavailable // a 200 with no answer in it is no answer
+	}
+	out := make([]voice.RoomSync, 0, len(reply.Rooms))
+	for i := range reply.Rooms {
+		vr := &reply.Rooms[i]
+		room := byRef[vr.Room.OriginRoomID]
+		if room == nil || vr.Room.OriginDomain != origin {
+			continue
+		}
+		rs := voice.RoomSync{RoomID: room.ID, Gone: vr.Gone}
+		if !vr.Gone {
+			var complete bool
+			rs.States, complete = s.voiceStatesFromWire(ctx, origin, room, vr.States)
+			rs.Incomplete = !complete
+			rs.Call = s.callFromWire(ctx, room.ID, vr.Call)
+		}
+		out = append(out, rs)
+	}
+	return out, nil
+}
+
+// voiceRoomsFor is the running calls in a space hosted here as a peer may see them, for its
+// snapshot. It is best-effort: a snapshot with fewer calls in it is still a snapshot, and
+// what it leaves out arrives with the next relay.
+func (s *Service) voiceRoomsFor(ctx context.Context, spaceID int64, peer string, list []*rooms.Room) []VoiceRoomStates {
+	if s.voice == nil {
+		return nil
+	}
+	ids := make([]int64, 0, len(list))
+	for _, r := range list {
+		if r.Type == rooms.TypeSpaceVoice {
+			ids = append(ids, r.ID)
+		}
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	live, err := s.voice.LiveStates(ctx, ids)
+	if err != nil {
+		logger.Err("federation", err, map[string]any{"space_id": spaceID, "stage": "snapshot voice rooms"})
+		return nil
+	}
+	var out []VoiceRoomStates
+	size := 0
+	for _, roomID := range ids {
+		states, known := s.statesForPeer(ctx, spaceID, roomID, peer, live[roomID])
+		if !known || len(states) == 0 {
+			continue
+		}
+		ref, err := s.roomRef(ctx, roomID)
+		if err != nil {
+			continue
+		}
+		entry, err := s.voiceRoomWire(ctx, ref, states, nil)
+		if err != nil {
+			continue
+		}
+		raw, err := json.Marshal(entry)
+		if err != nil || size+len(raw) > maxSnapshotVoiceBytes {
+			break
+		}
+		size += len(raw)
+		out = append(out, entry)
+	}
+	return out
+}
+
+// voiceRoomWire is one room's states and call for a peer. A state whose user no longer
+// exists is left out, so the peer drops it; any other failure means nothing may be said about
+// who is there.
+func (s *Service) voiceRoomWire(ctx context.Context, ref RoomRef, states []voice.State, call *voice.Call) (VoiceRoomStates, error) {
+	out := VoiceRoomStates{Room: ref, States: make([]VoiceState, 0, len(states)), Call: s.callToWire(ctx, call)}
+	for i := range states {
+		w, err := s.voiceStateToWire(ctx, &states[i])
+		if errors.Is(err, ErrRemoteUserNotFound) {
+			continue
+		}
+		if err != nil {
+			return out, err
+		}
+		out.States = append(out.States, w)
+	}
+	return out, nil
+}
+
+// statesForPeer is what a peer may hear of who is in a space's room: everything when the room
+// is open or one of its members can view it, otherwise its own users only. A mirror holding
+// states for a room nobody there can see any more gets them cleared by this answer, and a
+// user of its own still in the call is not hung up by it. known is false when the viewers
+// could not be read (a room always has one, its owner): nothing can be said about that room
+// then, and saying "nobody" would hang up the call on the peer.
+func (s *Service) statesForPeer(ctx context.Context, spaceID, roomID int64, peer string, states []voice.State) (out []voice.State, known bool) {
+	if len(states) == 0 {
+		return nil, true
+	}
+	viewers, everyone := s.spaceSvc.ViewersOf(ctx, spaceID, roomID)
+	if everyone {
+		return states, true
+	}
+	if len(viewers) == 0 {
+		return nil, false
+	}
+	homedThere := func(u *auth.User) bool { return u != nil && u.IsRemote() && u.HomeDomain == peer }
+	users, err := s.users.GetByIDs(ctx, viewers)
+	if err != nil {
+		return nil, false
+	}
+	if slices.ContainsFunc(users, homedThere) {
+		return states, true
+	}
+	out = make([]voice.State, 0, len(states))
+	for i := range states {
+		u, err := s.users.GetByID(ctx, states[i].UserID)
+		if err != nil {
+			return nil, false
+		}
+		if homedThere(u) {
+			out = append(out, states[i])
+		}
+	}
+	return out, true
+}
+
+// applyVoiceRooms records the calls a snapshot says are running, which is how a mirror finds
+// out about one that started before anyone here could hear of it. asked is when the
+// snapshot was requested.
+func (s *Service) applyVoiceRooms(ctx context.Context, origin string, list []VoiceRoomStates, asked time.Time) {
+	if s.voice == nil {
+		return
+	}
+	for i := range list {
+		vr := &list[i]
+		if vr.Room.OriginDomain != origin {
+			continue
+		}
+		oid, err := id.Parse(vr.Room.OriginRoomID)
+		if err != nil {
+			continue
+		}
+		local, err := s.localRoomID(ctx, origin, oid, false)
+		if err != nil {
+			continue
+		}
+		room, err := s.roomSvc.LoadRoom(ctx, local)
+		if err != nil {
+			continue
+		}
+		states, _ := s.voiceStatesFromWire(ctx, origin, room, vr.States)
+		s.voice.ApplySnapshotStates(ctx, room, states, asked)
+	}
+}
+
 func (s *Service) AfterVoiceStateChanged(ctx context.Context, room *rooms.RoomWithParticipants, st *voice.State, left bool) {
-	targets, _ := s.relayTargets(ctx, room.ID, room.ParticipantIDs)
+	s.relayVoiceState(ctx, room, st, left, nil)
+}
+
+func (s *Service) AfterVoiceStateMoved(ctx context.Context, room *rooms.RoomWithParticipants, st *voice.State, dest *rooms.RoomWithParticipants) {
+	s.relayVoiceState(ctx, room, st, true, dest)
+}
+
+func (s *Service) relayVoiceState(ctx context.Context, room *rooms.RoomWithParticipants, st *voice.State, left bool, dest *rooms.RoomWithParticipants) {
+	targets := s.voiceTargets(ctx, room, st)
 	if len(targets) == 0 {
 		return
 	}
@@ -333,7 +614,50 @@ func (s *Service) AfterVoiceStateChanged(ctx context.Context, room *rooms.RoomWi
 		logger.Err("federation", err, map[string]any{"room_id": room.ID, "user_id": st.UserID})
 		return
 	}
-	s.fanOut(ctx, targets, http.MethodPost, "/rooms/voice/state", VoiceStateEvent{Room: ref, State: w, Left: left})
+	ev := VoiceStateEvent{Room: ref, State: w, Left: left}
+	ctx = withoutExcludedPeer(ctx)
+	if dest != nil {
+		// Where they went is the destination's occupancy, so it goes only where that may be
+		// known; everyone else just sees them leave.
+		if to, err := s.roomRef(ctx, dest.ID); err == nil {
+			moved := ev
+			moved.MovedTo = &to
+			inDest := s.voiceTargets(ctx, dest, st)
+			told := make(map[string]struct{}, len(targets))
+			for d := range targets {
+				if _, ok := inDest[d]; ok {
+					told[d] = struct{}{}
+					delete(targets, d)
+				}
+			}
+			s.fanOut(ctx, told, http.MethodPost, "/rooms/voice/state", moved)
+		}
+	}
+	s.fanOut(ctx, targets, http.MethodPost, "/rooms/voice/state", ev)
+}
+
+// voiceTargets is who hears of a voice state: relayTargets, so a peer with no viewer of a
+// private room learns nothing of who is in it, plus the user's own home, which is told about
+// them whatever else it can see. That leaves a peer that lost its last viewer in the middle of
+// a call: it holds states the relays no longer touch, and it is not told they ended, since a
+// left is occupancy too. Its next pull of /rooms/voice/states clears them (statesForPeer
+// answers with its own users alone), within a minute.
+func (s *Service) voiceTargets(ctx context.Context, room *rooms.RoomWithParticipants, st *voice.State) map[string]struct{} {
+	targets, origin := s.relayTargets(ctx, room.ID, room.ParticipantIDs)
+	if room.SpaceID == nil || origin != "" {
+		return targets
+	}
+	u, err := s.users.GetByID(ctx, st.UserID)
+	if err != nil || u == nil || !u.IsRemote() {
+		return targets
+	}
+	if _, ok := s.spacePeers(ctx, *room.SpaceID)[u.HomeDomain]; ok {
+		if targets == nil {
+			targets = map[string]struct{}{}
+		}
+		targets[u.HomeDomain] = struct{}{}
+	}
+	return targets
 }
 
 func (s *Service) AfterCallChanged(ctx context.Context, room *rooms.RoomWithParticipants, event string, call *voice.Call, starter *auth.User, rerung bool) {
@@ -350,7 +674,7 @@ func (s *Service) AfterCallChanged(ctx context.Context, room *rooms.RoomWithPart
 		p := s.ProfileOf(starter)
 		ev.Starter = &p
 	}
-	s.fanOut(ctx, targets, http.MethodPost, "/rooms/voice/call", ev)
+	s.fanOut(withoutExcludedPeer(ctx), targets, http.MethodPost, "/rooms/voice/call", ev)
 }
 
 // ---- inbound ----------------------------------------------------------------------------
@@ -481,7 +805,7 @@ func (h *Handler) VoiceLeave(c fiber.Ctx) error {
 	if err != nil {
 		return actorFail(c, err)
 	}
-	if err := h.svc.voice.LeaveFederated(c.Context(), user.ID, sc.room.ID); err != nil {
+	if err := h.svc.voice.LeaveFederated(c.Context(), user.ID, sc.room.ID, body.SessionID); err != nil {
 		return voice.WriteError(c, err, map[string]any{"room_id": sc.room.ID, "user_id": user.ID})
 	}
 	return c.SendStatus(http.StatusNoContent)
@@ -590,14 +914,88 @@ func (h *Handler) VoiceState(c fiber.Ctx) error {
 		return c.SendStatus(http.StatusNoContent) // no voice here: nothing to mirror into
 	}
 	ctx := c.Context()
-	st, err := h.svc.voiceStateFromWire(ctx, RequesterDomain(c), room.ID, body.State)
+	st, err := h.svc.voiceStateFromWire(ctx, RequesterDomain(c), room, body.State)
 	if err != nil {
 		return fail(c, err, map[string]any{"room_id": room.ID})
 	}
-	if err := h.svc.voice.ApplyRemoteVoiceState(ctx, room, st, body.Left); err != nil {
+	var movedTo int64
+	if body.Left {
+		movedTo = h.svc.movedToLocal(ctx, RequesterDomain(c), body.MovedTo)
+	}
+	if err := h.svc.voice.ApplyRemoteVoiceState(ctx, room, st, body.Left, movedTo); err != nil {
 		return fail(c, err, map[string]any{"room_id": room.ID})
 	}
 	return c.SendStatus(http.StatusNoContent)
+}
+
+// movedToLocal is this instance's id for the room a move names, 0 when it has none: the left
+// still applies, and the client just has nowhere to follow.
+func (s *Service) movedToLocal(ctx context.Context, origin string, ref *RoomRef) int64 {
+	if ref == nil || ref.OriginDomain != origin {
+		return 0
+	}
+	oid, err := id.Parse(ref.OriginRoomID)
+	if err != nil {
+		return 0
+	}
+	local, err := s.localRoomID(ctx, origin, oid, false)
+	if err != nil {
+		return 0
+	}
+	return local
+}
+
+// VoiceStates POST /rooms/voice/states - who is in rooms hosted here, for an instance that
+// holds a copy. It cannot be answered from a relay, so it is what repairs a lost one. Every
+// room is answered for on its own; only something wrong here fails the request, and the
+// asker keeps its states then.
+func (h *Handler) VoiceStates(c fiber.Ctx) error {
+	var body VoiceStatesRequest
+	if err := json.Unmarshal(c.Body(), &body); err != nil {
+		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "invalid JSON"})
+	}
+	if len(body.Rooms) > voice.MaxSyncRooms {
+		return fail(c, ErrPayloadTooLarge, nil)
+	}
+	ctx := c.Context()
+	peer := RequesterDomain(c)
+	reply := VoiceStatesReply{Rooms: make([]VoiceRoomStates, 0, len(body.Rooms))}
+	size := 0
+	for _, ref := range body.Rooms {
+		entry := VoiceRoomStates{Room: ref, States: []VoiceState{}}
+		sc, err := h.voiceHosted(c, ref)
+		switch {
+		case err == nil:
+			states, call, err := h.svc.voice.HostedStates(ctx, sc.room.ID)
+			if err != nil {
+				return fail(c, err, map[string]any{"room_id": sc.room.ID})
+			}
+			if sc.spaceID != 0 {
+				var known bool
+				if states, known = h.svc.statesForPeer(ctx, sc.spaceID, sc.room.ID, peer, states); !known {
+					continue // left out, so it is asked about again
+				}
+			}
+			if entry, err = h.svc.voiceRoomWire(ctx, ref, states, call); err != nil {
+				return fail(c, err, map[string]any{"room_id": sc.room.ID})
+			}
+		case errors.Is(err, rooms.ErrRoomNotFound), errors.Is(err, ErrPeerNotAllowed), errors.Is(err, errNotHosting),
+			errors.Is(err, ErrInvalidFID), errors.Is(err, voice.ErrDisabled):
+			entry.Gone = true
+		default:
+			return fail(c, err, nil)
+		}
+		raw, err := json.Marshal(entry)
+		if err != nil {
+			return fail(c, err, nil)
+		}
+		if size > 0 && size+len(raw) > maxVoiceSyncBytes {
+			break
+		}
+		size += len(raw)
+		reply.Rooms = append(reply.Rooms, entry)
+	}
+	return c.JSON(reply)
 }
 
 // VoiceCall POST /rooms/voice/call - mirror a call event the origin reported.
