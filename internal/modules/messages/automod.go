@@ -100,7 +100,7 @@ func (s *Service) sendPolicy(ctx context.Context, userID, roomID int64, room *ro
 }
 
 // enforceVerificationLevel applies the space's verification level to a member with no
-// role. A member of another instance is only held to the member-age rule: their account's
+// role who is a person (bots and the system account are exempt). A member of another instance is only held to the member-age rule: their account's
 // age and email status live on their home instance, which vouched for them by federating.
 func (s *Service) enforceVerificationLevel(ctx context.Context, userID int64, p *spaces.SendPolicy) error {
 	if p == nil || p.VerificationLevel <= spaces.VerificationNone || p.HasRole {
@@ -111,6 +111,12 @@ func (s *Service) enforceVerificationLevel(ctx context.Context, userID int64, p 
 		if err != nil {
 			logger.Err("messages", err, map[string]any{"stage": "verification_level", "user_id": userID})
 		}
+		return nil
+	}
+	// A level is there to slow down new and throwaway people, and a bot is neither: it has no
+	// email to verify, it was let in by someone who could manage the space, and Discord holds
+	// bots to no verification level either. The instance's own system account is the same.
+	if u.Bot || u.System {
 		return nil
 	}
 	now := time.Now()
