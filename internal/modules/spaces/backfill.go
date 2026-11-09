@@ -160,6 +160,83 @@ func (s *Service) backfillAttachOverrides(ctx context.Context, spaceID, roomID i
 	return n, nil
 }
 
+// Data migration for the Embed Links bit (permissions.PermEmbedLinks, 1<<30).
+const dataMigrationEmbedLinks = "052_embed_links_permission"
+
+// mirrorEmbedLinks gives a mask Embed Links where it has Send Messages. Applied to a role's
+// permissions, and to an override's allow and its deny alike: an override that allows sending
+// allows embedding, one that denies sending denies it. Pure; idempotent.
+func mirrorEmbedLinks(mask int64) int64 {
+	if mask&permissions.PermSendMessages != 0 {
+		mask |= permissions.PermEmbedLinks
+	}
+	return mask
+}
+
+// BackfillEmbedLinksPermission grants Embed Links everywhere Send Messages was already granted
+// when the bit did not exist - the same pass as the Attach Files one - so a bot that can post
+// in a space created before embeds can post embeds there too. New spaces get the bit through
+// permissions.DefaultEveryone. Exactly once per keyspace (claimed in data_migrations), and
+// idempotent if ever re-run: the ORs are no-ops the second time.
+func (s *Service) BackfillEmbedLinksPermission(ctx context.Context) error {
+	claimed, err := s.repo.ClaimDataMigration(ctx, dataMigrationEmbedLinks)
+	if err != nil || !claimed {
+		return err
+	}
+	now := time.Now().UTC()
+	spaceIDs := map[int64]struct{}{}
+	roles := 0
+	err = s.repo.ForEachSpaceRole(ctx, func(spaceID, roleID int64, _ string, perms, _ int64) error {
+		spaceIDs[spaceID] = struct{}{}
+		next := mirrorEmbedLinks(perms)
+		if next == perms {
+			return nil
+		}
+		if err := s.repo.UpdateSpaceRolePermissions(ctx, spaceID, roleID, next, now); err != nil {
+			return err
+		}
+		roles++
+		return nil
+	})
+	overrides := 0
+	if err == nil {
+	spaces:
+		for spaceID := range spaceIDs {
+			roomRows, lerr := s.roomRepo.ListBySpace(ctx, spaceID)
+			if lerr != nil {
+				err = lerr
+				break
+			}
+			for _, r := range roomRows {
+				n, oerr := s.backfillOverrides(ctx, spaceID, r.RoomID, now, func(allow, deny *int64) bool {
+					a, d := mirrorEmbedLinks(*allow), mirrorEmbedLinks(*deny)
+					changed := a != *allow || d != *deny
+					*allow, *deny = a, d
+					return changed
+				})
+				overrides += n
+				if oerr != nil {
+					err = oerr
+					break spaces
+				}
+			}
+		}
+	}
+	if err != nil {
+		// Hand the claim back so the next start retries rather than leaving bots in an
+		// existing space unable to post embeds.
+		if relErr := s.repo.ReleaseDataMigration(ctx, dataMigrationEmbedLinks); relErr != nil {
+			logger.Err("spaces", relErr, map[string]any{"data_migration": dataMigrationEmbedLinks})
+		}
+		return err
+	}
+	for spaceID := range spaceIDs {
+		s.invalidateSnapshot(ctx, spaceID)
+	}
+	logger.Info("spaces", "embed-links permission backfilled on %d role(s) and %d override(s) across %d space(s)", roles, overrides, len(spaceIDs))
+	return nil
+}
+
 // Data migration for the thread bits (permissions.AllThreads, 1<<24..1<<27).
 const dataMigrationThreadPermissions = "046_thread_permissions"
 

@@ -236,7 +236,7 @@ func (s *Service) postPinNotice(ctx context.Context, room *rooms.Room, participa
 	fanout := s.spaceParticipants(ctx, room, participants)
 	_ = s.rooms.UpdateLastMessageID(ctx, room.ID, fanout, notice.ID)
 	if s.redis != nil && s.cfg != nil {
-		s.publishRoom(ctx, room, room.ID, "MESSAGE_CREATE", messageEventPayload(notice))
+		s.publishRoom(ctx, room, room.ID, "MESSAGE_CREATE", s.messageEventPayload(notice))
 	}
 	if s.federator != nil {
 		s.federator.AfterMessageCreated(ctx, room.ID, participants, notice)

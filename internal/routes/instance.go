@@ -38,6 +38,7 @@ func newInstanceService(d Deps, userRepo auth.UserRepository, sessionRepo auth.S
 	msgRepo := messages.NewRepository(d.Scylla)
 	roomsSvc := rooms.NewService(roomRepo, userRepo, d.Redis, d.Config, nil, spaceSvc)
 	msgsSvc := messages.NewService(msgRepo, roomRepo, userRepo, d.Redis, d.Config, spaceSvc)
+	withMedia(d, msgsSvc)
 	// A takedown ends the space's calls, as an owner's delete does.
 	evictRooms := rooms.NewService(roomRepo, userRepo, d.Redis, d.Config, nil, spaceSvc)
 	if d.Federation != nil {

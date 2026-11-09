@@ -77,39 +77,13 @@ type Metadata struct {
 	VideoType string `json:"video_type,omitempty"`
 }
 
-// errBlockedAddress also refuses a redirect to a non-web scheme, alongside the dial-time
-// address check in safehttp.
-var errBlockedAddress = safehttp.ErrBlockedAddress
-
 type Service struct {
 	redis  *redis.Client
 	client *http.Client
 }
 
 func NewService(rdb *redis.Client) *Service {
-	dialer := safehttp.NewDialer(fetchTimeout)
-	transport := &http.Transport{
-		DialContext:           dialer.DialContext,
-		ForceAttemptHTTP2:     true,
-		MaxIdleConns:          10,
-		IdleConnTimeout:       30 * time.Second,
-		TLSHandshakeTimeout:   fetchTimeout,
-		ExpectContinueTimeout: time.Second,
-		DisableKeepAlives:     true,
-	}
-	client := &http.Client{
-		Transport: transport,
-		Timeout:   fetchTimeout,
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			if len(via) >= maxRedirects {
-				return errors.New("unfurl: too many redirects")
-			}
-			if req.URL.Scheme != "http" && req.URL.Scheme != "https" {
-				return errBlockedAddress
-			}
-			return nil
-		},
-	}
+	client := safehttp.NewClient(safehttp.ClientOptions{Timeout: fetchTimeout, MaxRedirects: maxRedirects})
 	return &Service{redis: rdb, client: client}
 }
 

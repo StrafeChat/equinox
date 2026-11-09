@@ -65,10 +65,13 @@ type Message struct {
 	// AttachmentsJSON is the denormalised []Attachment for this message (see
 	// Attachments()/SetAttachments) - stored as opaque JSON so listing history stays a
 	// single partition read with no per-message registry lookup.
-	AttachmentsJSON string     `db:"attachments" json:"-"`
-	CreatedAt       time.Time  `db:"created_at" json:"created_at"`
-	UpdatedAt       time.Time  `db:"updated_at" json:"updated_at"`
-	DeletedAt       *time.Time `db:"deleted_at" json:"deleted_at,omitempty"`
+	AttachmentsJSON string `db:"attachments" json:"-"`
+	// EmbedsJSON is the message's rich embeds in their stored form (see Embeds()/SetEmbeds
+	// and embeds.go): plaintext rooms only, never proxy URLs.
+	EmbedsJSON string     `db:"embeds" json:"-"`
+	CreatedAt  time.Time  `db:"created_at" json:"created_at"`
+	UpdatedAt  time.Time  `db:"updated_at" json:"updated_at"`
+	DeletedAt  *time.Time `db:"deleted_at" json:"deleted_at,omitempty"`
 	// PinnedAt/PinnedBy are set while the message is pinned in its room (service_pins.go):
 	// room_pins keeps the room\'s ordered list, these make `pinned` free on every read.
 	PinnedAt *time.Time `db:"pinned_at" json:"pinned_at,omitempty"`
@@ -101,6 +104,24 @@ func (m *Message) SetAttachments(list []Attachment) {
 		return
 	}
 	m.AttachmentsJSON = string(b)
+}
+
+// Embeds decodes the message's embeds in their stored form (nil when there are none).
+func (m *Message) Embeds() []Embed {
+	if m == nil || strings.TrimSpace(m.EmbedsJSON) == "" {
+		return nil
+	}
+	var out []Embed
+	if err := json.Unmarshal([]byte(m.EmbedsJSON), &out); err != nil {
+		return nil
+	}
+	return out
+}
+
+// SetEmbeds stores the embeds ("" for none). Whatever is served rather than stored - the
+// type, proxy URLs - is dropped here, so the column only ever holds the stored form.
+func (m *Message) SetEmbeds(list []Embed) {
+	m.EmbedsJSON = encodeEmbeds(list)
 }
 
 // Attachment is the wire/stored form of a file attached to a message. In E2EE rooms only
@@ -180,13 +201,20 @@ type CreateMessageInput struct {
 	// Attachments are ids returned by POST /rooms/:id/attachments, uploaded by this same
 	// user into this same room and not yet used by another message.
 	Attachments []string `json:"attachments,omitempty"`
+	// Embeds are a bot's rich embeds (embeds.go): plaintext rooms only, Embed Links in a
+	// space room. An image may name one of Attachments as attachment://<filename or id>.
+	Embeds EmbedList `json:"embeds,omitzero"`
 }
 
 // EditMessageInput is the payload for PATCH. Exactly one of Ciphertext/Plaintext is used,
 // matching whichever the room's E2EE setting dictates - same rule Create already applies.
+// An empty body field keeps the text, so a bot may edit only its embeds.
 type EditMessageInput struct {
 	Ciphertext string `json:"ciphertext,omitempty"`
 	Plaintext  string `json:"plaintext,omitempty"`
+	// Embeds replaces the message's embeds when present; null or [] clears them, absent
+	// leaves them as they are (Discord's rule).
+	Embeds EmbedList `json:"embeds,omitzero"`
 }
 
 // Pin is one row of room_pins: a room's pinned messages, newest pin first.

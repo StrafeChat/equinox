@@ -183,6 +183,19 @@ Go identifiers, error strings, docs:
   outbound `/users/presence`. A change while the user reads offline to others goes to their
   own channel only (`stargate.PublishActivityChange`): no frame to friends, spaces or peers,
   which would give an invisible user away.
+- **Image proxy (`internal/modules/media`)**: a client is never told to load an external
+  picture from its source (embed images and thumbnails, author/footer icons). The
+  serializers' one helper (`messages.Service.mediaURL`) hands out this instance's CDN URL
+  for its own files, else a signed `GET /media/v1/external/{sig}/{src}` address (HMAC with
+  `MEDIA_PROXY_KEY`, or a key generated into Redis with SETNX). That route is
+  unauthenticated - the signature is the capability - fetches through `safehttp`, serves
+  only sniffed PNG/JPEG/GIF/WebP with `nosniff` and a sandbox CSP, and caches in Nebula's
+  `media-cache/` (tracked in Redis, swept, its total held within `MEDIA_PROXY_CACHE_MAX_GB`
+  by a byte count kept beside the index; past it an image is served without being kept).
+  Fetches for views share 32 slots per process (past them, 503), apart from warming's own
+  bound. A message written with embeds warms its images in the background (bounded) and
+  writes the sizes learned back with a compare-and-set.
+  Proxy URLs are computed at serialize time and never stored.
 - **One-shot data fixes** (`spaces/backfill.go`): claim a name in `data_migrations` with
   `ClaimDataMigration` (a lightweight transaction), do the work, release the claim on
   failure. CQL migrations cannot express "OR a bit into every existing row"; this can.

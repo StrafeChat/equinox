@@ -35,18 +35,31 @@ func TestMaskValues(t *testing.T) {
 		got  int64
 		want int64
 	}{
-		{"DefaultEveryone", DefaultEveryone, 363044895},
-		{"AllRoom", AllRoom, 268402815},
-		{"AllSpace", AllSpace, 1073741823},
+		{"DefaultEveryone", DefaultEveryone, 1436786719},
+		{"AllRoom", AllRoom, 1342144639},
+		{"AllSpace", AllSpace, 2147483647},
 	}
 	for _, tc := range cases {
 		if tc.got != tc.want {
 			t.Errorf("%s = %d, want %d", tc.name, tc.got, tc.want)
 		}
 	}
-	// Every bit 0-29 is assigned and all of them are space bits; bit 30 is the last the web
-	// client's 32-bit maths can hold, so nothing may sit at or above it yet.
-	if AllSpace != 1<<30-1 {
-		t.Errorf("AllSpace = %d, want bits 0-29 exactly", AllSpace)
+	// Every bit 0-30 is assigned and all of them are space bits; bit 30 is the last the web
+	// client's 32-bit maths can hold, so nothing may sit above it yet.
+	if AllSpace != 1<<31-1 {
+		t.Errorf("AllSpace = %d, want bits 0-30 exactly", AllSpace)
+	}
+}
+
+func TestEmbedLinksBit(t *testing.T) {
+	if PermEmbedLinks != 1073741824 {
+		t.Errorf("PermEmbedLinks = %d, want 1073741824 (1<<30)", PermEmbedLinks)
+	}
+	// Room-scoped (an override may allow or deny it) and on for @everyone, as on Discord.
+	if !Has(AllRoom, PermEmbedLinks) || !Has(AllSpace, PermEmbedLinks) {
+		t.Error("Embed Links is missing from AllRoom / AllSpace")
+	}
+	if !Has(DefaultEveryone, PermEmbedLinks) {
+		t.Error("DefaultEveryone lacks Embed Links")
 	}
 }

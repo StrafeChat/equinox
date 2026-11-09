@@ -21,6 +21,7 @@ func SetupMessagesRoutes(d Deps) {
 	spaceRepo := spaces.NewRepository(d.Scylla)
 	spaceSvc := spaces.NewService(spaceRepo, roomRepo, userRepo, d.Redis, d.Config)
 	msgSvc := messages.NewService(msgRepo, roomRepo, userRepo, d.Redis, d.Config, spaceSvc)
+	withMedia(d, msgSvc)
 	if d.Federation != nil {
 		msgSvc.SetFederator(d.Federation)
 	}

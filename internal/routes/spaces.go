@@ -46,6 +46,11 @@ func SetupSpacesRoutes(d Deps) {
 	if err := spaceSvc.BackfillThreadPermissions(context.Background()); err != nil {
 		logger.Err("spaces", err, map[string]any{"step": "backfill thread permissions"})
 	}
+	// Embed Links is newer again: wherever Send Messages is granted (or denied), so is Embed
+	// Links, so bots keep posting where they could (runs once per keyspace).
+	if err := spaceSvc.BackfillEmbedLinksPermission(context.Background()); err != nil {
+		logger.Err("spaces", err, map[string]any{"step": "backfill embed-links permission"})
+	}
 	if d.Federation != nil {
 		// Changes to a space hosted here reach the instances mirroring it; a member's
 		// join/leave/invite in a space hosted elsewhere goes to that instance. The engine

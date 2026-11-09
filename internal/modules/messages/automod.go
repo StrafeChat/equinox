@@ -150,11 +150,24 @@ func (s *Service) enforceAutomod(ctx context.Context, userID int64, room *rooms.
 	if !e2eeOff || plaintext == "" {
 		return nil
 	}
-	if p.AutomodFlags&spaces.AutomodInviteLinks != 0 && s.hasForeignInvite(ctx, *room.SpaceID, plaintext) {
-		return &AutomodError{Rule: AutomodRuleInvite}
+	if err := s.enforceAutomodContent(ctx, room, p, plaintext); err != nil {
+		return err
 	}
 	if p.AutomodFlags&spaces.AutomodRepeatedMessages != 0 && s.repeatedMessage(ctx, userID, *room.SpaceID, plaintext) {
 		return &AutomodError{Rule: AutomodRuleRepeated}
+	}
+	return nil
+}
+
+// enforceAutomodContent runs the rules that judge only what a message says (invite links) on
+// text the server can read - a send's, and an edit's (Edit), whose result must not get past
+// what sending it would not.
+func (s *Service) enforceAutomodContent(ctx context.Context, room *rooms.Room, p *spaces.SendPolicy, text string) error {
+	if p == nil || text == "" {
+		return nil
+	}
+	if p.AutomodFlags&spaces.AutomodInviteLinks != 0 && s.hasForeignInvite(ctx, *room.SpaceID, text) {
+		return &AutomodError{Rule: AutomodRuleInvite}
 	}
 	return nil
 }

@@ -60,21 +60,29 @@ func (s *Service) textToWire(ctx context.Context, text string) string {
 	})
 }
 
+// maxMentionLookups bounds the mentions textFromWire resolves in one text. Each unknown one
+// may cost a signed profile fetch from a third instance; a message gets a handful, and the
+// rest stay as they came (the client renders them as unknown).
+const maxMentionLookups = 20
+
 // textFromWire rewrites <@FID> mentions as <@localId> of the shadow (or local user) the
 // FID names here, fetching a shadow for anyone unknown.
 func (s *Service) textFromWire(ctx context.Context, text string) string {
+	budget := maxMentionLookups
+	return s.textFromWireWithin(ctx, text, &budget)
+}
+
+// textFromWireWithin is textFromWire spending its lookups from budget, which several texts of
+// one message share (its embeds' descriptions and field values, embeds.go).
+func (s *Service) textFromWireWithin(ctx context.Context, text string, budget *int) string {
 	if text == "" || !strings.Contains(text, "<@@") {
 		return text
 	}
-	// Each unknown mention may cost a signed profile fetch from a third instance; a message
-	// gets a handful, and the rest stay as they came (the client renders them as unknown).
-	const maxMentionLookups = 20
-	lookups := 0
 	return wireFIDMentionRe.ReplaceAllStringFunc(text, func(tok string) string {
-		if lookups >= maxMentionLookups {
+		if *budget <= 0 {
 			return tok
 		}
-		lookups++
+		*budget--
 		m := wireFIDMentionRe.FindStringSubmatch(tok)
 		u, err := s.shadowByFID(ctx, m[1])
 		if err != nil || u == nil {

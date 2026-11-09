@@ -285,6 +285,8 @@ type Service struct {
 	spaceAuth SpaceChannelAuth
 	federator Federator
 	threads   ThreadHooks
+	// media signs embed images' proxy URLs (embeds.go); nil without an image proxy.
+	media MediaSigner
 }
 
 func NewService(repo Repository, roomsRepo rooms.Repository, userRepo auth.UserRepository, redis *redis.Client, cfg *config.Config, spaceAuth SpaceChannelAuth) *Service {
@@ -341,6 +343,9 @@ func (s *Service) CreateFederated(ctx context.Context, roomID int64, participant
 	}
 	m.RoomID = roomID
 	m.SetAttachments(s.dropOwnCDN(m.Attachments(), func(a Attachment) bool { return s.senderUpload(ctx, roomID, m, a) }))
+	if err := s.relayedEmbeds(ctx, roomID, m); err != nil {
+		return err
+	}
 	// A relayed PM crosses a block exactly where a local send would be refused. The
 	// sending instance never learns of the block (FEDERATION.md), so it is dropped here.
 	if m.SenderID != 0 && len(participants) == 2 {
@@ -359,6 +364,8 @@ func (s *Service) CreateFederated(ctx context.Context, roomID int64, participant
 	if err := s.repo.Insert(ctx, m); err != nil {
 		return err
 	}
+	// This instance's proxy serves the copy's images to its readers, so it fetches them too.
+	s.warmEmbeds(m)
 	_ = s.rooms.UpdateLastMessageID(ctx, roomID, participants, m.ID)
 	if m.SenderID != 0 {
 		// Advance the sender's own read cursor like Create does, in case the sender's
@@ -392,25 +399,62 @@ func (s *Service) CreateFederated(ctx context.Context, roomID int64, participant
 	return nil
 }
 
-// EditFederated applies an edit relayed by another instance.
-func (s *Service) EditFederated(ctx context.Context, roomID, msgID int64, ciphertext, plaintext string) (*Message, error) {
-	if ciphertext == "" && plaintext == "" {
+// EditFederated applies an edit relayed by another instance. embeds, when not nil, replaces
+// the message's embeds (empty clears them), held to the rules a relayed create is
+// (relayedEmbeds); nil leaves them as they are.
+func (s *Service) EditFederated(ctx context.Context, roomID, msgID int64, ciphertext, plaintext string, embeds *[]Embed) (*Message, error) {
+	if ciphertext == "" && plaintext == "" && embeds == nil {
 		return nil, ErrInvalidInput
 	}
 	if err := validateContent(plaintext, ciphertext); err != nil {
 		return nil, err
 	}
-	updated, err := s.repo.Update(ctx, roomID, msgID, ciphertext, plaintext)
+	var stored *string
+	if embeds != nil {
+		m := &Message{}
+		m.SetEmbeds(*embeds)
+		if err := s.relayedEmbeds(ctx, roomID, m); err != nil {
+			return nil, err
+		}
+		stored = &m.EmbedsJSON
+	}
+	updated, err := s.repo.Update(ctx, roomID, msgID, ciphertext, plaintext, stored)
 	if err != nil {
 		return nil, err
 	}
 	if updated == nil {
 		return nil, ErrMessageNotFound
 	}
+	if stored != nil {
+		s.warmEmbeds(updated)
+	}
 	if s.redis != nil && s.cfg != nil {
 		s.publishRoom(ctx, nil, roomID, "MESSAGE_UPDATE", s.messageEventPayloadEnriched(ctx, updated))
 	}
 	return updated, nil
+}
+
+// relayedEmbeds holds the embeds on a message another instance relayed to the rules a local
+// send is held to - the same validator, with no attachment:// (a peer only ever sends
+// resolved URLs) - and drops them in an end-to-end encrypted room, where the server stores
+// none whatever a peer says. Every image keeps its source URL: this instance's own proxy
+// serves the ones not on its CDN when the message is read.
+func (s *Service) relayedEmbeds(ctx context.Context, roomID int64, m *Message) error {
+	list, err := NormalizeEmbeds(m.Embeds(), nil)
+	if err != nil {
+		return err
+	}
+	if len(list) > 0 {
+		room, rerr := s.rooms.GetByID(ctx, roomID)
+		if rerr != nil {
+			return rerr
+		}
+		if !EmbedsAllowedIn(room) || m.Ciphertext != "" {
+			list = nil
+		}
+	}
+	m.SetEmbeds(list)
+	return nil
 }
 
 // mentionsCountedFor is how long a mirror remembers that a relayed message's mentions were
@@ -505,10 +549,21 @@ func (s *Service) DeleteFederated(ctx context.Context, roomID, msgID int64) erro
 }
 
 // checkChannelPerms resolves effective channel permissions in a single round trip
-// and verifies every bit in need is present. No-op for PMs/group PMs and space
-// voice rooms - only space text rooms carry per-channel permission overrides.
+// and verifies every bit in need is present. No-op for PMs/group PMs. A space voice room's
+// text chat is held only to the bits of writing there (voiceWriteNeeds); its other room
+// permissions are not checked here.
 func (s *Service) checkChannelPerms(ctx context.Context, userID, roomID int64, room *rooms.Room, need ...int64) error {
-	if room.SpaceID == nil || (room.Type != rooms.TypeSpaceText && room.Type != rooms.TypeThread) || s.spaceAuth == nil || len(need) == 0 {
+	if room.SpaceID == nil || s.spaceAuth == nil {
+		return nil
+	}
+	switch room.Type {
+	case rooms.TypeSpaceText, rooms.TypeThread:
+	case rooms.TypeSpaceVoice:
+		need = voiceWriteNeeds(need)
+	default:
+		return nil
+	}
+	if len(need) == 0 {
 		return nil
 	}
 	perms, err := s.spaceAuth.EffectiveChannelPermissions(ctx, userID, *room.SpaceID, roomID)
@@ -530,10 +585,27 @@ func (s *Service) checkChannelPerms(ctx context.Context, userID, roomID int64, r
 			if n == permissions.PermAttachFiles {
 				return ErrAttachForbidden
 			}
+			if n == permissions.PermEmbedLinks {
+				return ErrEmbedForbidden
+			}
 			return ErrForbidden
 		}
 	}
 	return nil
+}
+
+// voiceWriteNeeds is what of a permission list a space voice room's text chat is held to: the
+// bits that say who may write there and what (Send Messages, Attach Files, Embed Links), so a
+// deny on one of them means what it does in a text room.
+func voiceWriteNeeds(need []int64) []int64 {
+	var out []int64
+	for _, n := range need {
+		switch n {
+		case permissions.PermSendMessages, permissions.PermAttachFiles, permissions.PermEmbedLinks:
+			out = append(out, n)
+		}
+	}
+	return out
 }
 
 // threadNeeds translates a channel permission list for a thread: sending there is Send
@@ -557,7 +629,7 @@ func checkThreadState(room *rooms.Room, perms int64, need []int64) error {
 	for _, n := range need {
 		switch n {
 		case permissions.PermViewRoom, permissions.PermReadMessageHistory:
-		case permissions.PermSendMessagesInThreads, permissions.PermAttachFiles, permissions.PermMentionEveryone:
+		case permissions.PermSendMessagesInThreads, permissions.PermAttachFiles, permissions.PermMentionEveryone, permissions.PermEmbedLinks:
 			write = true
 		default:
 			write = true
@@ -784,15 +856,28 @@ func (s *Service) create(ctx context.Context, userID, roomID int64, in *CreateMe
 	if len(in.Mentions) > MaxMentionsPerMessage || len(in.MentionRoles) > MaxMentionsPerMessage {
 		return nil, ErrTooManyMentions
 	}
+	hasEmbeds := len(in.Embeds.List) > 0
+	if hasEmbeds {
+		if err := s.requireBot(ctx, userID); err != nil {
+			return nil, err
+		}
+	}
 	// Attaching files is its own permission (Discord's "Attach Files"): a message that
-	// carries attachments needs it on top of Send Messages.
+	// carries attachments needs it on top of Send Messages. Embeds likewise need Embed Links.
 	need := []int64{permissions.PermSendMessages}
 	if len(in.Attachments) > 0 || len(given) > 0 {
 		need = append(need, permissions.PermAttachFiles)
 	}
+	if hasEmbeds {
+		need = append(need, permissions.PermEmbedLinks)
+	}
 	room, participants, err := s.authorize(ctx, userID, roomID, need...)
 	if err != nil {
 		return nil, err
+	}
+	// The server would be writing plaintext into a room whose content it must not see.
+	if hasEmbeds && !roomE2EEOff(room) {
+		return nil, ErrEmbedsEncrypted
 	}
 	// A direct message across a block is refused here, not merely hidden by the client -
 	// otherwise the blocked side keeps delivering (and notifying) through the existing room.
@@ -826,10 +911,29 @@ func (s *Service) create(ctx context.Context, userID, roomID int64, in *CreateMe
 			return nil, err
 		}
 	}
+	// An embed image may name one of the files just claimed (attachment://); files another
+	// instance relayed were never claimed here, and its embeds arrive with URLs resolved.
+	var embeds []Embed
+	if hasEmbeds {
+		var own []Attachment
+		if given == nil {
+			own = attachments
+		}
+		if embeds, err = NormalizeEmbeds(in.Embeds.List, own); err != nil {
+			return nil, err
+		}
+	}
 	if origin := s.remoteOrigin(ctx, room); origin != "" {
 		// A channel of a space hosted elsewhere: the origin applies the write with its own
-		// checks (slowmode, @everyone, bans) and tells every instance, this one included.
-		m, err := s.federator.CreateRemote(ctx, origin, room, userID, in, attachments)
+		// checks (slowmode, @everyone, bans) and tells every instance, this one included. It
+		// gets the embeds in their stored form: an attachment:// means nothing over there.
+		fwd := in
+		if hasEmbeds {
+			cp := *in
+			cp.Embeds = EmbedList{Set: true, List: embeds}
+			fwd = &cp
+		}
+		m, err := s.federator.CreateRemote(ctx, origin, room, userID, fwd, attachments)
 		if err != nil {
 			return nil, err
 		}
@@ -855,7 +959,7 @@ func (s *Service) create(ctx context.Context, userID, roomID int64, in *CreateMe
 	var ciphertext, plaintext string
 	if e2eeOff {
 		plaintext = in.Plaintext
-		if plaintext == "" && len(attachments) == 0 {
+		if plaintext == "" && len(attachments) == 0 && len(embeds) == 0 {
 			return nil, ErrInvalidInput
 		}
 	} else {
@@ -893,8 +997,11 @@ func (s *Service) create(ctx context.Context, userID, roomID int64, in *CreateMe
 		// sent as content, it just doesn't notify anyone - matches Discord.
 		mentionEveryone = false
 	}
-	// After the mentions are known (parsed or declared), before anything is written.
-	if err := s.enforceAutomod(ctx, userID, room, policy, plaintext, e2eeOff, mentionUserIDs, mentionRoleIDs); err != nil {
+	// After the mentions are known (parsed or declared), before anything is written. The
+	// content rules read the embeds' text too, or an invite link would only need an embed to
+	// get past them; mentions written in an embed are not mentions, so the cap ignores them.
+	content := withEmbedsText(plaintext, embeds)
+	if err := s.enforceAutomod(ctx, userID, room, policy, content, e2eeOff, mentionUserIDs, mentionRoleIDs); err != nil {
 		return nil, err
 	}
 
@@ -912,9 +1019,11 @@ func (s *Service) create(ctx context.Context, userID, roomID int64, in *CreateMe
 		MentionRoles:    mentionRoleIDs,
 	}
 	m.SetAttachments(attachments)
+	m.SetEmbeds(embeds)
 	if err := s.repo.Create(ctx, m); err != nil {
 		return nil, err
 	}
+	s.warmEmbeds(m)
 	if room.Type == rooms.TypeThread && s.threads != nil {
 		// The thread is active again (unarchived if need be), the sender and the people they
 		// mentioned are in it now, and the fan-out below reaches the new members too.
@@ -1161,12 +1270,41 @@ func (s *Service) Edit(ctx context.Context, userID, roomID, msgID int64, in *Edi
 	if err := validateContent(in.Plaintext, in.Ciphertext); err != nil {
 		return nil, err
 	}
-	room, participants, err := s.authorize(ctx, userID, roomID, permissions.PermViewRoom)
+	// Only a bot puts embeds on a message, and in a space room only with Embed Links; taking
+	// them off (null or []) needs neither.
+	hasEmbeds := len(in.Embeds.List) > 0
+	need := []int64{permissions.PermViewRoom}
+	if hasEmbeds {
+		if err := s.requireBot(ctx, userID); err != nil {
+			return nil, err
+		}
+		need = append(need, permissions.PermEmbedLinks)
+	}
+	room, participants, err := s.authorize(ctx, userID, roomID, need...)
 	if err != nil {
 		return nil, err
 	}
+	if hasEmbeds && !roomE2EEOff(room) {
+		return nil, ErrEmbedsEncrypted
+	}
 	if origin := s.remoteOrigin(ctx, room); origin != "" {
-		return s.federator.EditRemote(ctx, origin, room, userID, msgID, in)
+		// The origin gets the embeds in their stored form. An attachment:// names one of the
+		// message's files, which the copy relayed here lists as the origin does.
+		fwd := in
+		if hasEmbeds {
+			var files []Attachment
+			if local, gerr := s.repo.GetByID(ctx, roomID, msgID); gerr == nil && local != nil {
+				files = local.Attachments()
+			}
+			embeds, nerr := NormalizeEmbeds(in.Embeds.List, files)
+			if nerr != nil {
+				return nil, nerr
+			}
+			cp := *in
+			cp.Embeds = EmbedList{Set: true, List: embeds}
+			fwd = &cp
+		}
+		return s.federator.EditRemote(ctx, origin, room, userID, msgID, fwd)
 	}
 	msg, err := s.repo.GetByID(ctx, roomID, msgID)
 	if err != nil || msg == nil {
@@ -1189,19 +1327,46 @@ func (s *Service) Edit(ctx context.Context, userID, roomID, msgID int64, in *Edi
 	// always wrote `ciphertext` regardless of the room's E2EE setting, so editing a
 	// message was effectively broken in any plaintext (non-E2EE) room.
 	var ciphertext, plaintext string
+	var stored *string
 	if roomE2EEOff(room) {
 		plaintext = in.Plaintext
+		embeds := msg.Embeds()
+		if in.Embeds.Set {
+			// An embed image may name a file the message already carries (attachment://).
+			if embeds, err = NormalizeEmbeds(in.Embeds.List, msg.Attachments()); err != nil {
+				return nil, err
+			}
+			j := encodeEmbeds(embeds)
+			stored = &j
+		}
+		// What the message will say is held to the space automod's content rules, as a send
+		// is, or an edit would carry an invite link past them. The rules that count sends
+		// (repeated messages, the mention cap) are a send's alone: an edit notifies nobody.
+		text := plaintext
+		if text == "" {
+			text = msg.Plaintext
+		}
+		if err := s.enforceAutomodContent(ctx, room, s.sendPolicy(ctx, userID, roomID, room), withEmbedsText(text, embeds)); err != nil {
+			return nil, err
+		}
 	} else {
 		ciphertext = in.Ciphertext
 	}
 	// The column this room uses must actually be filled: a client that sent only the
-	// other one would otherwise blank the message out.
-	if ciphertext == "" && plaintext == "" {
+	// other one would otherwise blank the message out. An edit of the embeds alone keeps
+	// the text, but must not leave a message with nothing in it at all.
+	if ciphertext == "" && plaintext == "" && stored == nil {
 		return nil, ErrInvalidInput
 	}
-	updated, err := s.repo.Update(ctx, roomID, msgID, ciphertext, plaintext)
+	if stored != nil && *stored == "" && plaintext == "" && msg.Plaintext == "" && len(msg.Attachments()) == 0 {
+		return nil, ErrInvalidInput
+	}
+	updated, err := s.repo.Update(ctx, roomID, msgID, ciphertext, plaintext, stored)
 	if err != nil {
 		return nil, err
+	}
+	if stored != nil {
+		s.warmEmbeds(updated)
 	}
 	if s.redis != nil && s.cfg != nil && updated != nil {
 		s.publishRoom(ctx, room, roomID, "MESSAGE_UPDATE", s.messageEventPayloadEnriched(ctx, updated))
@@ -1517,7 +1682,9 @@ func (s *Service) ownsAttachment(u string) bool {
 	return false
 }
 
-func messageEventPayload(m *Message) map[string]interface{} {
+// messageEventPayload is the message object of MESSAGE_CREATE / MESSAGE_UPDATE (see
+// messageToJSON for the REST one).
+func (s *Service) messageEventPayload(m *Message) map[string]interface{} {
 	out := map[string]interface{}{
 		"room_id":          id.Format(m.RoomID),
 		"id":               id.Format(m.ID),
@@ -1545,6 +1712,7 @@ func messageEventPayload(m *Message) map[string]interface{} {
 	if atts := m.Attachments(); len(atts) > 0 {
 		out["attachments"] = atts
 	}
+	out["embeds"] = s.embedsJSON(m)
 	if m.DeletedAt != nil && !m.DeletedAt.IsZero() {
 		out["deleted_at"] = m.DeletedAt
 	}

@@ -102,7 +102,8 @@ func fail(c fiber.Ctx, err error, fields map[string]any) error {
 	case errors.Is(err, ErrPeerNotAllowed):
 		return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": err.Error()})
 	case errors.Is(err, ErrInvalidFID), errors.Is(err, ErrInvalidHandle), errors.Is(err, ErrPayloadTooLarge),
-		errors.Is(err, messages.ErrContentTooLong), errors.Is(err, messages.ErrInvalidInput), errors.Is(err, devices.ErrInvalidInput):
+		errors.Is(err, messages.ErrContentTooLong), errors.Is(err, messages.ErrInvalidInput), errors.Is(err, messages.ErrInvalidEmbed),
+		errors.Is(err, devices.ErrInvalidInput):
 		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
 	logger.Err("federation", err, fields)
@@ -410,8 +411,9 @@ func (s *Service) messageFromEvent(ctx context.Context, from string, sc *roomSco
 	if msg.UpdatedAt.IsZero() {
 		msg.UpdatedAt = msg.CreatedAt
 	}
+	var sender *auth.User
 	if ev.Sender != nil {
-		sender, err := s.resolveProfile(ctx, *ev.Sender, from)
+		sender, err = s.resolveProfile(ctx, *ev.Sender, from)
 		if err != nil {
 			return nil, err
 		}
@@ -446,6 +448,10 @@ func (s *Service) messageFromEvent(ctx context.Context, from string, sc *roomSco
 		}
 	}
 	msg.SetAttachments(sanitizeAttachments(ev.Attachments))
+	// History is held to this as news is: a page is served, and kept, as it comes out of here.
+	if ev.SystemType == "" {
+		msg.SetEmbeds(s.acceptEmbeds(ctx, sc.room, sender, ev.Ciphertext, ev.Embeds))
+	}
 	return msg, nil
 }
 
@@ -793,7 +799,20 @@ func (h *Handler) MessageEdit(c fiber.Ctx) error {
 		return c.Status(http.StatusNotFound).JSON(fiber.Map{"error": "message not found"})
 	}
 	h.svc.recordEmojiRefs(c.Context(), body.Emojis)
-	if _, err := h.svc.msgSvc.EditFederated(c.Context(), sc.room.ID, msgID, body.Ciphertext, h.svc.textFromWire(c.Context(), body.Plaintext)); err != nil {
+	// The edit carries the message's whole list; one from before embeds carries none, and
+	// leaves the copy's alone.
+	var embeds *[]messages.Embed
+	if body.Embeds != nil && body.Ciphertext == "" {
+		var sender *auth.User
+		if len(*body.Embeds) > 0 {
+			if m, err := h.svc.msgRepo.GetByID(c.Context(), sc.room.ID, msgID); err == nil && m != nil && m.SenderID != 0 {
+				sender, _ = h.svc.users.GetByID(c.Context(), m.SenderID)
+			}
+		}
+		list := h.svc.acceptEmbeds(c.Context(), sc.room, sender, body.Ciphertext, *body.Embeds)
+		embeds = &list
+	}
+	if _, err := h.svc.msgSvc.EditFederated(c.Context(), sc.room.ID, msgID, body.Ciphertext, h.svc.textFromWire(c.Context(), body.Plaintext), embeds); err != nil {
 		return fail(c, err, map[string]any{"room_id": sc.room.ID, "message_id": msgID})
 	}
 	return c.SendStatus(http.StatusNoContent)

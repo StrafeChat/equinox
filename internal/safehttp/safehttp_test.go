@@ -3,7 +3,10 @@ package safehttp
 import (
 	"errors"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"testing"
+	"time"
 )
 
 func TestIsPublicIP(t *testing.T) {
@@ -61,5 +64,42 @@ func TestDialControl(t *testing.T) {
 	}
 	if err := DialControl("udp", "8.8.8.8:53", nil); !errors.Is(err, ErrBlockedAddress) {
 		t.Errorf("udp allowed: %v", err)
+	}
+}
+
+// The client refuses this host's own network unless told it is a development setup, and a
+// redirect neither leaks the previous URL nor runs past the limit.
+func TestNewClient(t *testing.T) {
+	var referers []string
+	var srv *httptest.Server
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		referers = append(referers, r.Header.Get("Referer"))
+		switch r.URL.Path {
+		case "/hop":
+			http.Redirect(w, r, srv.URL+"/end", http.StatusFound)
+		case "/loop":
+			http.Redirect(w, r, srv.URL+"/loop", http.StatusFound)
+		default:
+			w.WriteHeader(http.StatusNoContent)
+		}
+	}))
+	defer srv.Close()
+
+	guarded := NewClient(ClientOptions{Timeout: 2 * time.Second, MaxRedirects: 2})
+	if _, err := guarded.Get(srv.URL + "/end"); err == nil || !errors.Is(err, ErrBlockedAddress) {
+		t.Fatalf("loopback reached: %v", err)
+	}
+
+	dev := NewClient(ClientOptions{Timeout: 2 * time.Second, MaxRedirects: 2, AllowPrivate: true})
+	resp, err := dev.Get(srv.URL + "/hop")
+	if err != nil {
+		t.Fatalf("dev client: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent || len(referers) != 2 || referers[1] != "" {
+		t.Fatalf("status %d, referers %q", resp.StatusCode, referers)
+	}
+	if _, err := dev.Get(srv.URL + "/loop"); err == nil || !errors.Is(err, ErrTooManyRedirects) {
+		t.Fatalf("redirect loop: %v", err)
 	}
 }

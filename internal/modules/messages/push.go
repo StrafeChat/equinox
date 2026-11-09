@@ -26,6 +26,10 @@ func (s *Service) pushMessage(ctx context.Context, room *rooms.Room, m *Message,
 	}
 	if !e2ee {
 		ev.Text = m.Plaintext
+		if ev.Text == "" {
+			// A bot's embed-only message reads as its first embed.
+			ev.Text = embedPushText(m.Embeds())
+		}
 	}
 	push.EnqueueMessage(ctx, s.redis, ev, participants)
 }

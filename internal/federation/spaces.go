@@ -252,6 +252,8 @@ type SpaceMessageRequest struct {
 	MentionRoles    []string              `json:"mention_roles,omitempty"`
 	MentionEveryone bool                  `json:"mention_everyone,omitempty"`
 	Attachments     []messages.Attachment `json:"attachments,omitempty"`
+	// Embeds are a bot member's embeds, resolved by its own instance (embeds.go).
+	Embeds []messages.Embed `json:"embeds,omitempty"`
 	// Emojis describes the custom emoji the text uses; mentions in it are <@FID> (content.go).
 	Emojis []EmojiRef `json:"emojis,omitempty"`
 }
@@ -263,7 +265,9 @@ type SpaceMessageEditRequest struct {
 	User       string     `json:"user"`
 	Ciphertext string     `json:"ciphertext,omitempty"`
 	Plaintext  string     `json:"plaintext,omitempty"`
-	Emojis     []EmojiRef `json:"emojis,omitempty"`
+	// Embeds, as a local edit's: absent keeps the message's, [] clears them, a list replaces them.
+	Embeds *[]messages.Embed `json:"embeds,omitempty"`
+	Emojis []EmojiRef        `json:"emojis,omitempty"`
 }
 
 // SpaceMessageRequestRef: POST /spaces/messages/delete and /spaces/messages/get.
@@ -1261,7 +1265,8 @@ func refusalFields(body string) map[string]any {
 		return nil
 	}
 	out := map[string]any{}
-	for _, key := range []string{"code", "rule", "requirement"} {
+	// path names the refused field of a bot's embeds (code invalid_embed).
+	for _, key := range []string{"code", "rule", "requirement", "path"} {
 		if v, ok := in[key].(string); ok && v != "" && len(v) <= maxRefusalField {
 			out[key] = v
 		}
@@ -1300,10 +1305,12 @@ func (s *Service) CreateRemote(ctx context.Context, origin string, room *rooms.R
 	if err != nil {
 		return nil, err
 	}
+	// The embeds come in their stored form: an attachment:// is already this instance's URL.
 	req := SpaceMessageRequest{
 		Room: ref, User: s.FIDOf(user), Ciphertext: in.Ciphertext, Plaintext: s.textToWire(ctx, in.Plaintext),
-		Emojis:       s.emojiRefs(ctx, in.Plaintext),
+		Emojis:       s.emojiRefs(ctx, withEmbedText(in.Plaintext, in.Embeds.List)),
 		MentionRoles: in.MentionRoles, MentionEveryone: in.MentionEveryone, Attachments: attachments,
+		Embeds: s.embedsToWire(ctx, in.Embeds.List),
 	}
 	if in.SenderDeviceID != 0 {
 		req.SenderDeviceID = id.Format(int64(in.SenderDeviceID))
@@ -1337,14 +1344,29 @@ func (s *Service) EditRemote(ctx context.Context, origin string, room *rooms.Roo
 	}
 	req := SpaceMessageEditRequest{
 		Room: ref, Message: s.messageRef(ctx, room.ID, msgID), User: s.FIDOf(user),
-		Ciphertext: in.Ciphertext, Plaintext: s.textToWire(ctx, in.Plaintext), Emojis: s.emojiRefs(ctx, in.Plaintext),
+		Ciphertext: in.Ciphertext, Plaintext: s.textToWire(ctx, in.Plaintext), Emojis: s.emojiRefs(ctx, withEmbedText(in.Plaintext, in.Embeds.List)),
+	}
+	if in.Embeds.Set {
+		// Replaced, or cleared with []; left out, the origin keeps them.
+		wire := s.embedsToWire(ctx, in.Embeds.List)
+		if wire == nil {
+			wire = []messages.Embed{}
+		}
+		req.Embeds = &wire
 	}
 	var reply MessageEvent
 	if _, err := s.client.Do(ctx, origin, http.MethodPatch, "/spaces/messages", req, &reply); err != nil {
 		return nil, messageOriginError(err, origin, "/spaces/messages")
 	}
 	s.recordEmojiRefs(ctx, reply.Emojis)
-	updated, err := s.msgSvc.EditFederated(ctx, room.ID, msgID, reply.Ciphertext, s.textFromWire(ctx, reply.Plaintext))
+	// The answer is the whole message, so the copy takes its embeds as they are now, none
+	// included.
+	var embeds *[]messages.Embed
+	if reply.Ciphertext == "" {
+		list := s.acceptEmbeds(ctx, room, user, reply.Ciphertext, reply.Embeds)
+		embeds = &list
+	}
+	updated, err := s.msgSvc.EditFederated(ctx, room.ID, msgID, reply.Ciphertext, s.textFromWire(ctx, reply.Plaintext), embeds)
 	if errors.Is(err, messages.ErrMessageNotFound) {
 		// Edited something this instance never stored (pre-join history): hand back the
 		// origin's copy as-is.
@@ -1765,6 +1787,13 @@ func (h *Handler) SpaceMessageCreate(c fiber.Ctx) error {
 	in := &messages.CreateMessageInput{
 		Ciphertext: body.Ciphertext, Plaintext: h.svc.textFromWire(ctx, body.Plaintext), MentionEveryone: body.MentionEveryone,
 	}
+	if len(body.Embeds) > 0 {
+		embeds, err := h.svc.peerEmbeds(ctx, body.Embeds)
+		if err != nil {
+			return spaceFail(c, err, map[string]any{"room_id": sc.room.ID})
+		}
+		in.Embeds = messages.EmbedList{Set: true, List: embeds}
+	}
 	if body.SenderDeviceID != "" {
 		if did, err := id.Parse(body.SenderDeviceID); err == nil {
 			in.SenderDeviceID = messages.SnowflakeID(did)
@@ -1815,7 +1844,15 @@ func (h *Handler) SpaceMessageEdit(c fiber.Ctx) error {
 	}
 	ctx := WithExcludedPeer(c.Context(), RequesterDomain(c))
 	h.svc.recordEmojiRefs(ctx, body.Emojis)
-	updated, err := h.svc.msgSvc.Edit(ctx, actor.ID, sc.room.ID, msgID, &messages.EditMessageInput{Ciphertext: body.Ciphertext, Plaintext: h.svc.textFromWire(ctx, body.Plaintext)})
+	in := &messages.EditMessageInput{Ciphertext: body.Ciphertext, Plaintext: h.svc.textFromWire(ctx, body.Plaintext)}
+	if body.Embeds != nil {
+		embeds, err := h.svc.peerEmbeds(ctx, *body.Embeds)
+		if err != nil {
+			return spaceFail(c, err, map[string]any{"room_id": sc.room.ID, "message_id": msgID})
+		}
+		in.Embeds = messages.EmbedList{Set: true, List: embeds}
+	}
+	updated, err := h.svc.msgSvc.Edit(ctx, actor.ID, sc.room.ID, msgID, in)
 	if err != nil {
 		if errors.Is(err, messages.ErrForbidden) {
 			return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": "cannot edit this message"})

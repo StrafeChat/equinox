@@ -94,6 +94,8 @@ type MessageEvent struct {
 	MentionRoles    []string              `json:"mention_roles,omitempty"` // space channels: the origin's role ids
 	MentionEveryone bool                  `json:"mention_everyone,omitempty"`
 	Attachments     []messages.Attachment `json:"attachments,omitempty"`
+	// Embeds are a bot's rich embeds in their stored form, mentions in them <@FID> (embeds.go).
+	Embeds []messages.Embed `json:"embeds,omitempty"`
 	// Emojis describes the custom emoji the text uses; mentions in the text are <@FID>.
 	Emojis        []EmojiRef `json:"emojis,omitempty"`
 	SystemType    string     `json:"system_type,omitempty"`
@@ -114,7 +116,10 @@ type MessageEdit struct {
 	Message    MessageRef `json:"message"`
 	Ciphertext string     `json:"ciphertext,omitempty"`
 	Plaintext  string     `json:"plaintext,omitempty"`
-	Emojis     []EmojiRef `json:"emojis,omitempty"`
+	// Embeds is the message's whole new list ([] for none) on a plaintext edit. An instance
+	// from before embeds leaves it out, which keeps whatever the copy has.
+	Embeds *[]messages.Embed `json:"embeds,omitempty"`
+	Emojis []EmojiRef        `json:"emojis,omitempty"`
 }
 
 // MessageDelete: POST /rooms/messages/delete.

@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/StrafeChat/equinox/internal/logger"
 )
@@ -29,8 +30,33 @@ type Config struct {
 	Mail       MailConfig
 	Push       PushConfig
 	Gifs       GifsConfig
+	Media      MediaProxyConfig
 	Database   DatabaseConfig
 	Log        LogConfig
+}
+
+// MediaProxyConfig is the image proxy (internal/modules/media) that serves the external
+// pictures in bots' message embeds, so a viewer's browser only ever loads them from this
+// instance and the site a bot pointed at never learns who is reading. On by default.
+type MediaProxyConfig struct {
+	// Enabled is MEDIA_PROXY (default true). Off: embeds carry no proxy URLs and clients
+	// offer to load an external image themselves instead of loading it unasked.
+	Enabled bool
+	// Key signs proxy URLs (MEDIA_PROXY_KEY, 32+ characters; 64 hex characters are read as
+	// the 32 bytes they spell). Empty = a random key kept in Redis, shared by every API
+	// replica. Never logged, never sent anywhere.
+	Key string
+	// MaxBytes caps one proxied image (MEDIA_PROXY_MAX_MB, default 8).
+	MaxBytes int
+	// CacheTTL is how long a fetched image stays in Nebula's media-cache/ before it is
+	// fetched again (MEDIA_PROXY_CACHE_TTL: a Go duration or "<n>d", default 7d).
+	CacheTTL time.Duration
+	// CacheMaxBytes caps what media-cache/ holds in all (MEDIA_PROXY_CACHE_MAX_GB, default
+	// 5). Past it a fetched image is still served, just not kept, until the sweeper frees room.
+	CacheMaxBytes int64
+	// AllowPrivate lets the proxy reach loopback and private addresses - development only,
+	// for instances on one machine (a.local / b.local) whose CDNs are on localhost.
+	AllowPrivate bool
 }
 
 // VoiceConfig points the API at a LiveKit server, which carries every voice/video call
@@ -441,6 +467,7 @@ func Load() (*Config, error) {
 	cfg.TwoFactor = loadTwoFactorConfig(getEnvString("TOTP_ENCRYPTION_KEY", ""), cfg.App.WebURL)
 	cfg.Mail = loadMailConfig(cfg.App.WebURL, cfg.Federation.Domain)
 	cfg.Push = loadPushConfig(cfg.App.WebURL, cfg.Federation.Domain)
+	cfg.Media = loadMediaProxyConfig()
 
 	// The body limit has to fit the largest attachment plus multipart overhead, or uploads
 	// fail with a 413 before the attachment code ever sees them. Deriving it means raising
@@ -557,6 +584,66 @@ func validate(cfg *Config) error {
 	}
 	if err := validatePush(cfg.Push); err != nil {
 		return err
+	}
+	if err := validateMediaProxy(cfg.Media); err != nil {
+		return err
+	}
+	return nil
+}
+
+// loadMediaProxyConfig reads MEDIA_PROXY*. Everything has a default, so an instance gets
+// the proxy without setting anything.
+func loadMediaProxyConfig() MediaProxyConfig {
+	m := MediaProxyConfig{
+		Enabled:      getEnvBool("MEDIA_PROXY", true),
+		Key:          strings.TrimSpace(getEnvString("MEDIA_PROXY_KEY", "")),
+		MaxBytes:     getEnvInt("MEDIA_PROXY_MAX_MB", 8) * 1024 * 1024,
+		AllowPrivate: getEnvBool("MEDIA_PROXY_ALLOW_PRIVATE", false),
+	}
+	// A value that does not parse leaves 0, which validate refuses by name.
+	m.CacheTTL, _ = parseDays(strings.TrimSpace(getEnvString("MEDIA_PROXY_CACHE_TTL", "7d")))
+	if gb, err := strconv.Atoi(strings.TrimSpace(getEnvString("MEDIA_PROXY_CACHE_MAX_GB", "5"))); err == nil && gb > 0 && gb <= maxMediaCacheGB {
+		m.CacheMaxBytes = int64(gb) << 30
+	}
+	return m
+}
+
+// maxMediaCacheGB is the largest MEDIA_PROXY_CACHE_MAX_GB read (a petabyte): past it the
+// byte count would overflow.
+const maxMediaCacheGB = 1 << 20
+
+// parseDays is time.ParseDuration plus a whole-days form ("7d"), which is how a cache
+// lifetime is naturally written.
+func parseDays(raw string) (time.Duration, bool) {
+	if n, ok := strings.CutSuffix(raw, "d"); ok {
+		days, err := strconv.Atoi(n)
+		if err != nil || days <= 0 {
+			return 0, false
+		}
+		return time.Duration(days) * 24 * time.Hour, true
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil || d <= 0 {
+		return 0, false
+	}
+	return d, true
+}
+
+func validateMediaProxy(m MediaProxyConfig) error {
+	if !m.Enabled {
+		return nil
+	}
+	if m.Key != "" && len(m.Key) < 32 {
+		return errors.New("MEDIA_PROXY_KEY must be at least 32 characters (openssl rand -hex 32), or empty to have one generated")
+	}
+	if m.MaxBytes < 1024*1024 || m.MaxBytes > 100*1024*1024 {
+		return errors.New("MEDIA_PROXY_MAX_MB must be 1-100")
+	}
+	if m.CacheTTL < time.Minute {
+		return errors.New("MEDIA_PROXY_CACHE_TTL must be a duration of at least a minute, like 7d or 12h")
+	}
+	if m.CacheMaxBytes < 1<<30 {
+		return errors.New("MEDIA_PROXY_CACHE_MAX_GB must be a whole number of gigabytes, at least 1")
 	}
 	return nil
 }

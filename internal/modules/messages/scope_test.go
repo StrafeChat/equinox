@@ -14,12 +14,17 @@ import (
 // editableMessages is fakeMessages that can also edit what it stored.
 type editableMessages struct{ *fakeMessages }
 
-func (f editableMessages) Update(_ context.Context, _, msgID int64, _, plaintext string) (*Message, error) {
+func (f editableMessages) Update(_ context.Context, _, msgID int64, _, plaintext string, embeds *string) (*Message, error) {
 	m := f.stored[msgID]
 	if m == nil {
 		return nil, nil
 	}
-	m.Plaintext = plaintext
+	if plaintext != "" {
+		m.Plaintext = plaintext
+	}
+	if embeds != nil {
+		m.EmbedsJSON = *embeds
+	}
 	return m, nil
 }
 
@@ -82,7 +87,7 @@ func TestMessageEventsNameTheirSpaceAndRoom(t *testing.T) {
 				t.Fatal(err)
 			}
 			// The edit path has no room loaded: it reads one to learn the space.
-			if _, err := w.svc.EditFederated(ctx, mirrorRoom, 901, "", "hi again"); err != nil {
+			if _, err := w.svc.EditFederated(ctx, mirrorRoom, 901, "", "hi again", nil); err != nil {
 				t.Fatal(err)
 			}
 			if err := w.svc.DeleteFederated(ctx, mirrorRoom, 901); err != nil {
@@ -126,7 +131,7 @@ func TestAFailedRoomReadStillPublishes(t *testing.T) {
 	w.svc.rooms = unreadableRooms{w.rooms}
 	rdb, published := redistest.New()
 	w.svc.redis = rdb
-	if _, err := w.svc.EditFederated(context.Background(), mirrorRoom, 901, "", "edited"); err != nil {
+	if _, err := w.svc.EditFederated(context.Background(), mirrorRoom, 901, "", "edited", nil); err != nil {
 		t.Fatal(err)
 	}
 	evs := eventsOf(published, "MESSAGE_UPDATE")

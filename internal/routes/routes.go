@@ -15,6 +15,7 @@ func SetupRoutes(d Deps) {
 	SetupFederationRoutes(d)
 	SetupVoiceRoutes(d)
 	SetupUnfurlRoutes(d)
+	SetupMediaRoutes(d)
 	SetupGifsRoutes(d)
 	SetupPushRoutes(d)
 }

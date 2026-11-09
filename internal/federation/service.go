@@ -160,6 +160,13 @@ func (s *Service) SetThreadHooks(h messages.ThreadHooks) {
 	s.msgSvc.SetThreadHooks(peerThreadHooks{h})
 }
 
+// SetMediaSigner hands in the instance's image proxy. This engine serves messages through its
+// own messages service (a mirror's history, a peer's write coming back as MESSAGE_CREATE), and
+// the embeds it serializes must point at this instance's proxy as the API's do.
+func (s *Service) SetMediaSigner(m messages.MediaSigner) {
+	s.msgSvc.SetMediaSigner(m)
+}
+
 // peerThreadHooks is the threads module as a peer's write reaches it.
 type peerThreadHooks struct{ messages.ThreadHooks }
 
@@ -922,14 +929,19 @@ func (s *Service) AfterTyping(ctx context.Context, roomID, userID int64) {
 // messageEvent is the wire form of a stored message (relays, and the origin's answers to
 // a mirror's writes and history reads). Reactions are attached when given.
 func (s *Service) messageEvent(ctx context.Context, ref RoomRef, m *messages.Message, reactions []messages.ReactionSummary) MessageEvent {
+	var embeds []messages.Embed
+	if m.Ciphertext == "" {
+		embeds = m.Embeds()
+	}
 	ev := MessageEvent{
 		Room:            ref,
 		Message:         s.messageRef(ctx, m.RoomID, m.ID),
 		Ciphertext:      m.Ciphertext,
 		Plaintext:       s.textToWire(ctx, m.Plaintext),
-		Emojis:          s.emojiRefs(ctx, m.Plaintext),
+		Emojis:          s.emojiRefs(ctx, withEmbedText(m.Plaintext, embeds)),
 		MentionEveryone: m.MentionEveryone,
 		Attachments:     m.Attachments(),
+		Embeds:          s.embedsToWire(ctx, embeds),
 		SystemType:      m.SystemType,
 		SystemPayload:   s.systemPayloadToWire(ctx, m.SystemPayload),
 		CreatedAt:       m.CreatedAt,
@@ -999,7 +1011,18 @@ func (s *Service) AfterMessageEdited(ctx context.Context, roomID int64, particip
 	if err != nil {
 		return
 	}
-	body := MessageEdit{Room: ref, Message: s.messageRef(ctx, roomID, m.ID), Ciphertext: m.Ciphertext, Plaintext: s.textToWire(ctx, m.Plaintext), Emojis: s.emojiRefs(ctx, m.Plaintext)}
+	body := MessageEdit{Room: ref, Message: s.messageRef(ctx, roomID, m.ID), Ciphertext: m.Ciphertext, Plaintext: s.textToWire(ctx, m.Plaintext)}
+	var embeds []messages.Embed
+	if m.Ciphertext == "" {
+		// The whole new list, [] when there is none, so a peer drops what its copy had.
+		embeds = m.Embeds()
+		wire := s.embedsToWire(ctx, embeds)
+		if wire == nil {
+			wire = []messages.Embed{}
+		}
+		body.Embeds = &wire
+	}
+	body.Emojis = s.emojiRefs(ctx, withEmbedText(m.Plaintext, embeds))
 	s.fanOut(ctx, targets, http.MethodPatch, "/rooms/messages", body)
 }
 

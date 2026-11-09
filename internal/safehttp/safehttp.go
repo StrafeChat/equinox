@@ -10,6 +10,7 @@ package safehttp
 import (
 	"errors"
 	"net"
+	"net/http"
 	"net/netip"
 	"syscall"
 	"time"
@@ -40,6 +41,58 @@ func DialControl(network, address string, _ syscall.RawConn) error {
 // addresses.
 func NewDialer(timeout time.Duration) *net.Dialer {
 	return &net.Dialer{Timeout: timeout, Control: DialControl}
+}
+
+// ClientOptions shapes NewClient.
+type ClientOptions struct {
+	// Timeout bounds the whole exchange - connect, redirects, headers and body.
+	Timeout time.Duration
+	// MaxRedirects is how many redirects are followed before giving up.
+	MaxRedirects int
+	// AllowPrivate drops the address check. Development only: instances on one machine
+	// whose services listen on loopback (MEDIA_PROXY_ALLOW_PRIVATE).
+	AllowPrivate bool
+}
+
+// ErrTooManyRedirects is returned when a fetch is redirected more than MaxRedirects times.
+var ErrTooManyRedirects = errors.New("too many redirects")
+
+// NewClient is an HTTP client for fetching a URL someone else chose: it reaches only public
+// addresses (checked at every dial, so redirects and rebinding too), follows at most
+// MaxRedirects redirects and only to http(s), keeps no cookies, never uses a proxy from the
+// environment, and does not tell a redirect target where the request came from (no Referer).
+func NewClient(o ClientOptions) *http.Client {
+	dialer := NewDialer(o.Timeout)
+	if o.AllowPrivate {
+		dialer = &net.Dialer{Timeout: o.Timeout}
+	}
+	transport := &http.Transport{
+		DialContext:           dialer.DialContext,
+		ForceAttemptHTTP2:     true,
+		MaxIdleConns:          10,
+		IdleConnTimeout:       30 * time.Second,
+		TLSHandshakeTimeout:   o.Timeout,
+		ExpectContinueTimeout: time.Second,
+		DisableKeepAlives:     true,
+	}
+	return &http.Client{
+		Transport: transport,
+		Timeout:   o.Timeout,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			// via holds every request made so far, the first one included: the redirect
+			// being asked about is number len(via).
+			if len(via) > o.MaxRedirects {
+				return ErrTooManyRedirects
+			}
+			if req.URL.Scheme != "http" && req.URL.Scheme != "https" {
+				return ErrBlockedAddress
+			}
+			// net/http adds the previous URL as Referer on each hop; the next host has no
+			// business knowing it.
+			req.Header.Del("Referer")
+			return nil
+		},
+	}
 }
 
 // IsPublicIP reports whether ip is a globally routable unicast address: not loopback,

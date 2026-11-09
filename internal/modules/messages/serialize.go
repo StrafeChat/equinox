@@ -128,14 +128,14 @@ func (s *Service) referencedMessageJSON(ctx context.Context, m *Message) map[str
 	if ref == nil {
 		return nil
 	}
-	rj := map[string]interface{}(messageToJSON(ref, nil))
+	rj := map[string]interface{}(s.messageToJSON(ref, nil))
 	embedUsers(rj, ref, s.userObjects(ctx, append([]int64{ref.SenderID}, ref.Mentions...)))
 	return rj
 }
 
 // MessageJSON serializes one message with author / mentioned users / referenced message embedded.
 func (s *Service) MessageJSON(ctx context.Context, m *Message, reactions []ReactionSummary) map[string]interface{} {
-	out := map[string]interface{}(messageToJSON(m, reactions))
+	out := map[string]interface{}(s.messageToJSON(m, reactions))
 	embedUsers(out, m, s.userObjects(ctx, append([]int64{m.SenderID}, m.Mentions...)))
 	if ref := s.referencedMessageJSON(ctx, m); ref != nil {
 		out["referenced_message"] = ref
@@ -173,11 +173,11 @@ func (s *Service) MessagesJSON(ctx context.Context, msgs []Message, reactionsByM
 	pool := s.userObjects(ctx, ids)
 	out := make([]map[string]interface{}, len(msgs))
 	for i := range msgs {
-		row := map[string]interface{}(messageToJSON(&msgs[i], reactionsByMsg[msgs[i].ID]))
+		row := map[string]interface{}(s.messageToJSON(&msgs[i], reactionsByMsg[msgs[i].ID]))
 		embedUsers(row, &msgs[i], pool)
 		if msgs[i].ReplyToID != nil {
 			if ref := refs[*msgs[i].ReplyToID]; ref != nil {
-				rj := map[string]interface{}(messageToJSON(ref, nil))
+				rj := map[string]interface{}(s.messageToJSON(ref, nil))
 				embedUsers(rj, ref, pool)
 				row["referenced_message"] = rj
 			}
@@ -190,7 +190,7 @@ func (s *Service) MessagesJSON(ctx context.Context, msgs []Message, reactionsByM
 // messageEventPayloadEnriched is messageEventPayload plus the embedded author / mention users /
 // referenced message, for the realtime MESSAGE_CREATE / MESSAGE_UPDATE frames.
 func (s *Service) messageEventPayloadEnriched(ctx context.Context, m *Message) map[string]interface{} {
-	out := messageEventPayload(m)
+	out := s.messageEventPayload(m)
 	embedUsers(out, m, s.userObjects(ctx, append([]int64{m.SenderID}, m.Mentions...)))
 	if ref := s.referencedMessageJSON(ctx, m); ref != nil {
 		out["referenced_message"] = ref

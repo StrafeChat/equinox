@@ -8,8 +8,10 @@ import (
 	"encoding/json"
 	"errors"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/redis/go-redis/v9"
 )
@@ -35,12 +37,16 @@ type Redis struct {
 	hashes map[string]map[string]string
 	sets   map[string]map[string]bool
 	stream map[string][]string
+	zsets  map[string]map[string]float64
+	// ttls is the expiry each string key was last SET with (nothing expires on its own).
+	ttls   map[string]time.Duration
 	events []Event
 }
 
 // New returns a client backed by nothing but memory.
 func New() (*redis.Client, *Redis) {
-	r := &Redis{strs: map[string]string{}, hashes: map[string]map[string]string{}, sets: map[string]map[string]bool{}, stream: map[string][]string{}}
+	r := &Redis{strs: map[string]string{}, hashes: map[string]map[string]string{}, sets: map[string]map[string]bool{}, stream: map[string][]string{},
+		zsets: map[string]map[string]float64{}, ttls: map[string]time.Duration{}}
 	rdb := redis.NewClient(&redis.Options{Addr: "127.0.0.1:1", MaxRetries: -1})
 	rdb.AddHook(r)
 	return rdb, r
@@ -87,6 +93,36 @@ func (r *Redis) SetString(key, value string) {
 	r.strs[key] = value
 }
 
+// Strings is every string key that is set, sorted.
+func (r *Redis) Strings() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]string, 0, len(r.strs))
+	for k := range r.strs {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// TTL is the expiry a string key was last set with, 0 for none.
+func (r *Redis) TTL(key string) time.Duration {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.ttls[key]
+}
+
+// SortedSet is a sorted set's members and their scores.
+func (r *Redis) SortedSet(key string) map[string]float64 {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := map[string]float64{}
+	for m, s := range r.zsets[key] {
+		out[m] = s
+	}
+	return out
+}
+
 // DeleteString deletes string keys, as if they had expired.
 func (r *Redis) DeleteString(keys ...string) {
 	r.mu.Lock()
@@ -115,6 +151,23 @@ func (r *Redis) ProcessPipelineHook(redis.ProcessPipelineHook) redis.ProcessPipe
 			r.run(cmd)
 		}
 		return nil
+	}
+}
+
+// setTTL records the EX / PX a SET carried (args are what follows the value).
+func (r *Redis) setTTL(key string, args []any) {
+	delete(r.ttls, key)
+	for i := 0; i+1 < len(args); i++ {
+		n, err := strconv.ParseInt(text(args[i+1]), 10, 64)
+		if err != nil {
+			continue
+		}
+		switch strings.ToLower(text(args[i])) {
+		case "ex":
+			r.ttls[key] = time.Duration(n) * time.Second
+		case "px":
+			r.ttls[key] = time.Duration(n) * time.Millisecond
+		}
 	}
 }
 
@@ -181,11 +234,13 @@ func (r *Redis) run(cmd redis.Cmder) {
 		if b, ok := cmd.(*redis.BoolCmd); ok {
 			if !taken {
 				r.strs[key] = text(args[2])
+				r.setTTL(key, args[3:])
 			}
 			b.SetVal(!taken)
 			return
 		}
 		r.strs[key] = text(args[2])
+		r.setTTL(key, args[3:])
 		cmd.(*redis.StatusCmd).SetVal("OK")
 	case "del":
 		var n int64
@@ -195,8 +250,14 @@ func (r *Redis) run(cmd redis.Cmder) {
 			if isStr || isHash {
 				n++
 			}
+			_, isZSet := r.zsets[text(k)]
+			if isZSet && !isStr && !isHash {
+				n++
+			}
 			delete(r.strs, text(k))
+			delete(r.ttls, text(k))
 			delete(r.hashes, text(k))
+			delete(r.zsets, text(k))
 		}
 		cmd.(*redis.IntCmd).SetVal(n)
 	case "exists":
@@ -206,6 +267,19 @@ func (r *Redis) run(cmd redis.Cmder) {
 				n++
 			}
 		}
+		cmd.(*redis.IntCmd).SetVal(n)
+	case "incrby", "decrby":
+		n, err := strconv.ParseInt(r.strs[key], 10, 64)
+		if _, ok := r.strs[key]; ok && err != nil {
+			cmd.SetErr(errors.New("ERR value is not an integer or out of range"))
+			return
+		}
+		by, _ := strconv.ParseInt(text(args[2]), 10, 64)
+		if strings.EqualFold(cmd.Name(), "decrby") {
+			by = -by
+		}
+		n += by
+		r.strs[key] = strconv.FormatInt(n, 10)
 		cmd.(*redis.IntCmd).SetVal(n)
 	case "expire":
 		cmd.(*redis.BoolCmd).SetVal(true)
@@ -235,6 +309,66 @@ func (r *Redis) run(cmd redis.Cmder) {
 			out = append(out, r.sets[key][text(v)])
 		}
 		cmd.(*redis.BoolSliceCmd).SetVal(out)
+	case "zadd":
+		if r.zsets[key] == nil {
+			r.zsets[key] = map[string]float64{}
+		}
+		var added int64
+		for i := 2; i+1 < len(args); i += 2 {
+			score, _ := strconv.ParseFloat(text(args[i]), 64)
+			if _, ok := r.zsets[key][text(args[i+1])]; !ok {
+				added++
+			}
+			r.zsets[key][text(args[i+1])] = score
+		}
+		cmd.(*redis.IntCmd).SetVal(added)
+	case "zscore":
+		score, ok := r.zsets[key][text(args[2])]
+		if !ok {
+			cmd.SetErr(redis.Nil)
+			return
+		}
+		cmd.(*redis.FloatCmd).SetVal(score)
+	case "zrem":
+		var n int64
+		for _, m := range args[2:] {
+			if _, ok := r.zsets[key][text(m)]; ok {
+				delete(r.zsets[key], text(m))
+				n++
+			}
+		}
+		cmd.(*redis.IntCmd).SetVal(n)
+	case "zrangebyscore":
+		bound := func(v any, inf float64) float64 {
+			s := strings.TrimPrefix(text(v), "(")
+			if strings.HasSuffix(s, "inf") {
+				return inf
+			}
+			f, _ := strconv.ParseFloat(s, 64)
+			return f
+		}
+		lo, hi := bound(args[2], -1e308), bound(args[3], 1e308)
+		var out []string
+		for m, score := range r.zsets[key] {
+			if score >= lo && score <= hi {
+				out = append(out, m)
+			}
+		}
+		sort.Slice(out, func(i, j int) bool {
+			a, b := r.zsets[key][out[i]], r.zsets[key][out[j]]
+			return a < b || (a == b && out[i] < out[j])
+		})
+		for i := 4; i+2 < len(args); i++ {
+			if strings.EqualFold(text(args[i]), "limit") {
+				offset, _ := strconv.Atoi(text(args[i+1]))
+				count, _ := strconv.Atoi(text(args[i+2]))
+				out = out[min(offset, len(out)):]
+				if count >= 0 && count < len(out) {
+					out = out[:count]
+				}
+			}
+		}
+		cmd.(*redis.StringSliceCmd).SetVal(out)
 	case "xadd":
 		r.stream[key] = append(r.stream[key], text(args[len(args)-1]))
 		cmd.(*redis.StringCmd).SetVal("0-0")

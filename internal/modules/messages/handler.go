@@ -34,10 +34,10 @@ func (h *Handler) Create(c fiber.Ctx) error {
 	}
 	var in CreateMessageInput
 	if err := json.Unmarshal(c.Body(), &in); err != nil {
-		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "invalid json"})
+		return badBody(c, err)
 	}
-	if in.Ciphertext == "" && in.Plaintext == "" && len(in.Attachments) == 0 {
-		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "ciphertext, plaintext, or attachments required"})
+	if in.Ciphertext == "" && in.Plaintext == "" && len(in.Attachments) == 0 && len(in.Embeds.List) == 0 {
+		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "ciphertext, plaintext, attachments, or embeds required"})
 	}
 	msg, err := h.svc.Create(c.Context(), user.ID, roomID, &in)
 	if err != nil {
@@ -182,10 +182,16 @@ func HTTPError(err error) (status int, body fiber.Map, ok bool) {
 	var slow *SlowmodeError
 	var verr *VerificationError
 	var aerr *AutomodError
+	var eerr *EmbedError
 	switch {
 	case errors.Is(err, ErrBlocked), errors.Is(err, ErrSystemReadOnly), errors.Is(err, ErrAttachForbidden),
-		errors.Is(err, ErrThreadLocked), errors.Is(err, ErrThreadArchived):
+		errors.Is(err, ErrThreadLocked), errors.Is(err, ErrThreadArchived), errors.Is(err, ErrEmbedForbidden):
 		return http.StatusForbidden, fiber.Map{"error": err.Error()}, true
+	case errors.As(err, &eerr):
+		// The path names the first field refused, so a bot developer sees what to fix.
+		return http.StatusBadRequest, fiber.Map{"error": eerr.Error(), "code": "invalid_embed", "path": eerr.Path}, true
+	case errors.Is(err, ErrEmbedsForBots), errors.Is(err, ErrEmbedsEncrypted):
+		return http.StatusBadRequest, fiber.Map{"error": err.Error()}, true
 	case errors.Is(err, ErrNotParticipant):
 		return http.StatusForbidden, fiber.Map{"error": "not a participant"}, true
 	case errors.Is(err, ErrForbidden):
@@ -332,10 +338,10 @@ func (h *Handler) Edit(c fiber.Ctx) error {
 	}
 	var in EditMessageInput
 	if err := json.Unmarshal(c.Body(), &in); err != nil {
-		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "invalid json"})
+		return badBody(c, err)
 	}
-	if in.Ciphertext == "" && in.Plaintext == "" {
-		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "ciphertext or plaintext required"})
+	if in.Ciphertext == "" && in.Plaintext == "" && !in.Embeds.Set {
+		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "ciphertext, plaintext, or embeds required"})
 	}
 	msg, err := h.svc.Edit(c.Context(), user.ID, roomID, msgID, &in)
 	if err != nil {
@@ -360,10 +366,26 @@ func (h *Handler) Edit(c fiber.Ctx) error {
 		if err == ErrContentTooLong {
 			return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 		}
+		if errors.Is(err, ErrInvalidEmbed) || errors.Is(err, ErrEmbedsForBots) || errors.Is(err, ErrEmbedsEncrypted) || errors.Is(err, ErrEmbedForbidden) ||
+			errors.Is(err, ErrAutomod) {
+			status, body, _ := HTTPError(err)
+			return c.Status(status).JSON(body)
+		}
 		logger.Err("messages", err, nil)
 		return c.Status(http.StatusInternalServerError).JSON(fiber.Map{"error": "internal error"})
 	}
 	return c.JSON(h.svc.MessageJSON(c.Context(), msg, nil))
+}
+
+// badBody answers a create or edit body that did not decode: a refused embed names its field,
+// anything else is malformed JSON.
+func badBody(c fiber.Ctx, err error) error {
+	var eerr *EmbedError
+	if errors.As(err, &eerr) {
+		status, body, _ := HTTPError(eerr)
+		return c.Status(status).JSON(body)
+	}
+	return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": "invalid json"})
 }
 
 // Delete handles DELETE /rooms/:id/messages/:msg_id
@@ -402,7 +424,9 @@ func (h *Handler) Delete(c fiber.Ctx) error {
 	return c.Status(http.StatusNoContent).Send(nil)
 }
 
-func messageToJSON(m *Message, reactions []ReactionSummary) fiber.Map {
+// messageToJSON is the REST message object. Its gateway twin is messageEventPayload; both take
+// `embeds` from embedsJSON.
+func (s *Service) messageToJSON(m *Message, reactions []ReactionSummary) fiber.Map {
 	out := fiber.Map{
 		"room_id":          id.Format(m.RoomID),
 		"id":               id.Format(m.ID),
@@ -430,6 +454,7 @@ func messageToJSON(m *Message, reactions []ReactionSummary) fiber.Map {
 	if atts := m.Attachments(); len(atts) > 0 {
 		out["attachments"] = atts
 	}
+	out["embeds"] = s.embedsJSON(m)
 	if m.DeletedAt != nil && !m.DeletedAt.IsZero() {
 		out["deleted_at"] = m.DeletedAt
 	}

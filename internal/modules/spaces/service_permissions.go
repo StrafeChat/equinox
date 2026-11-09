@@ -88,13 +88,13 @@ func resolveEffectiveRoomPermissions(
 // overwrite stack so every consumer (messages, voice, search, the gateway, the client's
 // mirror of this function) agrees: a member who cannot View Room has no permission at all in
 // that room, and one who cannot Send Messages cannot do the things that only make sense
-// while sending - attach files or mention @everyone.
+// while sending - attach files, embed links or mention @everyone.
 func applyImplicitRoomRules(perms int64) int64 {
 	if !permissions.Has(perms, permissions.PermViewRoom) {
 		return 0
 	}
 	if !permissions.Has(perms, permissions.PermSendMessages) {
-		perms &^= permissions.PermAttachFiles | permissions.PermMentionEveryone
+		perms &^= permissions.PermAttachFiles | permissions.PermMentionEveryone | permissions.PermEmbedLinks
 	}
 	return perms
 }

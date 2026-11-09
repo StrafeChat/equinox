@@ -458,7 +458,7 @@ func (m *memMessages) SoftDelete(_ context.Context, _, msgID int64) error {
 	return nil
 }
 
-func (m *memMessages) Update(_ context.Context, _, msgID int64, _, _ string) (*messages.Message, error) {
+func (m *memMessages) Update(_ context.Context, _, msgID int64, _, _ string, _ *string) (*messages.Message, error) {
 	return m.stored[msgID], nil
 }
 

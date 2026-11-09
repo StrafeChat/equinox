@@ -58,11 +58,12 @@ func TestResolveEffectiveRoomPermissions_UserDenyBeatsRoleAllow(t *testing.T) {
 
 // The overwrite stack is Discord's: @everyone overwrite, then the member's role overwrites
 // aggregated (all denies, then all allows), then the member overwrite - followed by the two
-// implicit rules (no View Room = nothing; no Send Messages = no Attach Files / @everyone).
+// implicit rules (no View Room = nothing; no Send Messages = no Attach Files / Embed Links /
+// @everyone).
 func TestResolveEffectiveRoomPermissions_DiscordRules(t *testing.T) {
 	const everyone, roleA, roleB, user = int64(1), int64(2), int64(3), int64(42)
 	text := permissions.PermViewRoom | permissions.PermSendMessages | permissions.PermAttachFiles |
-		permissions.PermMentionEveryone | permissions.PermAddReactions
+		permissions.PermMentionEveryone | permissions.PermAddReactions | permissions.PermEmbedLinks
 
 	t.Run("role allow beats @everyone deny; member deny beats role allow", func(t *testing.T) {
 		got := resolveEffectiveRoomPermissions(text, everyone, []int64{roleA}, user,
@@ -98,11 +99,12 @@ func TestResolveEffectiveRoomPermissions_DiscordRules(t *testing.T) {
 		}
 	})
 
-	t.Run("no Send Messages clears Attach Files and @everyone but nothing else", func(t *testing.T) {
+	t.Run("no Send Messages clears Attach Files, Embed Links and @everyone but nothing else", func(t *testing.T) {
 		got := resolveEffectiveRoomPermissions(text, everyone, nil, user,
 			nil, []SpaceRoomUserOverride{{UserID: user, Deny: permissions.PermSendMessages}})
-		if permissions.Has(got, permissions.PermAttachFiles) || permissions.Has(got, permissions.PermMentionEveryone) {
-			t.Fatalf("attach/mention should follow Send Messages: %b", got)
+		if permissions.Has(got, permissions.PermAttachFiles) || permissions.Has(got, permissions.PermMentionEveryone) ||
+			permissions.Has(got, permissions.PermEmbedLinks) {
+			t.Fatalf("attach/embed/mention should follow Send Messages: %b", got)
 		}
 		if !permissions.Has(got, permissions.PermViewRoom) || !permissions.Has(got, permissions.PermAddReactions) {
 			t.Fatalf("unrelated bits must survive: %b", got)
@@ -112,7 +114,8 @@ func TestResolveEffectiveRoomPermissions_DiscordRules(t *testing.T) {
 	t.Run("AllRoom carries every room bit including Attach Files", func(t *testing.T) {
 		for _, bit := range []int64{permissions.PermViewRoom, permissions.PermSendMessages, permissions.PermAttachFiles,
 			permissions.PermReadMessageHistory, permissions.PermAddReactions, permissions.PermUseExternalEmojis,
-			permissions.PermMentionEveryone, permissions.PermManageMessages, permissions.PermConnect, permissions.PermPrioritySpeaker} {
+			permissions.PermMentionEveryone, permissions.PermManageMessages, permissions.PermConnect, permissions.PermPrioritySpeaker,
+			permissions.PermEmbedLinks} {
 			if !permissions.Has(permissions.AllRoom, bit) {
 				t.Fatalf("AllRoom is missing bit %b", bit)
 			}

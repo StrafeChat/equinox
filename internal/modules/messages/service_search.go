@@ -21,7 +21,7 @@ type SearchOptions struct {
 	Query          string
 	FromUserID     *int64
 	MentionsUserID *int64
-	// Has: "", "link", "image", "video", "audio", or "file" (any attachment).
+	// Has: "", "link", "image", "video", "audio", "file" (any attachment) or "embed".
 	Has      string
 	BeforeID *int64
 	Limit    int
@@ -55,12 +55,14 @@ const (
 
 var searchLinkRe = regexp.MustCompile(`https?://`)
 
-func matchesHas(atts []Attachment, plaintext, has string) bool {
+func matchesHas(atts []Attachment, plaintext, embedsJSON, has string) bool {
 	switch has {
 	case "":
 		return true
 	case "link":
 		return searchLinkRe.MatchString(plaintext)
+	case "embed":
+		return strings.TrimSpace(embedsJSON) != ""
 	case "file":
 		return len(atts) > 0
 	case "image", "video", "audio":
@@ -92,13 +94,14 @@ func matchesSearch(m *Message, opts *SearchOptions, q string) bool {
 			return false
 		}
 	}
-	if !matchesHas(m.Attachments(), m.Plaintext, opts.Has) {
+	if !matchesHas(m.Attachments(), m.Plaintext, m.EmbedsJSON, opts.Has) {
 		return false
 	}
-	if q != "" && !strings.Contains(strings.ToLower(m.Plaintext), q) {
-		return false
+	if q == "" || strings.Contains(strings.ToLower(m.Plaintext), q) {
+		return true
 	}
-	return true
+	// A bot's message is often all embed: its text is searched as the message's own is.
+	return m.EmbedsJSON != "" && strings.Contains(strings.ToLower(embedsText(m.Embeds())), q)
 }
 
 // SearchMessages scans a room's history for messages matching opts, newest first. Only

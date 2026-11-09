@@ -22,6 +22,7 @@ import (
 	"github.com/StrafeChat/equinox/internal/logger"
 	"github.com/StrafeChat/equinox/internal/mail"
 	"github.com/StrafeChat/equinox/internal/middleware"
+	"github.com/StrafeChat/equinox/internal/modules/media"
 	"github.com/StrafeChat/equinox/internal/routes"
 )
 
@@ -45,6 +46,10 @@ func New(cfg *config.Config) (*App, error) {
 		ReadTimeout:  2 * time.Minute,
 		WriteTimeout: time.Minute,
 		IdleTimeout:  2 * time.Minute,
+		// Room for the longest request line the API is sent: an image proxy address carries
+		// its source URL (up to 2 KB) base64url-encoded, past fasthttp's 4 KB default once a
+		// browser's headers are added.
+		ReadBufferSize: 16 * 1024,
 		// An error nothing handled must not reach the client as text: a gocql or Redis
 		// message names tables and hosts. Fiber's own *fiber.Error values (404, 405, 413,
 		// ...) are safe and kept as JSON; anything else - including a recovered panic -
@@ -106,12 +111,25 @@ func (a *App) register() error {
 	a.Fiber.Use(middleware.CORS(a.Config.HTTP.CORSOrigins))
 	a.Fiber.Use(middleware.RequestLog())
 
+	// The image proxy embeds' pictures are served through. Without it (switched off, or no
+	// key to sign with) embeds carry no proxy URLs and clients ask before loading a picture.
+	keyCtx, cancelKey := context.WithTimeout(context.Background(), 10*time.Second)
+	mediaSvc, err := media.New(keyCtx, a.Config, a.Redis)
+	cancelKey()
+	if err != nil {
+		logger.Warn("media", "image proxy disabled: %v", err)
+		mediaSvc = nil
+	}
+
 	var fed *federation.Service
 	if a.Config.Federation.Enabled {
 		var err error
 		fed, err = federation.New(a.Config, a.Scylla, a.Redis)
 		if err != nil {
 			return fmt.Errorf("federation: %w", err)
+		}
+		if mediaSvc != nil {
+			fed.SetMediaSigner(mediaSvc)
 		}
 		// Mirrors of spaces hosted elsewhere are brought back in line with their origin
 		// now and then, in case a relay was missed while this instance was down.
@@ -141,6 +159,7 @@ func (a *App) register() error {
 		Redis:      a.Redis,
 		Federation: fed,
 		Mailer:     mailer,
+		Media:      mediaSvc,
 	})
 	return nil
 }

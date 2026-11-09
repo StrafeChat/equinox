@@ -1,0 +1,12 @@
+-- Rich embeds on messages (Discord's model): a bot may attach up to ten embed objects to a
+-- message in a plaintext room. Like `attachments` (020) they are stored as opaque JSON on the
+-- message row, so a page of history stays a single partition read.
+--
+-- The JSON is the canonical input form (messages/embeds.go: text trimmed, URLs canonicalized,
+-- attachment:// already resolved to this instance's CDN) plus the width/height the server
+-- learned. Proxy URLs are never stored: they are signed at serialize time with this instance's
+-- key, so rotating the key breaks nothing and a mirror's copy is served by the mirror's proxy.
+-- Never written for an end-to-end encrypted room.
+--
+-- Apply it before starting API binaries that know the column: every message read selects it.
+ALTER TABLE messages ADD embeds text;

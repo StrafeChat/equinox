@@ -69,13 +69,18 @@ const (
 // Manage Nicknames: change or clear other members' nicknames and reset (clear, never set) the
 // rest of their space profiles, subject to the role hierarchy; and set your own nickname.
 // Only the owner may change the owner's nickname or profile.
-//
-// Bit 30 is the last one the web client's 32-bit bitwise maths can hold (bit 31 is its sign
-// bit); anything past 30 needs the client to move off `&`/`|` first.
 const (
 	PermChangeNickname  int64 = 1 << 28
 	PermManageNicknames int64 = 1 << 29
 )
+
+// PermEmbedLinks (appended after nicknames; room-scoped) lets a sender put rich embeds on a
+// message, on top of Send Messages (Discord's "Embed Links"; only bots send embeds). On by
+// default for @everyone. Without Send Messages it is cleared (spaces.applyImplicitRoomRules).
+//
+// Bit 30 is the last one the web client's 32-bit bitwise maths can hold (bit 31 is its sign
+// bit): every bit is now taken, and the next one needs the client to move off `&`/`|` first.
+const PermEmbedLinks int64 = 1 << 30
 
 // AllThreads is every thread bit; DefaultThreads is what @everyone gets: start public
 // threads and talk in threads.
@@ -97,13 +102,13 @@ const DefaultVoice = PermConnect | PermSpeak | PermVideo | PermUseVAD
 // anything or mass-mention.
 const DefaultEveryone = PermViewRoom | PermSendMessages | PermReadMessageHistory |
 	PermAddReactions | PermUseExternalEmojis | PermCreateInvite | PermAttachFiles | DefaultThreads | DefaultVoice |
-	PermChangeNickname
+	PermChangeNickname | PermEmbedLinks
 
 // AllRoom is every room-scoped bit: space owner's implicit permissions in any room, and
 // what Administrator resolves to for EffectiveChannelPermissions.
 const AllRoom = PermViewRoom | PermSendMessages | PermReadMessageHistory |
 	PermAddReactions | PermUseExternalEmojis | PermMentionEveryone | PermManageMessages |
-	PermAttachFiles | AllThreads | AllVoice
+	PermAttachFiles | AllThreads | AllVoice | PermEmbedLinks
 
 // AllSpace is every space-scoped bit: space owner's implicit permissions, and what
 // Administrator resolves to for SpacePermissionBase.

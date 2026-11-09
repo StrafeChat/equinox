@@ -12,7 +12,7 @@ import (
 
 var messagesTable = table.New(table.Metadata{
 	Name:    "messages",
-	Columns: []string{"room_id", "id", "sender_id", "sender_device_id", "ciphertext", "plaintext", "reply_to_id", "mentions", "mention_everyone", "mention_roles", "system_type", "system_payload", "attachments", "created_at", "updated_at", "deleted_at", "pinned_at", "pinned_by", "thread_id"},
+	Columns: []string{"room_id", "id", "sender_id", "sender_device_id", "ciphertext", "plaintext", "reply_to_id", "mentions", "mention_everyone", "mention_roles", "system_type", "system_payload", "attachments", "embeds", "created_at", "updated_at", "deleted_at", "pinned_at", "pinned_by", "thread_id"},
 	PartKey: []string{"room_id"},
 	SortKey: []string{"id"},
 })
@@ -33,7 +33,12 @@ type Repository interface {
 	List(ctx context.Context, roomID int64, beforeID *int64, limit int) ([]Message, error)
 	// ListAfter returns up to limit non-deleted messages immediately after afterID, oldest-first.
 	ListAfter(ctx context.Context, roomID, afterID int64, limit int) ([]Message, error)
-	Update(ctx context.Context, roomID, msgID int64, ciphertext, plaintext string) (*Message, error)
+	// Update writes an edit: the body column the room uses, and the embeds' stored JSON
+	// unless embeds is nil (kept as they are).
+	Update(ctx context.Context, roomID, msgID int64, ciphertext, plaintext string, embeds *string) (*Message, error)
+	// ReplaceEmbeds rewrites the stored embeds only while they are still from, and is not an
+	// edit (updated_at stays): the sizes the image proxy learned, written in the background.
+	ReplaceEmbeds(ctx context.Context, roomID, msgID int64, from, to string) (bool, error)
 	SoftDelete(ctx context.Context, roomID, msgID int64) error
 
 	CreateAttachment(ctx context.Context, a *AttachmentRow) error
@@ -168,7 +173,9 @@ func (r *repo) ListAfter(ctx context.Context, roomID, afterID int64, limit int) 
 // Update writes exactly one of ciphertext/plaintext (the other passed as ""), matching
 // whichever the room's E2EE setting dictates. Previously this always wrote `ciphertext`
 // regardless of the room's setting, so editing was effectively broken for plaintext rooms.
-func (r *repo) Update(ctx context.Context, roomID, msgID int64, ciphertext, plaintext string) (*Message, error) {
+// embeds, when not nil, is the embeds' new stored JSON ("" clears them); an edit of the
+// embeds alone passes both bodies empty and leaves the text as it is.
+func (r *repo) Update(ctx context.Context, roomID, msgID int64, ciphertext, plaintext string, embeds *string) (*Message, error) {
 	m, err := r.GetByID(ctx, roomID, msgID)
 	if err != nil || m == nil {
 		return m, err
@@ -177,25 +184,46 @@ func (r *repo) Update(ctx context.Context, roomID, msgID int64, ciphertext, plai
 		return nil, nil
 	}
 	now := time.Now().UTC()
-	var stmt string
-	var names []string
-	if plaintext != "" {
-		stmt, names = messagesTable.Update("plaintext", "updated_at")
-	} else {
-		stmt, names = messagesTable.Update("ciphertext", "updated_at")
+	var cols []string
+	var values []interface{}
+	switch {
+	case plaintext != "":
+		cols, values = append(cols, "plaintext"), append(values, plaintext)
+	case ciphertext != "" || embeds == nil:
+		cols, values = append(cols, "ciphertext"), append(values, ciphertext)
 	}
+	if embeds != nil {
+		cols, values = append(cols, "embeds"), append(values, *embeds)
+	}
+	cols = append(cols, "updated_at")
+	values = append(values, now, roomID, msgID)
+	stmt, names := messagesTable.Update(cols...)
 	q := r.session.Query(stmt, names).WithContext(ctx)
-	value := ciphertext
-	if plaintext != "" {
-		value = plaintext
-	}
-	if err := q.Bind(value, now, roomID, msgID).ExecRelease(); err != nil {
+	if err := q.Bind(values...).ExecRelease(); err != nil {
 		return nil, err
 	}
-	m.Ciphertext = ciphertext
-	m.Plaintext = plaintext
+	switch {
+	case plaintext != "":
+		m.Plaintext = plaintext
+	case ciphertext != "" || embeds == nil:
+		m.Ciphertext = ciphertext
+		m.Plaintext = plaintext
+	}
+	if embeds != nil {
+		m.EmbedsJSON = *embeds
+	}
 	m.UpdatedAt = now
 	return m, nil
+}
+
+// ReplaceEmbeds is a lightweight transaction, so an edit (or a delete, which scrubs the
+// column) that landed while the images were being fetched is never undone.
+func (r *repo) ReplaceEmbeds(ctx context.Context, roomID, msgID int64, from, to string) (bool, error) {
+	// MapScanCAS: with no destinations, ScanCAS fails after a write that applied.
+	return r.session.Session.
+		Query("UPDATE messages SET embeds = ? WHERE room_id = ? AND id = ? IF embeds = ?", to, roomID, msgID, from).
+		WithContext(ctx).
+		MapScanCAS(map[string]interface{}{})
 }
 
 // SoftDelete marks a message deleted AND scrubs its content columns - previously only
@@ -203,9 +231,9 @@ func (r *repo) Update(ctx context.Context, roomID, msgID int64, ciphertext, plai
 // non-E2EE rooms) remained fully recoverable from Scylla indefinitely.
 func (r *repo) SoftDelete(ctx context.Context, roomID, msgID int64) error {
 	now := time.Now().UTC()
-	stmt, names := messagesTable.Update("deleted_at", "ciphertext", "plaintext", "mentions", "mention_everyone", "mention_roles", "attachments")
+	stmt, names := messagesTable.Update("deleted_at", "ciphertext", "plaintext", "mentions", "mention_everyone", "mention_roles", "attachments", "embeds")
 	q := r.session.Query(stmt, names).WithContext(ctx)
-	return q.Bind(now, "", "", nil, false, nil, "", roomID, msgID).ExecRelease()
+	return q.Bind(now, "", "", nil, false, nil, "", "", roomID, msgID).ExecRelease()
 }
 
 func (r *repo) CreateAttachment(ctx context.Context, a *AttachmentRow) error {
