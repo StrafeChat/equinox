@@ -81,7 +81,7 @@ func (h *Handler) Login(c fiber.Ctx) error {
 				"verification_email_sent": unverified.Sent,
 			})
 		}
-		logger.Err("auth", err, map[string]any{"email": in.Email})
+		logger.Err("auth", err, map[string]any{"stage": "login"})
 		return c.Status(http.StatusInternalServerError).JSON(fiber.Map{"error": "internal error"})
 	}
 
@@ -172,6 +172,8 @@ func (h *Handler) Register(c fiber.Ctx) error {
 			return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": err.Error(), "code": "invite_invalid"})
 		case ErrEmailInUse:
 			return c.Status(http.StatusConflict).JSON(fiber.Map{"error": "email already in use"})
+		case ErrInvalidEmail:
+			return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": err.Error(), "code": "invalid_email"})
 		case ErrDisposableEmail:
 			return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": err.Error(), "code": "disposable_email"})
 		case ErrUsernameTaken:
@@ -179,7 +181,7 @@ func (h *Handler) Register(c fiber.Ctx) error {
 		case ErrWeakPassword, ErrPasswordTooLong, ErrInvalidUsername:
 			return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 		default:
-			logger.Err("auth", err, map[string]any{"email": in.Email})
+			logger.Err("auth", err, map[string]any{"stage": "register"})
 			return c.Status(http.StatusInternalServerError).JSON(fiber.Map{"error": "internal error"})
 		}
 	}

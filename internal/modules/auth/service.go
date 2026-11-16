@@ -107,6 +107,9 @@ type service struct {
 	// revokeNotify tells the gateway to drop a user's live connections after a password
 	// reset ended their sessions. Set by route setup (auth cannot import stargate).
 	revokeNotify func(ctx context.Context, userID int64)
+	// emailUpdateNotify publishes USER_EMAIL_UPDATE to the account's own channel. Set by
+	// route setup alongside revokeNotify; nil in tests.
+	emailUpdateNotify func(ctx context.Context, userID int64, email string, verified bool)
 	// webauthn is nil until the instance has WEB_URL set (see config.loadTwoFactorConfig):
 	// passkey endpoints report ErrWebAuthnNotConfigured while it is nil, TOTP and recovery
 	// codes are unaffected either way.
@@ -120,10 +123,7 @@ func (s *service) SetInviteGate(g InviteGate) { s.gate = g }
 func (s *service) SetBanChecker(b BanChecker) { s.bans = b }
 
 func NewService(cfg *config.Config, repo UserRepository, srepo SessionRepository, tfrepo TwoFactorRepository, redisClient *redis.Client) Service {
-	prefix := cfg.Database.Redis.CachePrefix
-	if prefix != "" && !strings.HasSuffix(prefix, ":") {
-		prefix += ":"
-	}
+	prefix := RedisKeyPrefix(cfg)
 	s := &service{cfg: cfg, repo: repo, srepo: srepo, tfrepo: tfrepo, redis: redisClient, redisPrefix: prefix}
 	if cfg.TwoFactor.WebAuthnEnabled {
 		wa, err := webauthn.New(&webauthn.Config{
@@ -157,8 +157,13 @@ func (s *service) Register(ctx context.Context, in RegisterInput) (*User, error)
 		return nil, ErrInviteOnly
 	}
 
-	// Normalize email; zog validates format and required fields.
-	in.Email = strings.ToLower(in.Email)
+	// zog checked the shape; NormalizeEmail is the one validator every claim of an
+	// address goes through (it also refuses forms zog lets past, like a trailing dot).
+	email, err := NormalizeEmail(in.Email)
+	if err != nil {
+		return nil, err
+	}
+	in.Email = email
 	// A throwaway address is how a banned person comes straight back (and how a bot
 	// farm registers in bulk); refused before anything is claimed or spent.
 	if s.emailDomainRefused(in.Email) {
@@ -281,7 +286,9 @@ func (s *service) Login(ctx context.Context, email, password, ip, userAgent stri
 	email = strings.ToLower(email)
 
 	u, err := s.repo.GetByEmail(ctx, email)
-	if err != nil || u == nil || u.IsRemote() || u.PasswordHash == "" {
+	// An index row whose account holds a different address is a legacy orphan of an old
+	// address change: it must not work as a second login address.
+	if err != nil || u == nil || u.IsRemote() || u.PasswordHash == "" || !strings.EqualFold(u.Email, email) {
 		// Burn the same bcrypt cost as a real comparison (see dummyHash).
 		_ = bcrypt.CompareHashAndPassword(dummyHash, []byte(password))
 		return nil, ErrInvalidCredentials

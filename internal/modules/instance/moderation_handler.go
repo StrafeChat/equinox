@@ -19,7 +19,7 @@ func moderationError(c fiber.Ctx, err error) error {
 		return c.Status(http.StatusNotFound).JSON(fiber.Map{"error": err.Error()})
 	case ErrCannotBanSelf, ErrCannotBanRemote, ErrReportSelf:
 		return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": err.Error()})
-	case ErrAlreadyBanned, ErrReportClosed, ErrDuplicateReport, ErrIPBanExists, ErrEmailTaken:
+	case ErrAlreadyBanned, ErrReportClosed, ErrDuplicateReport, ErrIPBanExists, ErrEmailTaken, ErrEmailChangeRace:
 		return c.Status(http.StatusConflict).JSON(fiber.Map{"error": err.Error()})
 	case ErrInvalidBan, ErrInvalidReport, ErrInvalidAction, ErrInvalidQuery, ErrInvalidBadges, ErrInvalidCIDR, ErrCIDRTooWide,
 		ErrInvalidEmail, ErrBotAccount, ErrInvalidNotice, ErrCannotNotice, ErrNoticesUnavailable:

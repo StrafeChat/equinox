@@ -88,15 +88,37 @@ Go identifiers, error strings, docs:
   request goroutine; a bare `go func()` that panics takes the whole API process down.
 - **Email (`internal/mail` + `auth/service_email.go`)**: the API only ever speaks SMTP to
   one configured server (`SMTP_HOST`; the compose deployment bundles a send-only maddy
-  relay, see `deploy/docs/EMAIL.md`) - never direct-to-MX, never a provider API. Two mails
-  exist: the verification link and the password-reset link. Each is a 32-byte token stored
-  hashed in Redis with a TTL (24 h / 1 h) *together with the address it was issued for*,
-  redeemed with `GETDEL` so it is single-use. Login refuses an unverified account only when
-  `EMAIL_VERIFICATION=true`, after the password check (so nothing leaks to a stranger), and
-  re-sends the link under a one-a-minute cooldown. Forgot-password answers 200 for every
-  well-formed address and sends off the request goroutine - a synchronous SMTP round trip
-  would be a timing oracle for which addresses exist. A user loaded through the cache has
-  no `PasswordHash` (see `cached_user_repo.go`); never branch on it after `GetByID`.
+  relay, see `deploy/docs/EMAIL.md`) - never direct-to-MX, never a provider API. The mails
+  are the verification link, the password-reset link, and the four email-change mails
+  (`email_change_confirm` link to the new address, `email_change_taken` to a new address
+  that already has an account, `email_change_requested` / `email_change_done` notices to
+  the old address, which carry the new one only masked by `auth.MaskEmail`). Verify and
+  reset are 32-byte tokens stored hashed in Redis with a TTL (24 h / 1 h) *together with
+  the address and the time they were issued*; a reset is burned with `GETDEL`, a verify is
+  not (mail scanners prefetch links), and redeem re-reads the account uncached and refuses
+  a token older than the account's last address change (`email:changed:<uid>`). Login
+  refuses an unverified account only when `EMAIL_VERIFICATION=true`, after the password
+  check (so nothing leaks to a stranger), and re-sends the link under a one-a-minute
+  cooldown. Forgot-password answers 200 for every well-formed address and sends off the
+  request goroutine - a synchronous SMTP round trip would be a timing oracle for which
+  addresses exist. A user loaded through the cache has no `PasswordHash` (see
+  `cached_user_repo.go`); never branch on it after `GetByID`.
+- **Addresses: one validator, one mover, one event.** `auth.NormalizeEmail` is the only
+  validator for an address about to be claimed (registration, the self-service change, the
+  admin tool). It refuses a domain IDNA's lookup mapping would fold onto another
+  (`ｙｏｐｍａｉｌ.com`, a zero-width character, `yopmail.com。`, an `xn--` A-label): relays
+  deliver those to the folded domain, so they would dodge the blocklist and claim a second
+  index key for one inbox. Login and forgot-password keep plain `ToLower(TrimSpace)` so a
+  legacy address can still sign in. Mail errors never name the recipient (`mail.SMTP.Send`
+  scrubs go-mail's), so logging one next to a `user_id` stays address-free. An address moves only through `auth.ApplyEmailChange` (per-user Redis
+  lock, the LWT `UserRepository.ChangeEmail` that writes `email` + `verified_email` in one
+  conditional statement and releases the old claim only if it is still the account's, the
+  revival marker, `USER_EMAIL_UPDATE`); never call `ChangeEmail` directly. The address is
+  never in `USER_UPDATE`, `broadcastUserProfile` or anything federation sends - only in the
+  self-only `USER_EMAIL_UPDATE` on `stargate.PublishToUser`. The self-service change
+  (`/users/@me/email*`, `auth/service_email_change.go`) needs a person's session, the
+  password and the second factor (TOTP or a recovery code), waits for a link opened from
+  that same session when mail is on, and revokes no sessions.
 - **Auth is the `Authorization` header only** — no cookie, no `?token=` query parameter.
   The header carries one of three credentials, all resolved by `middleware.RequireAuth`:
   a session `Bearer` token; an OAuth2 `Bearer` access token (tried when the token is not a

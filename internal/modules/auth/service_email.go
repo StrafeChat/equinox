@@ -68,8 +68,20 @@ type EmailService interface {
 	// registered - and only errors on infrastructure failure.
 	RequestPasswordReset(ctx context.Context, email string) error
 	// ResetPassword redeems a reset token, sets the new password, marks the address
-	// verified (the link proved it) and ends every existing session.
+	// verified (the link proved it), cancels any pending email change and ends every
+	// existing session.
 	ResetPassword(ctx context.Context, token, password string) (*User, error)
+
+	// The self-service address change (service_email_change.go). u is always the session
+	// user; every method re-reads the account uncached before deciding anything.
+	GetEmailState(ctx context.Context, u *User) (*EmailState, error)
+	// RequestEmailChange re-authenticates and then either records a pending change and
+	// mails its link (mail mode, applied=false) or moves the address at once, unverified
+	// (direct mode, applied=true).
+	RequestEmailChange(ctx context.Context, u *User, in EmailChangeInput) (*EmailState, bool, error)
+	ResendEmailChange(ctx context.Context, u *User) (*EmailState, error)
+	CancelEmailChange(ctx context.Context, u *User) (*EmailState, error)
+	ConfirmEmailChange(ctx context.Context, u *User, token string) (*EmailState, error)
 }
 
 // MailSetter is implemented by the service NewService returns. Route setup uses it to hand
@@ -77,12 +89,19 @@ type EmailService interface {
 type MailSetter interface {
 	SetMailer(m mail.Mailer)
 	SetRevokeNotifier(fn func(ctx context.Context, userID int64))
+	// SetEmailUpdateNotifier is the USER_EMAIL_UPDATE publish (the account's own channel
+	// only) for an address change or a verification.
+	SetEmailUpdateNotifier(fn func(ctx context.Context, userID int64, email string, verified bool))
 }
 
 func (s *service) SetMailer(m mail.Mailer) { s.mailer = m }
 
 func (s *service) SetRevokeNotifier(fn func(ctx context.Context, userID int64)) {
 	s.revokeNotify = fn
+}
+
+func (s *service) SetEmailUpdateNotifier(fn func(ctx context.Context, userID int64, email string, verified bool)) {
+	s.emailUpdateNotify = fn
 }
 
 func (s *service) EmailPolicy() (bool, bool) {
@@ -92,10 +111,13 @@ func (s *service) EmailPolicy() (bool, bool) {
 
 // emailToken is what a verification or reset token resolves to. The address is recorded
 // with the user so a link issued for one address can never confirm (or reset through) a
-// different one the account has since moved to.
+// different one the account has since moved to; IssuedAt (unix ms) lets redeem refuse a
+// token older than the account's last address change, so moving away and back within the
+// token's TTL does not revive it. Tokens from before IssuedAt existed read as 0.
 type emailToken struct {
-	UserID int64  `json:"user_id"`
-	Email  string `json:"email"`
+	UserID   int64  `json:"user_id"`
+	Email    string `json:"email"`
+	IssuedAt int64  `json:"iat,omitempty"`
 }
 
 func (s *service) emailVerifyKey(token string) string {
@@ -145,7 +167,7 @@ func (s *service) storeEmailToken(ctx context.Context, key func(string) string, 
 	if err != nil {
 		return "", err
 	}
-	payload, err := json.Marshal(emailToken{UserID: u.ID, Email: u.Email})
+	payload, err := json.Marshal(emailToken{UserID: u.ID, Email: u.Email, IssuedAt: time.Now().UnixMilli()})
 	if err != nil {
 		return "", err
 	}
@@ -183,14 +205,23 @@ func (s *service) redeemEmailToken(ctx context.Context, key string, invalid erro
 	if err := json.Unmarshal(raw, &p); err != nil || p.UserID == 0 {
 		return nil, invalid
 	}
-	// GetByID may answer from the Redis cache, which deliberately carries no password
-	// hash (cached_user_repo.go) - so nothing here, or in the callers, may read
-	// u.PasswordHash to decide anything.
-	u, err := s.repo.GetByID(ctx, p.UserID)
+	// A token issued before the account's last address change is dead, even if the
+	// account has since moved back to the address it was issued for.
+	changedAt, err := s.redis.Get(ctx, emailChangedKey(s.redisPrefix, p.UserID)).Int64()
+	if err != nil && !errors.Is(err, redis.Nil) {
+		return nil, err
+	}
+	if err == nil && p.IssuedAt <= changedAt {
+		return nil, invalid
+	}
+	// Uncached: GetByID may answer from a cache entry written before an address change
+	// (the cache-aside race on cachedUser), and would then accept a link for the old
+	// address for up to the cache TTL. GetByEmail always reads the row and the index.
+	u, err := s.repo.GetByEmail(ctx, strings.ToLower(p.Email))
 	if err != nil {
 		return nil, err
 	}
-	if !canBeMailed(u) || !strings.EqualFold(u.Email, p.Email) {
+	if u == nil || u.ID != p.UserID || !canBeMailed(u) || !strings.EqualFold(u.Email, p.Email) {
 		return nil, invalid
 	}
 	return u, nil
@@ -216,6 +247,16 @@ func (s *service) SendVerificationEmail(ctx context.Context, u *User) error {
 	if s.mailer == nil || !canBeMailed(u) {
 		return ErrEmailDisabled
 	}
+	// The session's user may be a cached copy from before an address change: re-read the
+	// row so the link goes to, and is bound to, the address the account holds now.
+	real, err := s.repo.GetByEmail(ctx, strings.ToLower(u.Email))
+	if err != nil {
+		return err
+	}
+	if real == nil || real.ID != u.ID {
+		return ErrEmailChangeBusy
+	}
+	u = real
 	if u.VerifiedEmail {
 		return ErrEmailAlreadyVerified
 	}
@@ -263,6 +304,10 @@ func (s *service) VerifyEmail(ctx context.Context, token string) (*User, error) 
 			return nil, err
 		}
 		u.VerifiedEmail = true
+		// The account's open settings pages flip their "not verified" pill live.
+		if s.emailUpdateNotify != nil {
+			s.emailUpdateNotify(ctx, u.ID, u.Email, true)
+		}
 	}
 	return u, nil
 }
@@ -285,7 +330,9 @@ func (s *service) RequestPasswordReset(ctx context.Context, email string) error 
 	if err != nil {
 		return err
 	}
-	if !canBeMailed(u) || u.PasswordHash == "" {
+	// An index row that does not match the account's own address is a legacy orphan of
+	// an old address change, not a way to reach the account.
+	if !canBeMailed(u) || u.PasswordHash == "" || !strings.EqualFold(u.Email, email) {
 		return nil
 	}
 	token, err := s.storeEmailToken(ctx, s.passwordResetKey, u, passwordResetTTL)
@@ -338,6 +385,9 @@ func (s *service) ResetPassword(ctx context.Context, token, password string) (*U
 		return nil, err
 	}
 	u.PasswordHash = string(hash)
+	// The "change requested" notice tells the real owner that a reset cancels a pending
+	// address change; this is what makes that true.
+	s.clearPendingEmailChange(ctx, u.ID)
 	// Opening the link proved the address, which is exactly what verification asks.
 	if !u.VerifiedEmail {
 		if err := s.repo.SetEmailVerified(ctx, u.ID, true); err != nil {

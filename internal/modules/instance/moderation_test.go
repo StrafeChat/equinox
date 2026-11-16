@@ -164,7 +164,17 @@ func (f *fakeModRepo) RemovePeerPolicy(_ context.Context, domain string) error {
 }
 
 // fakeUsers implements the slice of auth.UserRepository moderation touches.
-type fakeUsers struct{ users map[int64]*auth.User }
+type fakeUsers struct {
+	users map[int64]*auth.User
+	// changes records every ChangeEmail call, in order.
+	changes []emailChangeCall
+}
+
+type emailChangeCall struct {
+	userID   int64
+	old, new string
+	verified bool
+}
 
 func (f *fakeUsers) Create(context.Context, *auth.User) error { return nil }
 func (f *fakeUsers) GetByID(_ context.Context, id int64) (*auth.User, error) {
@@ -211,7 +221,18 @@ func (f *fakeUsers) GetByRemote(context.Context, string, int64) (*auth.User, err
 }
 func (f *fakeUsers) SetTOTP(context.Context, int64, string, bool) error  { return nil }
 func (f *fakeUsers) SetEmailVerified(context.Context, int64, bool) error { return nil }
-func (f *fakeUsers) UpdateEmail(context.Context, int64, string, string) error {
+func (f *fakeUsers) ChangeEmail(_ context.Context, userID int64, oldEmail, newEmail string, verified bool) error {
+	f.changes = append(f.changes, emailChangeCall{userID, oldEmail, newEmail, verified})
+	for id, u := range f.users {
+		if id != userID && u.Email == newEmail {
+			return auth.ErrEmailInUse
+		}
+	}
+	u := f.users[userID]
+	if u == nil || u.Email != oldEmail {
+		return auth.ErrEmailChangeConflict
+	}
+	u.Email, u.VerifiedEmail = newEmail, verified
 	return nil
 }
 func (f *fakeUsers) SetPassword(context.Context, int64, string) error { return nil }

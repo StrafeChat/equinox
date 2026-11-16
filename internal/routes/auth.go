@@ -35,6 +35,13 @@ func wireMail(d Deps, svc auth.Service) {
 			"reason": "password_reset",
 		}, region)
 	})
+	// USER_EMAIL_UPDATE goes to the account's own channel and nowhere else - never a room,
+	// a space, friends or federation (see auth.EventUserEmailUpdate).
+	if redis != nil {
+		ms.SetEmailUpdateNotifier(func(ctx context.Context, userID int64, email string, verified bool) {
+			stargate.PublishToUser(ctx, redis, userID, auth.EventUserEmailUpdate, auth.EmailUpdatePayload(email, verified), region)
+		})
+	}
 }
 
 // newCaptchaVerifier returns nil when the instance has no challenge configured, which is

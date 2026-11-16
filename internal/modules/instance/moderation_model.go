@@ -69,6 +69,7 @@ var (
 	ErrInvalidCIDR         = errors.New("enter an IP address or a CIDR range such as 203.0.113.0/24")
 	ErrInvalidEmail        = errors.New("enter a valid email address")
 	ErrEmailTaken          = errors.New("email already in use")
+	ErrEmailChangeRace     = errors.New("the account's email changed while this was saved - try again")
 	ErrBotAccount          = errors.New("bots have no email address")
 	ErrCIDRTooWide         = errors.New("that range is too wide to ban: use at least a /8 (IPv4) or /32 (IPv6)")
 	ErrIPBanExists         = errors.New("that address or range is already banned")

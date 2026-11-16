@@ -17,6 +17,7 @@ import (
 	"github.com/StrafeChat/equinox/internal/modules/rooms"
 	"github.com/StrafeChat/equinox/internal/modules/spaces"
 	"github.com/StrafeChat/equinox/internal/modules/users"
+	"github.com/gofiber/fiber/v3"
 	"github.com/gofiber/fiber/v3/middleware/limiter"
 )
 
@@ -128,6 +129,25 @@ func SetupUsersRoutes(d Deps) {
 		Expiration:   15 * time.Minute,
 	})
 	me.Post("/email/verification", emailRequestLimiter, authHandler.SendVerificationEmail)
+
+	// Changing the address (auth/handler_email_change.go). A person's session only: the
+	// handlers refuse bot tokens, and requireAuth already refuses OAuth2 tokens. Every
+	// route has its own limiters - never authLimiter, twoFactorLimiter or the request
+	// limiter above, whose budgets other routes depend on - and the service adds a
+	// per-user cooldown, a per-target cap and a failed-step-up budget in Redis.
+	ipLimiter := func(max int, per time.Duration) fiber.Handler {
+		return limiter.New(limiter.Config{
+			KeyGenerator: clientKey,
+			Max:          max,
+			Expiration:   per,
+			LimitReached: rateLimited,
+		})
+	}
+	me.Get("/email", ipLimiter(60, time.Minute), perUserLimiter(30, time.Minute), authHandler.GetEmail)
+	me.Post("/email", ipLimiter(10, time.Minute), perUserLimiter(5, 15*time.Minute), authHandler.RequestEmailChange)
+	me.Post("/email/confirm", ipLimiter(10, time.Minute), perUserLimiter(10, 15*time.Minute), authHandler.ConfirmEmailChange)
+	me.Post("/email/pending/resend", ipLimiter(10, time.Minute), perUserLimiter(5, 15*time.Minute), authHandler.ResendEmailChange)
+	me.Delete("/email/pending", ipLimiter(30, time.Minute), perUserLimiter(10, 15*time.Minute), authHandler.CancelEmailChange)
 
 	// /users/@me/relationships
 	r := me.Group("/relationships")

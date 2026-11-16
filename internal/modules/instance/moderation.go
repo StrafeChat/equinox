@@ -3,7 +3,6 @@ package instance
 import (
 	"context"
 	"errors"
-	netmail "net/mail"
 	"regexp"
 	"strconv"
 	"strings"
@@ -189,21 +188,22 @@ func (s *Service) SetUserBadges(ctx context.Context, actorID, userID int64, flag
 }
 
 // SetUserEmail moves an account to a new address - the support action for "I lost access
-// to my old mailbox". The address is normalised the way registration normalises it and
-// must be unused. The administrator stands in for the verification link, so the new
-// address counts as verified: an unverified one would lock the person out on an
-// EMAIL_VERIFICATION instance, the opposite of what the admin was doing. Password and
-// sessions are untouched. Both addresses go in the audit record (the dashboard already
-// shows administrators the email).
+// to my old mailbox". The address goes through auth.NormalizeEmail, the validator every
+// claim of an address uses, and must be unused. The administrator stands in for the
+// verification link, so the new address counts as verified: an unverified one would lock
+// the person out on an EMAIL_VERIFICATION instance, the opposite of what the admin was
+// doing. Password and sessions are untouched. Both addresses go in the audit record (the
+// dashboard already shows administrators the email).
+//
+// The disposable-domain blocklist is deliberately NOT applied: an administrator is trusted,
+// and the blocklist is there to slow down throwaway self-registration, not support work.
+// The account's own sessions get USER_EMAIL_UPDATE; neither address is mailed (v1).
 func (s *Service) SetUserEmail(ctx context.Context, actorID, userID int64, email string) (*auth.User, error) {
 	if err := s.requireAdmin(ctx, actorID); err != nil {
 		return nil, err
 	}
-	email = strings.ToLower(strings.TrimSpace(email))
-	if email == "" || len(email) > 254 {
-		return nil, ErrInvalidEmail
-	}
-	if addr, err := netmail.ParseAddress(email); err != nil || addr.Address != email {
+	email, err := auth.NormalizeEmail(email)
+	if err != nil {
 		return nil, ErrInvalidEmail
 	}
 	u, err := s.mod.Users.GetByID(ctx, userID)
@@ -219,26 +219,42 @@ func (s *Service) SetUserEmail(ctx context.Context, actorID, userID int64, email
 	if u.Bot {
 		return nil, ErrBotAccount
 	}
-	if u.Email == email {
+	if strings.EqualFold(u.Email, email) {
 		return u, nil
 	}
-	if err := s.mod.Users.UpdateEmail(ctx, userID, u.Email, email); err != nil {
-		if errors.Is(err, auth.ErrEmailInUse) {
+	oldEmail := u.Email
+	if err := auth.ApplyEmailChange(ctx, s.emailChangeDeps(), userID, oldEmail, email, true); err != nil {
+		switch {
+		case errors.Is(err, auth.ErrEmailInUse):
 			return nil, ErrEmailTaken
+		case errors.Is(err, auth.ErrEmailChangeConflict), errors.Is(err, auth.ErrEmailChangeBusy):
+			return nil, ErrEmailChangeRace
 		}
 		return nil, err
 	}
-	if err := s.mod.Users.SetEmailVerified(ctx, userID, true); err != nil {
-		logger.Err("instance", err, map[string]any{"stage": "email_verified", "user_id": userID})
-	}
-	s.audit(ctx, actorID, AuditUserEmail, TargetUser, userID, u.Email+" -> "+email)
+	s.audit(ctx, actorID, AuditUserEmail, TargetUser, userID, oldEmail+" -> "+email)
 	updated, err := s.mod.Users.GetByID(ctx, userID)
-	if err != nil || updated == nil {
-		u.Email = email
-		u.VerifiedEmail = true
-		return u, nil
+	if err != nil || updated == nil || !strings.EqualFold(updated.Email, email) {
+		// A cached read may still hold the old row for a moment; answer with what was
+		// written rather than what the cache says.
+		cp := *u
+		cp.Email = email
+		cp.VerifiedEmail = true
+		return &cp, nil
 	}
 	return updated, nil
+}
+
+// emailChangeDeps is the instance's half of auth.ApplyEmailChange: the same Redis keys the
+// auth service reads, and USER_EMAIL_UPDATE on the account's own channel only.
+func (s *Service) emailChangeDeps() auth.EmailChangeDeps {
+	d := auth.EmailChangeDeps{Users: s.mod.Users, Redis: s.mod.Redis, Prefix: auth.RedisKeyPrefix(s.cfg)}
+	if rdb, region := s.mod.Redis, s.mod.Region; rdb != nil {
+		d.Notify = func(ctx context.Context, userID int64, email string, verified bool) {
+			stargate.PublishToUser(ctx, rdb, userID, auth.EventUserEmailUpdate, auth.EmailUpdatePayload(email, verified), region)
+		}
+	}
+	return d
 }
 
 // RegenerateUserRecoveryCodes issues a fresh set of 2FA recovery codes for a user (an admin

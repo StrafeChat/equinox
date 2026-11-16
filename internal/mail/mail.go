@@ -124,10 +124,14 @@ func (s *SMTP) build(msg Message) (*gomail.Msg, error) {
 }
 
 // Send delivers one message, or returns why the relay would not take it.
+//
+// The error never names the recipient: callers log it next to a user_id, and logs carry no
+// addresses. go-mail puts the address in both its parse error and its SendError ("affected
+// recipient(s): ..."), so it is scrubbed here, once, for every caller.
 func (s *SMTP) Send(ctx context.Context, msg Message) error {
 	m, err := s.build(msg)
 	if err != nil {
-		return err
+		return redactRecipient(err, msg.To)
 	}
 
 	c, err := s.client()
@@ -137,7 +141,54 @@ func (s *SMTP) Send(ctx context.Context, msg Message) error {
 	ctx, cancel := context.WithTimeout(ctx, sendTimeout)
 	defer cancel()
 	if err := c.DialAndSendWithContext(ctx, m); err != nil {
-		return fmt.Errorf("mail: send via %s:%d: %w", s.cfg.Host, s.cfg.Port, err)
+		return redactRecipient(fmt.Errorf("mail: send via %s:%d: %w", s.cfg.Host, s.cfg.Port, err), msg.To)
 	}
 	return nil
+}
+
+// recipientRedacted is an error whose text has the recipient's address replaced; errors.Is
+// and errors.As still see the original underneath.
+type recipientRedacted struct {
+	err  error
+	text string
+}
+
+func (e *recipientRedacted) Error() string { return e.text }
+func (e *recipientRedacted) Unwrap() error { return e.err }
+
+func redactRecipient(err error, to string) error {
+	if err == nil {
+		return nil
+	}
+	to = strings.TrimSpace(to)
+	if to == "" {
+		return err
+	}
+	orig := err.Error()
+	text := strings.ReplaceAll(orig, to, "<recipient>")
+	// Case-insensitively too, since a relay may echo the address back in its own casing.
+	lower, needle := strings.ToLower(text), strings.ToLower(to)
+	if !strings.Contains(lower, needle) {
+		if text == orig {
+			return err
+		}
+		return &recipientRedacted{err: err, text: text}
+	}
+	if len(lower) != len(text) || len(needle) != len(to) {
+		// Lowercasing changed byte lengths, so offsets would not line up: scrub the
+		// lowercased text instead.
+		return &recipientRedacted{err: err, text: strings.ReplaceAll(lower, needle, "<recipient>")}
+	}
+	var b strings.Builder
+	for {
+		i := strings.Index(lower, needle)
+		if i < 0 {
+			b.WriteString(text)
+			break
+		}
+		b.WriteString(text[:i])
+		b.WriteString("<recipient>")
+		text, lower = text[i+len(needle):], lower[i+len(needle):]
+	}
+	return &recipientRedacted{err: err, text: b.String()}
 }

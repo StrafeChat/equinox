@@ -1,0 +1,12 @@
+Hi {{.Username}},
+
+Someone signed in to your account on {{.InstanceName}} asked to change its email address
+to {{.MaskedEmail}}. Nothing changes until the link sent to that address is confirmed
+from a signed-in session; the request expires in {{.ExpiresIn}}.
+
+If this was you, there is nothing to do. You can also cancel it under Settings > Security.
+
+If it was not you, reset your password now from the sign-in page ("Forgot your
+password?"): a reset signs you out everywhere and cancels the change.
+
+- {{.InstanceName}}

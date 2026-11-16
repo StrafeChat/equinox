@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"strings"
 
 	"golang.org/x/crypto/bcrypt"
 )
@@ -31,15 +32,23 @@ func VerifyUserPassword(ctx context.Context, repo UserRepository, userID int64, 
 // hash reads as empty and would make every re-auth fail. GetByEmail is never cached, so it
 // always sees the real column.
 func verifyPasswordFor(ctx context.Context, repo UserRepository, u *User, password string) error {
-	real, err := repo.GetByEmail(ctx, u.Email)
+	_, err := passwordMatches(ctx, repo, u, password)
+	return err
+}
+
+// passwordMatches is verifyPasswordFor that also hands back the uncached row it checked
+// against, for a caller that goes on to decide things about the account (the email-change
+// step-up). ErrInvalidCredentials on any mismatch.
+func passwordMatches(ctx context.Context, repo UserRepository, u *User, password string) (*User, error) {
+	real, err := repo.GetByEmail(ctx, strings.ToLower(u.Email))
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if real == nil || real.ID != u.ID || real.PasswordHash == "" {
-		return ErrInvalidCredentials
+		return nil, ErrInvalidCredentials
 	}
 	if bcrypt.CompareHashAndPassword([]byte(real.PasswordHash), []byte(password)) != nil {
-		return ErrInvalidCredentials
+		return nil, ErrInvalidCredentials
 	}
-	return nil
+	return real, nil
 }

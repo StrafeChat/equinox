@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -10,6 +11,7 @@ import (
 	"github.com/redis/go-redis/v9"
 
 	"github.com/StrafeChat/equinox/internal/config"
+	"github.com/StrafeChat/equinox/internal/safego"
 )
 
 const userCacheTTL = 10 * time.Minute
@@ -348,12 +350,30 @@ func (r *CachedUserRepository) SetTOTP(ctx context.Context, userID int64, secret
 	return nil
 }
 
-func (r *CachedUserRepository) UpdateEmail(ctx context.Context, userID int64, oldEmail, newEmail string) error {
-	if err := r.repo.UpdateEmail(ctx, userID, oldEmail, newEmail); err != nil {
+// ChangeEmail drops both cache entries that carry the address - user:<id> and
+// user:name:<username>, which GetByUsername fills - on success and on a conflict (the row
+// moved under us, so whatever is cached is stale either way). It drops them again two
+// seconds later: a cache-aside GetByID that read the row before the write can re-populate
+// user:<id> after the first invalidation (the race described on cachedUser), and the second
+// pass shrinks that window from the cache TTL to a couple of seconds.
+func (r *CachedUserRepository) ChangeEmail(ctx context.Context, userID int64, oldEmail, newEmail string, verified bool) error {
+	err := r.repo.ChangeEmail(ctx, userID, oldEmail, newEmail, verified)
+	if err != nil && !errors.Is(err, ErrEmailChangeConflict) {
 		return err
 	}
-	r.invalidateUser(context.Background(), userID)
-	return nil
+	invalidate := func(ctx context.Context) {
+		username := ""
+		if u, gerr := r.repo.GetByID(ctx, userID); gerr == nil && u != nil {
+			username = u.Username
+		}
+		r.InvalidateUser(ctx, userID, username)
+	}
+	invalidate(context.Background())
+	safego.Go("auth", func() {
+		time.Sleep(2 * time.Second)
+		invalidate(context.Background())
+	})
+	return err
 }
 
 func (r *CachedUserRepository) SetEmailVerified(ctx context.Context, userID int64, verified bool) error {

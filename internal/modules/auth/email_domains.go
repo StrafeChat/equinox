@@ -33,13 +33,16 @@ func disposableDomains() map[string]struct{} {
 	return disposableSet
 }
 
-// emailDomain is the lowercased part after the last "@", or "" when there is none.
+// emailDomain is the lowercased part after the last "@", or "" when there is none. A
+// trailing dot (the DNS root, "yopmail.com.") is dropped, or a fully qualified spelling of a
+// listed domain would match nothing in the blocklist. NormalizeEmail refuses such an
+// address anyway; this is belt and braces.
 func emailDomain(email string) string {
 	at := strings.LastIndexByte(email, '@')
 	if at < 0 || at == len(email)-1 {
 		return ""
 	}
-	return strings.ToLower(strings.TrimSpace(email[at+1:]))
+	return strings.TrimSuffix(strings.ToLower(strings.TrimSpace(email[at+1:])), ".")
 }
 
 // domainBlocked reports whether domain, or any parent of it, is in set - so a listed
@@ -65,7 +68,21 @@ func (s *service) emailDomainRefused(email string) bool {
 	if domain == "" {
 		return false
 	}
-	if s.cfg.Flags.BlockDisposableEmail && domainBlocked(domain, disposableDomains()) {
+	// An IDN is checked in both spellings, so a list entry written as "xn--..." also
+	// covers the Unicode form NormalizeEmail lets through, and the other way round.
+	spellings := []string{domain}
+	if a := asciiDomain(domain); a != domain {
+		spellings = append(spellings, a)
+	}
+	blocked := func(set map[string]struct{}) bool {
+		for _, d := range spellings {
+			if domainBlocked(d, set) {
+				return true
+			}
+		}
+		return false
+	}
+	if s.cfg.Flags.BlockDisposableEmail && blocked(disposableDomains()) {
 		return true
 	}
 	if len(s.cfg.Flags.BlockedEmailDomains) > 0 {
@@ -73,7 +90,7 @@ func (s *service) emailDomainRefused(email string) bool {
 		for _, d := range s.cfg.Flags.BlockedEmailDomains {
 			own[d] = struct{}{}
 		}
-		return domainBlocked(domain, own)
+		return blocked(own)
 	}
 	return false
 }

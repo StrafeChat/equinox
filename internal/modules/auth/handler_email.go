@@ -29,6 +29,10 @@ func emailErrorStatus(err error) (int, string) {
 		return http.StatusBadRequest, "reset_token_invalid"
 	case errors.Is(err, ErrPasswordTooShort), errors.Is(err, ErrPasswordTooLong), errors.Is(err, ErrWeakPassword):
 		return http.StatusBadRequest, "weak_password"
+	case errors.Is(err, ErrEmailChangeBusy):
+		// SendVerificationEmail while the session's account is mid-change, and the
+		// email-change routes when the per-user lock is held.
+		return http.StatusConflict, "email_change_busy"
 	default:
 		return 0, ""
 	}

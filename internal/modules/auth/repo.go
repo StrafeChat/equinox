@@ -9,6 +9,8 @@ import (
 	"github.com/gocql/gocql"
 	"github.com/scylladb/gocqlx/v3"
 	"github.com/scylladb/gocqlx/v3/table"
+
+	"github.com/StrafeChat/equinox/internal/logger"
 )
 
 // ProfileUpdate holds optional fields for PATCH /users/@me.
@@ -57,9 +59,15 @@ type UserRepository interface {
 	// SetEmailVerified records that the account's address was confirmed through a link
 	// sent to it (or disproved - a future address change clears it).
 	SetEmailVerified(ctx context.Context, userID int64, verified bool) error
-	// UpdateEmail moves the account to a new address, claiming it the way Create does
-	// (ErrEmailInUse when another account holds it) and releasing the old one.
-	UpdateEmail(ctx context.Context, userID int64, oldEmail, newEmail string) error
+	// ChangeEmail moves the account from oldEmail to newEmail and writes verified with it,
+	// in one statement. It claims the new address the way Create does (ErrEmailInUse when
+	// another account holds it), moves the row only while it still holds oldEmail
+	// (ErrEmailChangeConflict otherwise) and then releases the old claim - only if that
+	// claim is still this account's. ErrEmailUnchanged for a case-only difference.
+	//
+	// Nothing calls this directly but ApplyEmailChange (email_change.go), which adds the
+	// per-user lock, the token-revival marker and the gateway event.
+	ChangeEmail(ctx context.Context, userID int64, oldEmail, newEmail string, verified bool) error
 	// SetPassword replaces the bcrypt hash. Sessions are the caller's business: a reset
 	// revokes them, a routine change may not.
 	SetPassword(ctx context.Context, userID int64, hash string) error
@@ -179,7 +187,8 @@ func (r *scyllaUserRepo) Create(ctx context.Context, u *User) error {
 	return nil
 }
 
-// claim runs an INSERT ... IF NOT EXISTS and reports whether it was applied.
+// claim runs a lightweight transaction (INSERT ... IF NOT EXISTS, or an UPDATE/DELETE ... IF)
+// and reports whether it was applied.
 func (r *scyllaUserRepo) claim(ctx context.Context, stmt string, args ...interface{}) (bool, error) {
 	q := r.session.Session.Query(stmt, args...).WithContext(ctx)
 	defer q.Release()
@@ -469,10 +478,19 @@ func (r *scyllaUserRepo) SetEmailVerified(ctx context.Context, userID int64, ver
 	return q.Bind(verified, time.Now().UTC(), userID).ExecRelease()
 }
 
-// UpdateEmail claims the new address first (a lightweight transaction, so two accounts can
-// never end up with it), then rewrites the row and releases the old claim. A failure after
-// the claim gives it back, so a half-done change never leaves a dead address reserved.
-func (r *scyllaUserRepo) UpdateEmail(ctx context.Context, userID int64, oldEmail, newEmail string) error {
+// ChangeEmail is the only statement sequence that moves an address (see the interface).
+//
+// The claim on the new address is an LWT, so two accounts can never both hold it. The row
+// update is conditional on the old address (IF email = ?), so two concurrent changes on one
+// account (A->B and A->C) cannot both land: the loser gives its claim back and reports a
+// conflict instead of leaving an orphan index row that would work as a second login address.
+// Every release is conditional on the claim still being this account's (IF user_id = ?): a
+// stale old address that has since been released and claimed by someone else is never
+// deleted from under them.
+func (r *scyllaUserRepo) ChangeEmail(ctx context.Context, userID int64, oldEmail, newEmail string, verified bool) error {
+	if strings.EqualFold(oldEmail, newEmail) {
+		return ErrEmailUnchanged
+	}
 	applied, err := r.claim(ctx,
 		"INSERT INTO users_by_email (email, user_id) VALUES (?, ?) IF NOT EXISTS",
 		newEmail, userID)
@@ -482,15 +500,46 @@ func (r *scyllaUserRepo) UpdateEmail(ctx context.Context, userID int64, oldEmail
 	if !applied {
 		return ErrEmailInUse
 	}
-	stmt, names := userTable.Update("email", "updated_at")
-	if err := r.session.Query(stmt, names).WithContext(ctx).Bind(newEmail, time.Now().UTC(), userID).ExecRelease(); err != nil {
-		r.release(ctx, "DELETE FROM users_by_email WHERE email = ?", newEmail)
-		return err
+	applied, err = r.claim(ctx,
+		"UPDATE users SET email = ?, verified_email = ?, updated_at = ? WHERE id = ? IF email = ?",
+		newEmail, verified, time.Now().UTC(), userID, oldEmail)
+	if err != nil {
+		// An LWT timeout has an unknown outcome: ask the row what happened rather than
+		// guess. A raw read, not GetByID, so it needs only the columns this method touches.
+		var current string
+		q := r.session.Session.Query("SELECT email FROM users WHERE id = ?", userID).WithContext(ctx)
+		readErr := q.Scan(&current)
+		q.Release()
+		switch {
+		case readErr == nil && current == newEmail:
+			// It landed; carry on and release the old claim.
+		case readErr == nil && current == oldEmail:
+			r.releaseEmailClaim(ctx, newEmail, userID)
+			return err
+		default:
+			// Unknown either way: keep the claim rather than risk freeing an address the
+			// row now holds.
+			return err
+		}
+	} else if !applied {
+		r.releaseEmailClaim(ctx, newEmail, userID)
+		return ErrEmailChangeConflict
 	}
-	if oldEmail != "" && oldEmail != newEmail {
-		r.release(ctx, "DELETE FROM users_by_email WHERE email = ?", oldEmail)
+	if oldEmail != "" {
+		if err := r.releaseEmailClaim(ctx, oldEmail, userID); err != nil {
+			// The change itself already happened; the old address stays reserved until an
+			// operator frees it, which is the safe direction.
+			logger.Err("auth", err, map[string]any{"stage": "release_old_email", "user_id": userID})
+		}
 	}
 	return nil
+}
+
+// releaseEmailClaim frees an address in users_by_email only while it still points at
+// userID. Never an unconditional DELETE in the email-change path.
+func (r *scyllaUserRepo) releaseEmailClaim(ctx context.Context, email string, userID int64) error {
+	_, err := r.claim(ctx, "DELETE FROM users_by_email WHERE email = ? IF user_id = ?", email, userID)
+	return err
 }
 
 func (r *scyllaUserRepo) SetPassword(ctx context.Context, userID int64, hash string) error {

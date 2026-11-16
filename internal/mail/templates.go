@@ -32,6 +32,18 @@ type LinkEmail struct {
 	ExpiresIn string
 }
 
+// NoticeEmail is the data the email-change notices are rendered from. It carries a MASKED
+// address only (auth.MaskEmail, "j***@g***.com"), never a full one: a notice goes to an
+// account's old address, and whoever reads that inbox must not learn the new one.
+type NoticeEmail struct {
+	InstanceName string
+	Username     string
+	// MaskedEmail is the new address, masked. Never pass a full address here.
+	MaskedEmail string
+	// ExpiresIn is a human phrase ("1 hour"), for the notices that mention one.
+	ExpiresIn string
+}
+
 // Verification renders the "confirm this address" email. The caller fills in To.
 func Verification(d LinkEmail) (Message, error) {
 	return render("verify", d, "Verify your email for "+d.InstanceName)
@@ -42,7 +54,30 @@ func PasswordReset(d LinkEmail) (Message, error) {
 	return render("reset", d, "Reset your "+d.InstanceName+" password")
 }
 
-func render(name string, d LinkEmail, subject string) (Message, error) {
+// EmailChangeConfirm renders the link to a NEW address that confirms an email change. The
+// link only works from the requesting account's own signed-in session.
+func EmailChangeConfirm(d LinkEmail) (Message, error) {
+	return render("email_change_confirm", d, "Confirm your new email for "+d.InstanceName)
+}
+
+// EmailChangeTaken renders the mail a NEW address gets instead of a link when it already
+// belongs to an account: the requester's response is the same either way, so the address's
+// owner is the only one told. Only InstanceName is used.
+func EmailChangeTaken(d NoticeEmail) (Message, error) {
+	return render("email_change_taken", d, "Email change request on "+d.InstanceName)
+}
+
+// EmailChangeRequested renders the notice to the OLD address that a change was asked for.
+func EmailChangeRequested(d NoticeEmail) (Message, error) {
+	return render("email_change_requested", d, "Your "+d.InstanceName+" email is being changed")
+}
+
+// EmailChangeDone renders the notice to the OLD address that the change was made.
+func EmailChangeDone(d NoticeEmail) (Message, error) {
+	return render("email_change_done", d, "Your "+d.InstanceName+" email was changed")
+}
+
+func render(name string, d any, subject string) (Message, error) {
 	var text, html bytes.Buffer
 	if err := textTemplates.ExecuteTemplate(&text, name+".txt.tmpl", d); err != nil {
 		return Message{}, err
