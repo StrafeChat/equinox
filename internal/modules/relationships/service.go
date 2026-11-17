@@ -67,7 +67,9 @@ func isFriend(u *auth.User, otherID int64) bool {
 // SendRequestTo sends a friend request from actor to target. The target may be the shadow
 // of a user on another instance: their home instance is told and shows them the request.
 func (s *Service) SendRequestTo(ctx context.Context, actorID int64, target *auth.User) error {
-	if target == nil {
+	// A tombstoned shadow (its home deleted the account) is nobody to befriend: its home
+	// answers 404 to the relay, which would leave a request here pending forever.
+	if target == nil || target.IsDeleted() {
 		return ErrUserNotFound
 	}
 	if target.ID == actorID {
@@ -537,6 +539,8 @@ func (s *Service) ListRelationships(ctx context.Context, actorID int64) ([]Relat
 			byID[id] = users[i]
 		}
 	}
+	// A friend or a block whose account was deleted is gone for good: drop the id.
+	s.pruneDeleted(ctx, u, byID)
 
 	nicknames, err := s.repo.GetNicknames(ctx, actorID, u.Relationships)
 	if err != nil {

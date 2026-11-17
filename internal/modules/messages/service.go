@@ -90,9 +90,11 @@ var (
 	ErrAttachForbidden = errors.New("missing permission to attach files in this channel")
 	ErrBlocked         = errors.New("you cannot message this user")
 	ErrSystemReadOnly  = errors.New("this is an official conversation and cannot be replied to")
-	ErrInvalidInput    = errors.New("invalid message input")
-	ErrContentTooLong  = errors.New("message is too long")
-	ErrTooManyMentions = errors.New("too many mentions")
+	// ErrRecipientDeleted refuses a PM to an account that no longer exists.
+	ErrRecipientDeleted = errors.New("this account no longer exists")
+	ErrInvalidInput     = errors.New("invalid message input")
+	ErrContentTooLong   = errors.New("message is too long")
+	ErrTooManyMentions  = errors.New("too many mentions")
 	// ErrSlowmode is what a *SlowmodeError matches with errors.Is.
 	ErrSlowmode = errors.New("slowmode: wait before sending again")
 
@@ -887,6 +889,11 @@ func (s *Service) create(ctx context.Context, userID, roomID int64, in *CreateMe
 			other = participants[1]
 		}
 		if other != userID {
+			// The other account was deleted (no row, or a tombstoned shadow): the PM stays
+			// readable but nobody can write into it any more.
+			if ou, uerr := s.userRepo.GetByID(ctx, other); uerr == nil && (ou == nil || ou.IsDeleted()) {
+				return nil, ErrRecipientDeleted
+			}
 			blocked, berr := s.blockedBetween(ctx, userID, other)
 			if berr != nil {
 				return nil, berr

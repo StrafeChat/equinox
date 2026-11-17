@@ -25,6 +25,10 @@ var (
 	ErrHasBot          = errors.New("this application already has a bot")
 	ErrNoBot           = errors.New("this application has no bot")
 	ErrInvalidField    = errors.New("invalid field")
+	// Deleting an application deletes its bot account (Delete, botDeleter); these say why
+	// that could not happen right now. Both are conflicts the developer can resolve.
+	ErrBotOwnsSpace    = errors.New("this application's bot owns a space - transfer the space to someone else first")
+	ErrBotBeingDeleted = errors.New("this application's bot is already being deleted - try again shortly")
 )
 
 // Application is an OAuth2 client owned by a user. Secret and bot token are never stored in

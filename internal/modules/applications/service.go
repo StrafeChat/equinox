@@ -36,6 +36,10 @@ type Service struct {
 	// bot's profile loads it, so - as with a person's avatar - it must be an upload on this
 	// instance, never an arbitrary address that would report each viewer to its owner.
 	iconOK func(url string) bool
+	// botDeleter purges an application's bot account when the application is deleted;
+	// afterDelete removes what else hangs off a deleted application. Both optional.
+	botDeleter  BotAccountDeleter
+	afterDelete func(ctx context.Context, a *Application)
 }
 
 // SetIconCheck installs the icon URL rule (see iconOK).
@@ -197,20 +201,83 @@ func (s *Service) Update(ctx context.Context, actorID, appID int64, in UpdateInp
 	return a, nil
 }
 
+// Delete is the developer deleting their own application. Its bot account goes with it,
+// through the same pipeline an instance administrator's deletion uses (botDeleter, wired to
+// the instance module): its token and sessions are cut, it leaves every space it was
+// installed in (its managed roles with it), and its users row and username claim are
+// removed - so the bot's name is free again, as on Discord. The application row goes last,
+// so a failed bot purge leaves the application in place to delete again.
 func (s *Service) Delete(ctx context.Context, actorID, appID int64) error {
 	a, err := s.assertOwner(ctx, actorID, appID)
 	if err != nil {
 		return err
 	}
-	// The bot user row is left in place but its token is dropped with the app, so it can no
-	// longer authenticate. It stays a member of any space it was added to until removed there.
+	if a.HasBot() && s.botDeleter != nil {
+		if err := s.botDeleter(ctx, actorID, a.BotUserID); err != nil {
+			return err
+		}
+	}
+	return s.deleteApplication(ctx, a)
+}
+
+// BotAccountDeleter deletes a bot account (the instance module's account-deletion pipeline,
+// kind bot). actorID is who asked: the application's owner here.
+type BotAccountDeleter func(ctx context.Context, actorID, botUserID int64) error
+
+// SetBotAccountDeleter wires the bot purge Delete runs. Unset (tests, a process without the
+// instance module) Delete leaves the bot row as before and only drops its token.
+func (s *Service) SetBotAccountDeleter(f BotAccountDeleter) { s.botDeleter = f }
+
+// SetAfterDelete wires what else goes with a deleted application (its Discover listing).
+func (s *Service) SetAfterDelete(f func(ctx context.Context, a *Application)) { s.afterDelete = f }
+
+// deleteApplication removes the application row, its owner index and its bot token, then
+// disconnects a bot still connected with that token and runs the after-delete hook.
+func (s *Service) deleteApplication(ctx context.Context, a *Application) error {
 	if err := s.repo.Delete(ctx, a.ID, a.OwnerID); err != nil {
 		return err
 	}
 	if a.HasBot() {
 		s.disconnectBot(ctx, a.BotUserID)
 	}
+	if s.afterDelete != nil {
+		s.afterDelete(ctx, a)
+	}
 	return nil
+}
+
+// AdminDelete deletes an application without the owner check - the instance's account
+// deletion, after it has deleted the application's bot account. Missing is not an error.
+func (s *Service) AdminDelete(ctx context.Context, appID int64) error {
+	a, err := s.repo.GetByID(ctx, appID)
+	if err != nil || a == nil {
+		return err
+	}
+	return s.deleteApplication(ctx, a)
+}
+
+// ListByOwner is every application an account owns (the deletion preview's blockers).
+func (s *Service) ListByOwner(ctx context.Context, ownerID int64) ([]Application, error) {
+	return s.repo.ListByOwner(ctx, ownerID)
+}
+
+// AppForBot is the application a bot account belongs to, nil for an orphan (its application
+// already deleted). Every bot made since 2026-09-29 has its application's id as its user id;
+// the two legacy bots that do not are found by a scan.
+func (s *Service) AppForBot(ctx context.Context, botUserID int64) (*Application, error) {
+	a, err := s.repo.GetByID(ctx, botUserID)
+	if err != nil {
+		return nil, err
+	}
+	if a != nil && a.BotUserID == botUserID {
+		return a, nil
+	}
+	return s.repo.FindByBotUser(ctx, botUserID)
+}
+
+// RevokeBotToken drops a bot's live token so it cannot authenticate any more.
+func (s *Service) RevokeBotToken(ctx context.Context, appID int64) error {
+	return s.repo.DeleteBotToken(ctx, appID)
 }
 
 func (s *Service) ResetSecret(ctx context.Context, actorID, appID int64) (string, error) {

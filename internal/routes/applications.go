@@ -39,6 +39,13 @@ func SetupApplicationRoutes(d Deps) {
 		}
 		svc.SetGateway(d.Redis, region)
 	}
+	// Deleting an application deletes its bot account through the instance's account
+	// deletion pipeline, so the bot's name is freed (and leaves every space it was in), and
+	// takes its Discover listing with it.
+	inst := newInstanceService(d, userRepo, sessionRepo)
+	wireAccountDeletion(d, inst, userRepo)
+	svc.SetBotAccountDeleter(inst.DeleteApplicationBot)
+	svc.SetAfterDelete(removeBotListing(d))
 	h := applications.NewHandler(svc)
 
 	// A bot authenticates its REST and gateway calls with `Authorization: Bot <token>`;

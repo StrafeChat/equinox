@@ -314,3 +314,26 @@ func (m *memMailer) waitFor(t *testing.T, addr string, n int) []mail.Message {
 		time.Sleep(10 * time.Millisecond)
 	}
 }
+
+func (m *memUsers) DeleteAccount(_ context.Context, u *User) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if row := m.rows[u.ID]; row != nil {
+		if m.index[row.Email] == u.ID {
+			delete(m.index, row.Email)
+		}
+		delete(m.rows, u.ID)
+	}
+	return nil
+}
+func (m *memUsers) TombstoneShadow(context.Context, int64) error { return nil }
+
+func (f *memTwoFactor) DeleteAllForUser(_ context.Context, id int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	delete(f.recovery, id)
+	delete(f.passkeys, id)
+	return nil
+}
+
+func (s *memSessions) DeleteAllForUser(context.Context, int64) error { return nil }

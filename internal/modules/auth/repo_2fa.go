@@ -54,6 +54,9 @@ type TwoFactorRepository interface {
 	GetWebAuthnCredential(ctx context.Context, userID int64, credentialID string) (*WebAuthnCredentialRow, error)
 	UpdateWebAuthnCredential(ctx context.Context, userID int64, credentialID string, credential []byte, lastUsedAt time.Time) error
 	DeleteWebAuthnCredential(ctx context.Context, userID int64, credentialID string) error
+
+	// DeleteAllForUser drops every recovery code and passkey of a deleted account.
+	DeleteAllForUser(ctx context.Context, userID int64) error
 }
 
 var recoveryCodesTable = table.New(table.Metadata{

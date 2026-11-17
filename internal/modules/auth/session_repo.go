@@ -28,6 +28,8 @@ type SessionRepository interface {
 	ListByUser(ctx context.Context, userID int64) ([]Session, error)
 	Revoke(ctx context.Context, userID, sessionID int64) error
 	RevokeAllForUser(ctx context.Context, userID int64) error
+	// DeleteAllForUser hard-deletes every session row of a deleted account (account_delete.go).
+	DeleteAllForUser(ctx context.Context, userID int64) error
 }
 
 var sessionsByUserTable = table.New(table.Metadata{

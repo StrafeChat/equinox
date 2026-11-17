@@ -123,6 +123,17 @@ func (s *Service) notify(ctx context.Context, userID int64, text string) error {
 	if s.mod == nil || s.mod.RoomsSvc == nil || s.mod.MsgsSvc == nil {
 		return nil
 	}
+	// No such account (deleted): opening the official PM would create room rows for an id
+	// that will never sign in.
+	if s.mod.Users != nil {
+		u, err := s.mod.Users.GetByID(ctx, userID)
+		if err != nil {
+			return err
+		}
+		if u == nil {
+			return nil
+		}
+	}
 	room, _, err := s.mod.RoomsSvc.EnsureSystemPM(ctx, s.systemUserID, userID)
 	if err != nil {
 		return err

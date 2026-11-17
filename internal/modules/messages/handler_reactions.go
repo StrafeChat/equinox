@@ -128,6 +128,10 @@ func userSummary(u *auth.User) fiber.Map {
 	if u == nil {
 		return nil
 	}
+	if u.IsDeleted() {
+		// A deleted account (or a shadow its home deleted): the id and nothing to show.
+		return fiber.Map{"id": id.Format(u.ID), "username": "", "display_name": "", "avatar": "", "bot": false, "deleted": true}
+	}
 	return fiber.Map{
 		"id":           id.Format(u.ID),
 		"username":     u.Username,

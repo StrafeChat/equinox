@@ -40,14 +40,7 @@ func (h *Handler) ListIPBans(c fiber.Ctx) error {
 	for _, b := range bans {
 		ids = append(ids, b.BannedBy)
 	}
-	byID := map[int64]*auth.User{}
-	if len(ids) > 0 && h.svc.mod != nil {
-		if users, err := h.svc.mod.Users.GetByIDs(c.Context(), ids); err == nil {
-			for _, u := range users {
-				byID[u.ID] = u
-			}
-		}
-	}
+	byID := h.usersByID(c.Context(), ids)
 	out := make([]fiber.Map, 0, len(bans))
 	for _, b := range bans {
 		out = append(out, fiber.Map{"ban": b, "banned_by": userSummaryJSON(byID[b.BannedBy])})

@@ -75,6 +75,17 @@ type User struct {
 	// base32 secret - it must never reach a JSON response, hence "-".
 	TOTPEnabled bool   `db:"totp_enabled" json:"totp_enabled"`
 	TOTPSecret  string `db:"totp_secret" json:"-"`
+	// DeletedAt is set only on a shadow whose home instance deleted the account
+	// (federation POST /users/delete): the row stays so history naming it still resolves,
+	// with every profile field blanked. A local account is deleted outright (no row at
+	// all), so it never carries this. See TombstoneShadow.
+	DeletedAt *time.Time `db:"deleted_at" json:"-"`
+}
+
+// IsDeleted reports whether this row is a tombstoned shadow (see DeletedAt). A deleted
+// local account has no row, so callers also treat a nil user as deleted where it matters.
+func (u *User) IsDeleted() bool {
+	return u != nil && u.DeletedAt != nil
 }
 
 // HasTwoFactor reports whether a second factor is required at login: TOTP, or a WebAuthn

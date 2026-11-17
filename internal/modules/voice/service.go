@@ -37,6 +37,8 @@ var (
 	ErrInvalidTarget       = errors.New("invalid target room")
 	ErrCannotModerateOwner = errors.New("cannot moderate the space owner")
 	ErrOfficialNoCalls     = errors.New("this is an official conversation and cannot hold a call")
+	// ErrRecipientDeleted refuses a call in a PM whose other account no longer exists.
+	ErrRecipientDeleted = errors.New("this account no longer exists")
 )
 
 // Gateway event names.
@@ -133,6 +135,24 @@ func (s *Service) isOfficialPM(ctx context.Context, room *rooms.RoomWithParticip
 	return false
 }
 
+// pmPartnerDeleted reports whether room is a 1:1 PM whose other participant no longer
+// exists (no row - a local account an administrator deleted - or a tombstoned shadow). The
+// PM stays readable, but nobody is there to call, as nobody is there to message.
+func (s *Service) pmPartnerDeleted(ctx context.Context, room *rooms.RoomWithParticipants, userID int64) bool {
+	if room.Type != rooms.TypePM || s.users == nil {
+		return false
+	}
+	for _, pid := range room.ParticipantIDs {
+		if pid == userID {
+			continue
+		}
+		if u, err := s.users.GetByID(ctx, pid); err == nil && (u == nil || u.IsDeleted()) {
+			return true
+		}
+	}
+	return false
+}
+
 // Join issues a token for room and records the user's voice state there. Joining while
 // connected elsewhere leaves that room first (one voice connection per user, like
 // Discord); joining the room one is already in re-issues the token (used after a
@@ -147,6 +167,9 @@ func (s *Service) Join(ctx context.Context, user *auth.User, roomID int64, in Jo
 	}
 	if s.isOfficialPM(ctx, room, user.ID) {
 		return nil, ErrOfficialNoCalls
+	}
+	if s.pmPartnerDeleted(ctx, room, user.ID) {
+		return nil, ErrRecipientDeleted
 	}
 	// A call across a block is refused like a message across one: the blocked side must
 	// not be able to ring, or even be listed as connected to, the person who blocked them.
@@ -770,6 +793,9 @@ func (s *Service) Ring(ctx context.Context, user *auth.User, roomID int64, userI
 	}
 	if room.Type != rooms.TypePM && room.Type != rooms.TypeGroupPM {
 		return nil, ErrNotVoiceRoom
+	}
+	if s.pmPartnerDeleted(ctx, room, user.ID) {
+		return nil, ErrRecipientDeleted
 	}
 	call, err := s.store.GetCall(ctx, roomID)
 	if err != nil {

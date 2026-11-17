@@ -23,6 +23,11 @@ type Profile struct {
 	AboutMe     string `json:"about_me,omitempty"`
 	Pronouns    string `json:"pronouns,omitempty"`
 	Bot         bool   `json:"bot,omitempty"`
+	// Deleted marks an account that no longer exists (its home deleted it): every other
+	// field but FID is empty. A receiver keeps the messages that name it and turns its
+	// shadow into a tombstone - but only on the word of the account's own home; from a
+	// third instance it is a hint, checked against the home (account_delete.go).
+	Deleted bool `json:"deleted,omitempty"`
 }
 
 // EmojiRef describes a custom emoji an event uses, so an instance that has never seen
@@ -167,6 +172,13 @@ type PinItem struct {
 
 type PinsReply struct {
 	Items []PinItem `json:"items"`
+}
+
+// UserDeletedNotice: POST /users/delete - an account on the sending instance was deleted by
+// its administrators. The receiver forgets what its users had with it and tombstones its
+// shadow (federation/account_delete.go). user is the account's FID at the sender's domain.
+type UserDeletedNotice struct {
+	User string `json:"user"`
 }
 
 // ProfileUpdate: POST /users/update - a user on the sending instance changed their profile.

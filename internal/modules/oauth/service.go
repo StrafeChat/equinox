@@ -376,7 +376,41 @@ func (s *Service) ResolveToken(ctx context.Context, rawToken string) (*auth.User
 	if err != nil || u == nil {
 		return nil, nil, err
 	}
+	// A token acts for its application too: once the application is deleted its tokens
+	// stop working at once instead of living out their expiry. The dead row goes with it.
+	app, err := s.apps.GetByID(ctx, row.ApplicationID)
+	if err != nil {
+		return nil, nil, err
+	}
+	if app == nil {
+		_ = s.repo.DeleteToken(ctx, h)
+		return nil, nil, nil
+	}
 	return u, row.Scopes, nil
+}
+
+// PurgeUser revokes every grant a deleted account gave (each grant's live access token and
+// refresh index go with it). Grants *to* an application by other people sit in their own
+// partitions and are refused by ResolveToken once the application is gone. Returns how many
+// grants there were; the first error is returned after trying them all.
+func (s *Service) PurgeUser(ctx context.Context, userID int64) (int, error) {
+	grants, err := s.repo.ListGrants(ctx, userID)
+	if err != nil {
+		return 0, err
+	}
+	var firstErr error
+	for _, g := range grants {
+		if err := s.RevokeGrant(ctx, userID, g.ApplicationID); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return len(grants), firstErr
+}
+
+// CountGrants is the deletion preview's "authorized apps" count.
+func (s *Service) CountGrants(ctx context.Context, userID int64) (int, error) {
+	grants, err := s.repo.ListGrants(ctx, userID)
+	return len(grants), err
 }
 
 // GrantView is one row of the user's Authorized Apps: the grant plus the app it is for

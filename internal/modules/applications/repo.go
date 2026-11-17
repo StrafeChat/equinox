@@ -34,6 +34,12 @@ type Repository interface {
 	// Bot tokens: one live token per bot, hashed. SetBotToken replaces any previous one.
 	SetBotToken(ctx context.Context, appID, botUserID int64, tokenHash string) error
 	ResolveBotToken(ctx context.Context, tokenHash string) (botUserID, appID int64, err error)
+	// DeleteBotToken drops an application's live bot token (both tables), for a bot whose
+	// account is being deleted.
+	DeleteBotToken(ctx context.Context, appID int64) error
+	// FindByBotUser scans the applications table for the one whose bot is botUserID. Only
+	// for the two legacy bots whose user id is not their application's id; admin-only.
+	FindByBotUser(ctx context.Context, botUserID int64) (*Application, error)
 }
 
 type repo struct {
@@ -146,4 +152,38 @@ func (r *repo) ResolveBotToken(ctx context.Context, tokenHash string) (int64, in
 		return 0, 0, err
 	}
 	return row.BotUserID, row.ApplicationID, nil
+}
+
+func (r *repo) DeleteBotToken(ctx context.Context, appID int64) error {
+	var prev string
+	err := r.session.Query("SELECT token_hash FROM bot_token_by_app WHERE application_id = ?", []string{"application_id"}).
+		WithContext(ctx).Bind(appID).GetRelease(&prev)
+	if err != nil && err != gocql.ErrNotFound {
+		return err
+	}
+	batch := r.session.Batch(gocql.LoggedBatch).WithContext(ctx)
+	batch.Query("DELETE FROM bot_token_by_app WHERE application_id = ?", appID)
+	if prev != "" {
+		batch.Query("DELETE FROM bot_tokens WHERE token_hash = ?", prev)
+	}
+	return r.session.ExecuteBatch(batch)
+}
+
+func (r *repo) FindByBotUser(ctx context.Context, botUserID int64) (*Application, error) {
+	iter := r.session.Session.Query("SELECT id, bot_user_id FROM applications").WithContext(ctx).Iter()
+	var appID, bot int64
+	found := int64(0)
+	for iter.Scan(&appID, &bot) {
+		if bot == botUserID {
+			found = appID
+			break
+		}
+	}
+	if err := iter.Close(); err != nil {
+		return nil, err
+	}
+	if found == 0 {
+		return nil, nil
+	}
+	return r.GetByID(ctx, found)
 }

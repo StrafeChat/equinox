@@ -225,6 +225,15 @@ func (s *Service) localDomain() string {
 // participantOf is the wire form of a user in a room. With federation on, every
 // participant carries home_domain/origin_id so clients derive @origin:domain for E2EE.
 func participantOf(u *auth.User, localDomain string) Participant {
+	if u.IsDeleted() {
+		// A tombstoned shadow: no profile, but still the same federated identity.
+		p := Participant{ID: id.Format(u.ID), Deleted: true, Presence: auth.PublicPresence{Status: "offline"}}
+		if localDomain != "" {
+			p.HomeDomain = u.HomeDomain
+			p.OriginID = id.Format(u.OriginID())
+		}
+		return p
+	}
 	p := Participant{
 		ID:          id.Format(u.ID),
 		Username:    u.Username,
@@ -248,15 +257,35 @@ func participantOf(u *auth.User, localDomain string) Participant {
 	return p
 }
 
+// participantOrDeleted is participantOf, or - for an id whose user row is gone (a local
+// account an administrator deleted; ids are never reused) - the deleted placeholder, so a
+// PM keeps showing who it was with instead of silently losing a participant. Only call it
+// when the user read succeeded: a failed read is not a deletion.
+func participantOrDeleted(pid int64, u *auth.User, localDomain string) Participant {
+	if u != nil {
+		return participantOf(u, localDomain)
+	}
+	p := Participant{ID: id.Format(pid), Deleted: true, Presence: auth.PublicPresence{Status: "offline"}}
+	if localDomain != "" {
+		// A missing row is always one of ours (a shadow is a row too): same identity as
+		// participantOf gives a local account, so clients keep the @id:domain they had.
+		p.HomeDomain = localDomain
+		p.OriginID = id.Format(pid)
+	}
+	return p
+}
+
 // enrich fills Participants (and the room's federation identity) for display.
 func (s *Service) enrich(ctx context.Context, rwp *RoomWithParticipants) {
 	if len(rwp.ParticipantIDs) > 0 {
 		users, err := s.user.GetByIDs(ctx, rwp.ParticipantIDs)
 		if err == nil {
-			for i := range rwp.ParticipantIDs {
-				if i < len(users) && users[i] != nil {
-					rwp.Participants = append(rwp.Participants, participantOf(users[i], s.localDomain()))
+			for i, pid := range rwp.ParticipantIDs {
+				var u *auth.User
+				if i < len(users) {
+					u = users[i]
 				}
+				rwp.Participants = append(rwp.Participants, participantOrDeleted(pid, u, s.localDomain()))
 			}
 		}
 	}
@@ -1082,9 +1111,7 @@ func (s *Service) ListRooms(ctx context.Context, userID int64) ([]RoomWithPartic
 			localDomain := s.localDomain()
 			for i := range out {
 				for _, pid := range out[i].ParticipantIDs {
-					if u := byID[pid]; u != nil {
-						out[i].Participants = append(out[i].Participants, participantOf(u, localDomain))
-					}
+					out[i].Participants = append(out[i].Participants, participantOrDeleted(pid, byID[pid], localDomain))
 				}
 			}
 		}

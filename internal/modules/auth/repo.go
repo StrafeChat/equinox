@@ -76,6 +76,14 @@ type UserRepository interface {
 	// users_by_remote lookup; it never touches the email/username lookup tables.
 	UpsertShadow(ctx context.Context, u *User) error
 	GetByRemote(ctx context.Context, homeDomain string, remoteID int64) (*User, error)
+
+	// DeleteAccount removes a local account's users row and its username/email claims in
+	// one logged batch (account_delete.go). Only the instance's account-deletion pipeline
+	// calls it, after everything else the account had is gone.
+	DeleteAccount(ctx context.Context, u *User) error
+	// TombstoneShadow blanks a shadow whose home deleted the account and sets deleted_at;
+	// the row and its users_by_remote mapping stay (account_delete.go).
+	TombstoneShadow(ctx context.Context, userID int64) error
 }
 
 var userTable = table.New(table.Metadata{
@@ -110,6 +118,7 @@ var userTable = table.New(table.Metadata{
 		"remote_id",
 		"totp_enabled",
 		"totp_secret",
+		"deleted_at",
 	},
 	PartKey: []string{"id"},
 })

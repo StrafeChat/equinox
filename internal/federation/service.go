@@ -518,6 +518,10 @@ func (s *Service) ResolveLocalID(ctx context.Context, fid string) (int64, error)
 }
 
 func (s *Service) ProfileOf(u *auth.User) Profile {
+	if u.IsDeleted() {
+		// A tombstoned shadow: the identity stays, nothing else does.
+		return Profile{FID: s.FIDOf(u), Deleted: true}
+	}
 	return Profile{
 		FID:         s.FIDOf(u),
 		Username:    u.Username,
@@ -620,6 +624,16 @@ func (s *Service) EnsureShadow(ctx context.Context, domain string, p Profile) (*
 	existing, err := s.users.GetByRemote(ctx, domain, originID)
 	if err != nil {
 		return nil, err
+	}
+	if existing.IsDeleted() {
+		// A tombstone is never resurrected or renamed: the account's home deleted it, and a
+		// new account there has a new id (so a new shadow).
+		return existing, nil
+	}
+	if p.Deleted {
+		// The account's own home says it is gone (only its home reaches here: the FID is at
+		// domain, the instance vouching).
+		return s.tombstoneFor(ctx, domain, originID, existing)
 	}
 	u := existing
 	if u == nil {
@@ -953,9 +967,16 @@ func (s *Service) messageEvent(ctx context.Context, ref RoomRef, m *messages.Mes
 		ev.SenderDeviceID = id.Format(m.SenderDeviceID)
 	}
 	if m.SenderID != 0 {
-		if sender, _ := s.users.GetByID(ctx, m.SenderID); sender != nil {
+		sender, err := s.users.GetByID(ctx, m.SenderID)
+		switch {
+		case sender != nil:
 			p := s.ProfileOf(sender)
 			ev.Sender = &p
+		case err == nil:
+			// No row: a local account an administrator deleted (a shadow is a row too, so a
+			// missing one is always ours). The message stays; say whose it was and that the
+			// account is gone, so a mirror keeps it in history instead of dropping it.
+			ev.Sender = &Profile{FID: s.LocalFID(m.SenderID), Deleted: true}
 		}
 	}
 	if m.ReplyToID != nil {
@@ -1046,11 +1067,22 @@ func (s *Service) AfterProfileUpdated(ctx context.Context, u *auth.User) {
 	if u == nil || u.IsRemote() {
 		return
 	}
-	rows, err := s.roomRepo.ListByUser(ctx, u.ID)
-	if err != nil {
+	domains := s.profileAudience(ctx, u)
+	if len(domains) == 0 {
 		return
 	}
+	s.fanOut(ctx, domains, http.MethodPost, "/users/update", ProfileUpdate{User: s.ProfileOf(u)})
+}
+
+// profileAudience is every instance that may hold a shadow of the local user u: the homes
+// of everyone sharing a PM or group with them, the homes of their remote friends and every
+// instance sharing a space with them.
+func (s *Service) profileAudience(ctx context.Context, u *auth.User) map[string]struct{} {
 	domains := map[string]struct{}{}
+	rows, err := s.roomRepo.ListByUser(ctx, u.ID)
+	if err != nil {
+		rows = nil
+	}
 	for _, row := range rows {
 		ids, err := s.roomRepo.GetParticipants(ctx, row.RoomID)
 		if err != nil {
@@ -1072,10 +1104,7 @@ func (s *Service) AfterProfileUpdated(ctx context.Context, u *auth.User) {
 	for d := range s.spaceDomainsForUser(ctx, u) {
 		domains[d] = struct{}{}
 	}
-	if len(domains) == 0 {
-		return
-	}
-	s.fanOut(ctx, domains, http.MethodPost, "/users/update", ProfileUpdate{User: s.ProfileOf(u)})
+	return domains
 }
 
 // ---- relationships (relationships.Federator) ------------------------------------------

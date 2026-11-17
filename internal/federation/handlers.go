@@ -413,7 +413,7 @@ func (s *Service) messageFromEvent(ctx context.Context, from string, sc *roomSco
 	}
 	var sender *auth.User
 	if ev.Sender != nil {
-		sender, err = s.resolveProfile(ctx, *ev.Sender, from)
+		sender, err = s.resolveSender(ctx, *ev.Sender, from)
 		if err != nil {
 			return nil, err
 		}

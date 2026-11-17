@@ -119,6 +119,28 @@ Go identifiers, error strings, docs:
   (`/users/@me/email*`, `auth/service_email_change.go`) needs a person's session, the
   password and the second factor (TOTP or a recovery code), waits for a link opened from
   that same session when mail is on, and revokes no sessions.
+- **Account deletion (`instance/account_delete.go`) and identity by id.** An instance
+  administrator deletes a local account or bot (`GET /instance/users/:id/deletion-preview`,
+  then `DELETE /instance/users/:id` with the exact username): access is cut first (sessions,
+  bot token, `SESSION_REVOKED {"reason":"deleted"}`), everything that was only the account's
+  goes through each module's own leave / unfriend / revoke path (owned spaces only with
+  `take_down_spaces`, owned applications and their bots only with `delete_applications`; a
+  space owned on another instance always blocks), peers get `POST /users/delete`, and last
+  `UserRepository.DeleteAccount` removes the `users` row with its `users_by_username` and
+  `users_by_email` claims in one logged batch, so the name and address are free at once.
+  Messages stay and serialize with a `deleted: true` placeholder author; a 1:1 PM keeps the
+  deleted participant (so the partner's client never takes it for Notes) and refuses sends
+  and calls (`recipient_deleted`). A developer deleting their application deletes its bot
+  account through the same pipeline. On a peer, a deleted remote account's shadow becomes a
+  tombstone (`users.deleted_at`, row and `users_by_remote` kept, never resurrected). Every step
+  is idempotent and audited in `instance_audit_log`. Two rules follow from it: **never key
+  anything by username** - identity is the snowflake id / FID everywhere, and the one
+  handle-keyed cache, `user:name:<name>`, is purged on delete and on every new claim
+  (`CachedUserRepository.Create`); and **beware the zombie row**: an `UPDATE users SET x = x
+  + ...` (or any blind `SET`) on a deleted id recreates a partial row, because a Cassandra
+  UPDATE is an upsert - read the row first, or only remove from sets. `DeleteAccount` runs a
+  sweep 20 s later that removes such a row again (never touching claims that are someone
+  else's now).
 - **Auth is the `Authorization` header only** — no cookie, no `?token=` query parameter.
   The header carries one of three credentials, all resolved by `middleware.RequireAuth`:
   a session `Bearer` token; an OAuth2 `Bearer` access token (tried when the token is not a

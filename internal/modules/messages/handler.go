@@ -184,6 +184,8 @@ func HTTPError(err error) (status int, body fiber.Map, ok bool) {
 	var aerr *AutomodError
 	var eerr *EmbedError
 	switch {
+	case errors.Is(err, ErrRecipientDeleted):
+		return http.StatusForbidden, fiber.Map{"error": err.Error(), "code": "recipient_deleted"}, true
 	case errors.Is(err, ErrBlocked), errors.Is(err, ErrSystemReadOnly), errors.Is(err, ErrAttachForbidden),
 		errors.Is(err, ErrThreadLocked), errors.Is(err, ErrThreadArchived), errors.Is(err, ErrEmbedForbidden):
 		return http.StatusForbidden, fiber.Map{"error": err.Error()}, true

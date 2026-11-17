@@ -122,6 +122,11 @@ type Participant struct {
 	// id it knows them by. Clients build the E2EE identity @origin_id:home_domain from these.
 	HomeDomain string `json:"home_domain,omitempty"`
 	OriginID   string `json:"origin_id,omitempty"`
+	// Deleted marks the placeholder of an account that no longer exists (deleted by an
+	// instance administrator here, or by its home instance for a shadow): every profile
+	// field is empty. A 1:1 PM keeps its deleted participant on purpose - without it the
+	// other side's client would see a one-person PM and take it for their Notes room.
+	Deleted bool `json:"deleted,omitempty"`
 }
 
 // Federation is a room's global identity: the (domain, id) of the instance that created

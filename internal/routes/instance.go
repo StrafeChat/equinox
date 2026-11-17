@@ -46,6 +46,7 @@ func newInstanceService(d Deps, userRepo auth.UserRepository, sessionRepo auth.S
 	}
 	if ev := newVoiceEvictor(d, evictRooms, spaceSvc, userRepo, nil); ev != nil {
 		spaceSvc.SetRoomRemovedHook(ev.OnSpaceRoomRemoved)
+		spaceSvc.SetMemberRemovedHook(ev.OnSpaceMemberRemoved)
 	}
 	svc.SetModeration(instance.ModerationDeps{
 		Repo:      instance.NewModerationRepository(d.Scylla),
@@ -71,6 +72,7 @@ func SetupInstanceRoutes(d Deps) {
 	requireAuth := middleware.RequireAuth(sessionRepo, userRepo)
 
 	svc := newInstanceService(d, userRepo, sessionRepo)
+	wireAccountDeletion(d, svc, userRepo)
 	h := instance.NewHandler(svc)
 
 	// An instance that already had accounts when invites shipped must not hand its next
@@ -125,6 +127,10 @@ func SetupInstanceRoutes(d Deps) {
 	r.Patch("/users/:id/email", h.SetEmail)
 	r.Post("/users/:id/notice", h.SendNotice)
 	r.Post("/users/:id/recovery_codes", h.RegenerateRecoveryCodes)
+	// Account deletion: a preview, then the deletion itself (instance/account_delete.go).
+	// Both are administrator-only (checked in the service); deleting is heavy, so rare.
+	r.Get("/users/:id/deletion-preview", perUserLimiter(30, time.Minute), h.DeletionPreview)
+	r.Delete("/users/:id", perUserLimiter(5, time.Minute), h.DeleteAccount)
 	r.Get("/bans", h.ListBans)
 	// Network bans: enforced on /auth (see instance.Handler.BlockBannedIPs).
 	r.Get("/ip_bans", h.ListIPBans)

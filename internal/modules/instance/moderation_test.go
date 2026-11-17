@@ -168,6 +168,10 @@ type fakeUsers struct {
 	users map[int64]*auth.User
 	// changes records every ChangeEmail call, in order.
 	changes []emailChangeCall
+	// Account deletion (account_delete_test.go): deleteErr fails DeleteAccount, log records
+	// the call in the pipeline's order.
+	deleteErr error
+	log       *callLog
 }
 
 type emailChangeCall struct {
@@ -180,12 +184,13 @@ func (f *fakeUsers) Create(context.Context, *auth.User) error { return nil }
 func (f *fakeUsers) GetByID(_ context.Context, id int64) (*auth.User, error) {
 	return f.users[id], nil
 }
+
+// GetByIDs follows the real repository's contract: one entry per id, in order, nil for an
+// id with no row (a deleted account) - callers must cope with the nils.
 func (f *fakeUsers) GetByIDs(_ context.Context, ids []int64) ([]*auth.User, error) {
-	var out []*auth.User
-	for _, id := range ids {
-		if u := f.users[id]; u != nil {
-			out = append(out, u)
-		}
+	out := make([]*auth.User, len(ids))
+	for i, id := range ids {
+		out[i] = f.users[id]
 	}
 	return out, nil
 }
@@ -237,7 +242,10 @@ func (f *fakeUsers) ChangeEmail(_ context.Context, userID int64, oldEmail, newEm
 }
 func (f *fakeUsers) SetPassword(context.Context, int64, string) error { return nil }
 
-type fakeSessions struct{ revoked []int64 }
+type fakeSessions struct {
+	revoked []int64
+	log     *callLog
+}
 
 func (f *fakeSessions) Create(context.Context, *auth.Session) error { return nil }
 func (f *fakeSessions) GetByTokenHash(context.Context, string) (*auth.Session, error) {
@@ -250,6 +258,7 @@ func (f *fakeSessions) ListByUser(context.Context, int64) ([]auth.Session, error
 func (f *fakeSessions) Revoke(context.Context, int64, int64) error                { return nil }
 func (f *fakeSessions) RevokeAllForUser(_ context.Context, userID int64) error {
 	f.revoked = append(f.revoked, userID)
+	f.log.add("revoke", userID)
 	return nil
 }
 

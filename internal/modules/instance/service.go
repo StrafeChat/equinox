@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"math/big"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/StrafeChat/equinox/internal/config"
@@ -19,6 +20,11 @@ type Service struct {
 	// systemUserID is the instance's official account (see notices.go). 0 until
 	// ProvisionSystemAccount runs, which disables notices.
 	systemUserID int64
+	// del is nil until SetAccountDeletion runs (account_delete.go).
+	del *AccountDeletionDeps
+	// deleting holds the accounts being deleted by this process (the Redis lock covers
+	// other processes; this one also works without Redis).
+	deleting sync.Map
 }
 
 func NewService(cfg *config.Config, repo Repository) *Service {

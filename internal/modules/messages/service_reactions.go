@@ -223,5 +223,25 @@ func (s *Service) ListReactors(ctx context.Context, userID, roomID, msgID int64,
 	if len(reactorIDs) == 0 || s.userRepo == nil {
 		return nil, nil
 	}
-	return s.userRepo.GetByIDs(ctx, reactorIDs)
+	users, err := s.userRepo.GetByIDs(ctx, reactorIDs)
+	if err != nil {
+		return nil, err
+	}
+	return reactorUsers(reactorIDs, users), nil
+}
+
+// reactorUsers pairs each reactor id with its account, in order. A reaction outlives its
+// account: an id with no row (deleted here) becomes a deleted placeholder, so the list never
+// carries a null and a reactor never takes the name of whoever registers it next.
+func reactorUsers(ids []int64, users []*auth.User) []*auth.User {
+	out := make([]*auth.User, len(ids))
+	now := time.Now().UTC()
+	for i, uid := range ids {
+		if i < len(users) && users[i] != nil {
+			out[i] = users[i]
+			continue
+		}
+		out[i] = &auth.User{ID: uid, DeletedAt: &now}
+	}
+	return out
 }

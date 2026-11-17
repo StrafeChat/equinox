@@ -81,14 +81,54 @@ func (s *Service) userObjects(ctx context.Context, ids []int64) map[int64]map[st
 	}
 	users, err := s.userRepo.GetByIDs(ctx, uniq)
 	if err != nil {
+		// A failed read is not a deletion: embed nothing rather than a placeholder.
 		return out
 	}
+	byID := make(map[int64]*auth.User, len(users))
 	for _, u := range users {
 		if u != nil {
-			out[u.ID] = s.publicUserJSON(u)
+			byID[u.ID] = u
+		}
+	}
+	for _, uid := range uniq {
+		u := byID[uid]
+		switch {
+		case u == nil:
+			// The row is gone: an account an instance administrator deleted (ids are never
+			// reused). Its messages stay and render as Deleted User.
+			out[uid] = s.deletedUserJSON(uid, nil)
+		case u.IsDeleted():
+			out[uid] = s.deletedUserJSON(uid, u)
+		default:
+			out[uid] = s.publicUserJSON(u)
 		}
 	}
 	return out
+}
+
+// deletedUserJSON is the author/mention object of an account that no longer exists: the
+// id, "deleted": true and every name empty - so no client can show it as, or resolve a
+// mention to, whoever registers the name next. A tombstoned shadow keeps its federated
+// identity (home_domain/origin_id); a deleted local account is this instance's.
+func (s *Service) deletedUserJSON(userID int64, shadow *auth.User) map[string]interface{} {
+	m := map[string]interface{}{
+		"id":           id.Format(userID),
+		"username":     "",
+		"display_name": "",
+		"avatar":       "",
+		"bot":          false,
+		"system":       false,
+		"deleted":      true,
+	}
+	if local := s.localDomain(); local != "" {
+		m["home_domain"] = local
+		m["origin_id"] = id.Format(userID)
+		if shadow.IsRemote() {
+			m["home_domain"] = shadow.HomeDomain
+			m["origin_id"] = id.Format(shadow.OriginID())
+		}
+	}
+	return m
 }
 
 // embedUsers layers `author` and `mention_users` onto a base message map from a prefetched pool.

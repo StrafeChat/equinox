@@ -51,6 +51,7 @@ type cachedUser struct {
 	UpdatedAt     time.Time      `json:"updated_at"`
 	HomeDomain    string         `json:"home_domain,omitempty"`
 	RemoteID      *int64         `json:"remote_id,omitempty"`
+	DeletedAt     *time.Time     `json:"deleted_at,omitempty"`
 	// TOTPEnabled/TOTPSecret are deliberately excluded, like PasswordHash: a cache-aside
 	// GetByID racing a concurrent SetTOTP write can re-populate the cache with the
 	// pre-write snapshot *after* SetTOTP's own invalidation runs, serving stale 2FA state
@@ -93,6 +94,7 @@ func userToCached(u *User) *cachedUser {
 		UpdatedAt:  u.UpdatedAt,
 		HomeDomain: u.HomeDomain,
 		RemoteID:   u.RemoteID,
+		DeletedAt:  u.DeletedAt,
 	}
 }
 
@@ -132,6 +134,7 @@ func cachedToUser(c *cachedUser, passwordHash string) *User {
 		UpdatedAt:  c.UpdatedAt,
 		HomeDomain: c.HomeDomain,
 		RemoteID:   c.RemoteID,
+		DeletedAt:  c.DeletedAt,
 	}
 }
 
@@ -179,8 +182,15 @@ func (r *CachedUserRepository) InvalidateUser(ctx context.Context, id int64, old
 	}
 }
 
+// Create claims the name, then drops any user:name:<key> entry left over from an account
+// that held the name before it was deleted, so the new holder is never answered with the
+// old account (DeleteAccount purges it too; this is the belt to that's braces).
 func (r *CachedUserRepository) Create(ctx context.Context, u *User) error {
-	return r.repo.Create(ctx, u)
+	if err := r.repo.Create(ctx, u); err != nil {
+		return err
+	}
+	_ = r.redis.Del(ctx, r.userNameKey(u.Username))
+	return nil
 }
 
 func (r *CachedUserRepository) UpsertShadow(ctx context.Context, u *User) error {
@@ -285,7 +295,9 @@ func (r *CachedUserRepository) GetByUsername(ctx context.Context, username strin
 	val, err := r.redis.Get(ctx, key).Bytes()
 	if err == nil {
 		var c cachedUser
-		if json.Unmarshal(val, &c) == nil {
+		// Trust a hit only when it is still about this name: an entry that names someone
+		// else (a stale lookup from before a rename or a deletion) is ignored and refreshed.
+		if json.Unmarshal(val, &c) == nil && usernameKey(c.Username) == usernameKey(username) {
 			return cachedToUser(&c, ""), nil
 		}
 	}

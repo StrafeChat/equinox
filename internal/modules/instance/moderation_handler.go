@@ -1,7 +1,9 @@
 package instance
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/url"
 
@@ -14,6 +16,11 @@ import (
 
 // moderationError maps the moderation errors; anything unknown falls through to errorFor.
 func moderationError(c fiber.Ctx, err error) error {
+	var blocked *DeletionBlockedError
+	var stage *DeletionStageError
+	if errors.As(err, &blocked) || errors.As(err, &stage) {
+		return deletionError(c, err)
+	}
 	switch err {
 	case ErrUserNotFound, ErrSpaceNotFound, ErrReportNotFound, ErrNotBanned, ErrIPBanNotFound:
 		return c.Status(http.StatusNotFound).JSON(fiber.Map{"error": err.Error()})
@@ -311,6 +318,26 @@ func (h *Handler) UnbanUser(c fiber.Ctx) error {
 	return c.SendStatus(http.StatusNoContent)
 }
 
+// usersByID hydrates the accounts a list names, in one read. An id with no row (an account
+// an administrator deleted) is simply absent - its row renders the account as null - and a
+// failed read leaves every name out rather than failing the page.
+func (h *Handler) usersByID(ctx context.Context, ids []int64) map[int64]*auth.User {
+	byID := map[int64]*auth.User{}
+	if len(ids) == 0 || h.svc.mod == nil {
+		return byID
+	}
+	users, err := h.svc.mod.Users.GetByIDs(ctx, ids)
+	if err != nil {
+		return byID
+	}
+	for _, u := range users {
+		if u != nil {
+			byID[u.ID] = u
+		}
+	}
+	return byID
+}
+
 // ListBans GET /instance/bans
 func (h *Handler) ListBans(c fiber.Ctx) error {
 	user := auth.GetUser(c)
@@ -326,14 +353,7 @@ func (h *Handler) ListBans(c fiber.Ctx) error {
 	for _, b := range bans {
 		ids = append(ids, b.UserID)
 	}
-	byID := map[int64]*auth.User{}
-	if len(ids) > 0 && h.svc.mod != nil {
-		if users, err := h.svc.mod.Users.GetByIDs(c.Context(), ids); err == nil {
-			for _, u := range users {
-				byID[u.ID] = u
-			}
-		}
-	}
+	byID := h.usersByID(c.Context(), ids)
 	out := make([]fiber.Map, 0, len(bans))
 	for _, b := range bans {
 		out = append(out, fiber.Map{"ban": b, "user": userSummaryJSON(byID[b.UserID])})
@@ -423,14 +443,7 @@ func (h *Handler) ListReports(c fiber.Ctx) error {
 			ids = append(ids, r.TargetID)
 		}
 	}
-	byID := map[int64]*auth.User{}
-	if len(ids) > 0 && h.svc.mod != nil {
-		if users, err := h.svc.mod.Users.GetByIDs(c.Context(), ids); err == nil {
-			for _, u := range users {
-				byID[u.ID] = u
-			}
-		}
-	}
+	byID := h.usersByID(c.Context(), ids)
 	out := make([]fiber.Map, 0, len(reports))
 	for i := range reports {
 		r := &reports[i]
@@ -520,14 +533,7 @@ func (h *Handler) ListAudit(c fiber.Ctx) error {
 	for _, e := range entries {
 		ids = append(ids, e.ActorID)
 	}
-	byID := map[int64]*auth.User{}
-	if len(ids) > 0 && h.svc.mod != nil {
-		if users, err := h.svc.mod.Users.GetByIDs(c.Context(), ids); err == nil {
-			for _, u := range users {
-				byID[u.ID] = u
-			}
-		}
-	}
+	byID := h.usersByID(c.Context(), ids)
 	out := make([]fiber.Map, 0, len(entries))
 	for i := range entries {
 		e := &entries[i]
